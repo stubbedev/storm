@@ -392,6 +392,8 @@ func assertLimitedMutations(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" limited delete", must(widgets.OrderBy(Widgets.Karma.Desc()).Limit(1).Delete(ctx)), int64(1))
 	eq(t, conn+" row limited delete", must(rows.OrderBy("karma").Limit(2).Delete(ctx)), int64(2))
 	eq(t, conn+" limited deletes left the middle", fmt.Sprint(must(rows.OrderBy("name").Pluck(ctx, "name"))), "[c d]")
+	eq(t, conn+" unconditional update", must(rows.Update(ctx, map[string]any{"kind": "all"})), int64(2))
+	eq(t, conn+" unconditional delete", must(widgets.Delete(ctx)), int64(2))
 }
 
 func assertWidgets(t *testing.T, ctx context.Context, conn string) {

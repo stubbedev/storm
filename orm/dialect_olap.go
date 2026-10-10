@@ -321,6 +321,8 @@ func (clickhouseDialect) uncountedMutations() {}
 func (clickhouseDialect) noTransactions()     {}
 
 // mutationSuffix makes ClickHouse mutations synchronous.
+func (clickhouseDialect) mutationNeedsWhere() {}
+
 func (clickhouseDialect) mutationSuffix(b *SQL) {
 	b.Write(" SETTINGS mutations_sync = 2")
 }

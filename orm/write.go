@@ -494,15 +494,25 @@ func writeUpdate(b *SQL, table string, sets []colSet, where frag) {
 		b.Write(" = ")
 		s.renderValue(b)
 	}
-	where(b)
+	mutationWhere(b, where)
 	mutationSuffix(b)
 }
 
 // writeDelete renders a DELETE from table in the dialect's mutation form.
 func writeDelete(b *SQL, table string, where frag) {
 	b.Dialect.DeletePrefix(b, table)
-	where(b)
+	mutationWhere(b, where)
 	mutationSuffix(b)
+}
+
+// mutationWhere writes where, or WHERE 1 when it is empty on a dialect
+// whose mutations require a condition (ClickHouse).
+func mutationWhere(b *SQL, where frag) {
+	n := b.sb.Len()
+	where(b)
+	if _, ok := b.Dialect.(interface{ mutationNeedsWhere() }); ok && b.sb.Len() == n {
+		b.Write(" WHERE 1")
+	}
 }
 
 func mutationSuffix(b *SQL) {
