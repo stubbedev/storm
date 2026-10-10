@@ -369,12 +369,22 @@ func (q Query[M]) UpdateOrCreate(ctx context.Context, attrs []Assignment[M], val
 // CreateOrFirst inserts a model with attrs and values, or — when that
 // violates a unique constraint — returns the existing row matching attrs.
 // Inside a transaction the insert runs in a nested one, so its failure
-// doesn't poison the outer Postgres transaction.
+// doesn't poison the outer Postgres transaction. Where a failed insert
+// cannot be contained — no unique constraints (ClickHouse), or a
+// transaction without savepoints that the failure would abort (DuckDB,
+// MongoDB) — it looks the row up first instead (FirstOrCreate).
 func (q Query[M]) CreateOrFirst(ctx context.Context, attrs []Assignment[M], values ...Assignment[M]) (M, error) {
+	c, err := lookup(ctx, q.connName())
+	if err != nil {
+		var zero M
+		return zero, err
+	}
+	if _, emulated := c.Dialect.(conflictEmulator); emulated || flatTransaction(ctx, q.connName()) {
+		return q.FirstOrCreate(ctx, attrs, values...)
+	}
 	var m M
 	fill(&m, attrs, values)
 	create := func(ctx context.Context) error { return q.Create(ctx, &m) }
-	var err error
 	if InTransactionOn(ctx, q.connName()) {
 		err = TransactionOn(ctx, q.connName(), create)
 	} else {

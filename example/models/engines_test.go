@@ -416,6 +416,17 @@ func assertLimitedMutations(t *testing.T, ctx context.Context, conn string) {
 		ok(rows.Insert(ctx, map[string]any{"id": i + 1, "name": name, "kind": "plain", "karma": i + 1}))
 	}
 	eq(t, conn+" offset without limit", len(must(rows.OrderBy("name").Offset(3).Get(ctx))), 2)
+	widgetQuery := Widgets.Query().On(conn)
+	taken := orm.Attrs(Widgets.ID.Set(int64(1)))
+	eq(t, conn+" createOrFirst returns the taken key", must(widgetQuery.CreateOrFirst(ctx, taken, Widgets.Name.Set("dup"))).Name, "a")
+	if must(orm.SupportsTransactions(ctx, conn)) {
+		ok(orm.TransactionOn(ctx, conn, func(ctx context.Context) error {
+			found, err := widgetQuery.CreateOrFirst(ctx, taken, Widgets.Name.Set("dup"))
+			eq(t, conn+" createOrFirst in a transaction", found.Name, "a")
+			return err
+		}))
+	}
+	eq(t, conn+" createOrFirst inserted nothing", must(rows.Count(ctx)), int64(5))
 	byName := func() string {
 		return fmt.Sprint(must(rows.OrderBy("name").Pluck(ctx, "kind")))
 	}

@@ -389,6 +389,11 @@ func InTransactionOn(ctx context.Context, name string) bool {
 	return ok
 }
 
+func flatTransaction(ctx context.Context, name string) bool {
+	st, ok := ctx.Value(txKey{name}).(*txState)
+	return ok && st.flat
+}
+
 // QueryEvent describes one executed statement (DB::listen).
 type QueryEvent struct {
 	Connection string
@@ -493,7 +498,7 @@ func IsDeadlock(err error) bool {
 }
 
 // IsUniqueViolation reports whether err is a unique constraint violation
-// on SQLite, Postgres or MySQL/MariaDB, or a document store's
+// on SQLite, Postgres, MySQL/MariaDB or DuckDB, or a document store's
 // DuplicateKeyError.
 func IsUniqueViolation(err error) bool {
 	if err == nil {
@@ -503,7 +508,7 @@ func IsUniqueViolation(err error) bool {
 		return true
 	}
 	msg := err.Error()
-	for _, s := range []string{"UNIQUE constraint failed", "SQLSTATE 23505", "Error 1062", "Duplicate entry"} {
+	for _, s := range []string{"UNIQUE constraint failed", "SQLSTATE 23505", "Error 1062", "Duplicate entry", "Duplicate key"} {
 		if strings.Contains(msg, s) {
 			return true
 		}
