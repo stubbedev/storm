@@ -596,6 +596,8 @@ func TestClickHouse(t *testing.T) {
 		w.ID = int64(i + 1) // ClickHouse does not generate integer keys
 		ok(Widgets.Query().On("ch").Create(ctx, &w))
 	}
+	chWidgets := orm.From("widgets").On("ch")
+	eq(t, "union", len(must(chWidgets.Where("kind", orm.Eq, "gear").Union(chWidgets.Where("kind", orm.Eq, "gear")).Get(ctx))), 2)
 	ws := must(Widgets.Query().On("ch").Where(Widgets.Kind.Eq("gear")).OrderBy(Widgets.Karma.Desc()).Get(ctx))
 	eq(t, "where + order", len(ws), 2)
 	eq(t, "order desc", ws[0].Name, "gamma")

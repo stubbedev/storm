@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"time"
 )
@@ -406,23 +407,55 @@ func (q Query[M]) renderBody(b *SQL, list frag) {
 		q.renderColumns(b)
 	}
 	q.renderFrom(b)
-	for _, u := range q.unions {
-		b.Write(map[bool]string{true: " UNION ALL ", false: " UNION "}[u.all])
+	for i, u := range q.unions {
 		m := u.q.prepared()
-		m.orders, m.limit, m.offset = nil, 0, 0
-		m.renderBody(b, list)
+		writeUnion(b, u.all, i, len(m.orders) > 0 || m.limit > 0 || m.offset > 0, func(b *SQL) { m.renderBody(b, list) })
 	}
 	if len(q.orders) > 0 {
-		b.Write(" ORDER BY ")
-		for i, o := range q.orders {
-			if i > 0 {
-				b.Write(", ")
+		unionResult(b, len(q.unions) > 0, func(b *SQL) {
+			b.Write(" ORDER BY ")
+			for i, o := range q.orders {
+				if i > 0 {
+					b.Write(", ")
+				}
+				o.f(b)
 			}
-			o.f(b)
-		}
+		})
 	}
 	b.Dialect.Limit(b, q.limit, q.offset)
 	b.Write(b.Dialect.Lock(q.lock))
+}
+
+// writeUnion appends branch as the i-th union branch. A branch with its
+// own order or limit becomes a derived table, the one form every engine
+// accepts (SQLite allows neither inside a compound select).
+func writeUnion(b *SQL, all bool, i int, limited bool, branch frag) {
+	_, explicit := b.Dialect.(interface{ explicitUnionDistinct() })
+	switch {
+	case all:
+		b.Write(" UNION ALL ")
+	case explicit:
+		b.Write(" UNION DISTINCT ")
+	default:
+		b.Write(" UNION ")
+	}
+	if !limited {
+		branch(b)
+		return
+	}
+	b.Write("SELECT * FROM (")
+	branch(b)
+	b.Write(") AS ")
+	b.Ident(fmt.Sprintf("union_%d", i+1))
+}
+
+// unionResult renders f, the union-level ORDER BY, with unqualified
+// columns: a union's result has no tables to qualify them with.
+func unionResult(b *SQL, union bool, f frag) {
+	plain := b.plain
+	b.plain = b.plain || union
+	f(b)
+	b.plain = plain
 }
 
 func (q Query[M]) renderColumns(b *SQL) {

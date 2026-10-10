@@ -625,17 +625,22 @@ func (r RowQuery) render(b *SQL, list frag) {
 		b.Write(" HAVING ")
 		writeAnd(b, r.having)
 	}
-	for _, u := range r.unions {
-		b.Write(map[bool]string{true: " UNION ALL ", false: " UNION "}[u.all])
+	for i, u := range r.unions {
 		branch := u.q
-		branch.orders, branch.limit, branch.offset, branch.lock = nil, 0, 0, 0
-		branch.render(b, list)
+		branch.lock = 0
+		writeUnion(b, u.all, i, len(branch.orders) > 0 || branch.limit > 0 || branch.offset > 0, func(b *SQL) { branch.render(b, list) })
 	}
-	for i, o := range r.orders {
-		b.Write(map[bool]string{true: " ORDER BY ", false: ", "}[i == 0])
-		o.e.build(b)
-		b.Write(map[bool]string{false: " ASC", true: " DESC"}[o.desc])
-	}
+	unionResult(b, len(r.unions) > 0, func(b *SQL) {
+		for i, o := range r.orders {
+			b.Write(map[bool]string{true: " ORDER BY ", false: ", "}[i == 0])
+			if len(r.unions) > 0 && o.col != "" {
+				identExpr(resultName(o.col)).build(b)
+			} else {
+				o.e.build(b)
+			}
+			b.Write(map[bool]string{false: " ASC", true: " DESC"}[o.desc])
+		}
+	})
 	b.Dialect.Limit(b, r.limit, r.offset)
 	b.Write(b.Dialect.Lock(r.lock))
 }

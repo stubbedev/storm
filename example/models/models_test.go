@@ -296,6 +296,9 @@ func TestSelectsJoinsUnions(t *testing.T) {
 	union := must(Users.Where(Users.Karma.Gt(90)).Union(Users.Where(Users.Name.Eq("Bob"))).Get(ctx))
 	eq(t, "union", len(union), 2)
 	eq(t, "union count", must(Users.Where(Users.Karma.Gt(90)).UnionAll(Users.Where(Users.Karma.Gt(90))).Count(ctx)), int64(2))
+	newest := Users.Query().OrderBy(Users.ID.Desc()).Limit(1)
+	eq(t, "union branch keeps its limit", len(must(Users.Where(Users.Name.Eq("Alice")).Union(newest).Get(ctx))), 2)
+	eq(t, "union ordered by a column", must(Users.Where(Users.Name.Eq("Bob")).Union(Users.Where(Users.Name.Eq("Alice"))).OrderBy(Users.Name.Asc()).Pluck(ctx, Users.Name)), []string{"Alice", "Bob"})
 
 	eq(t, "distinct", must(Posts.Query().Distinct().OrderBy(Posts.UserID.Asc()).Pluck(ctx, Posts.UserID)), []int64{1, 2, 3, 5, 99})
 	eq(t, "inRandomOrder", len(must(Users.Query().InRandomOrder().Get(ctx))), 4)

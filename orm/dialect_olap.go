@@ -327,6 +327,10 @@ func (clickhouseDialect) noTransactions()     {}
 // mutationSuffix makes ClickHouse mutations synchronous.
 func (clickhouseDialect) mutationNeedsWhere() {}
 
+// explicitUnionDistinct: ClickHouse rejects a bare UNION unless the
+// server sets union_default_mode.
+func (clickhouseDialect) explicitUnionDistinct() {}
+
 func (clickhouseDialect) mutationSuffix(b *SQL) {
 	b.Write(" SETTINGS mutations_sync = 2")
 }

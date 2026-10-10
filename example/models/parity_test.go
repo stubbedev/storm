@@ -544,6 +544,8 @@ func TestRowQueryParity(t *testing.T) {
 	alice, bob := users.Select("name").Where("id", orm.Eq, 1), users.Select("name").Where("id", orm.Eq, 2)
 	eq(t, "union", fmt.Sprint(must(alice.Union(bob).OrderBy("name").Pluck(ctx, "name"))), "[Alice Bob]")
 	eq(t, "union removes duplicates", must(alice.Union(alice).Count(ctx)), int64(1))
+	eq(t, "union ordered by a qualified column", fmt.Sprint(must(bob.Union(alice).OrderBy("users.name").Pluck(ctx, "name"))), "[Alice Bob]")
+	eq(t, "union branch keeps its order and limit", len(must(alice.Union(users.Select("name").OrderBy("id").Limit(1).Offset(2)).Get(ctx))), 2)
 	eq(t, "unionAll keeps them", must(alice.UnionAll(alice).Count(ctx)), int64(2))
 	_, err = alice.Union(bob).Sum[int64](ctx, "karma")
 	eq(t, "aggregate of a union refused", err != nil && strings.Contains(err.Error(), "union"), true)
