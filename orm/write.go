@@ -416,10 +416,14 @@ func (q Query[M]) update(ctx context.Context, sets []Assignment[M]) (int64, erro
 	}
 	q = q.prepared()
 	cs := colSets(sets)
-	if n, ok, err := q.updateDocs(ctx, cs, "update"); ok {
+	if n, ok, err := q.updateDocs(ctx, cs); ok {
 		return n, err
 	}
-	return mutate(ctx, q.connName(), q.table.Name, q.renderWhere, func(b *SQL) { writeUpdate(b, q.table.Name, cs, q.renderWhere) })
+	where, err := q.mutationWhere()
+	if err != nil {
+		return 0, err
+	}
+	return mutate(ctx, q.connName(), q.table.Name, where, func(b *SQL) { writeUpdate(b, q.table.Name, cs, where) })
 }
 
 // Increment adds by to a numeric column on every matching row.
@@ -502,10 +506,44 @@ func mutationSuffix(b *SQL) {
 
 func (q Query[M]) hardDelete(ctx context.Context) (int64, error) {
 	q = q.prepared()
-	if n, ok, err := q.deleteDocs(ctx, "delete"); ok {
+	if n, ok, err := q.deleteDocs(ctx); ok {
 		return n, err
 	}
-	return mutate(ctx, q.connName(), q.table.Name, q.renderWhere, func(b *SQL) { writeDelete(b, q.table.Name, q.renderWhere) })
+	where, err := q.mutationWhere()
+	if err != nil {
+		return 0, err
+	}
+	return mutate(ctx, q.connName(), q.table.Name, where, func(b *SQL) { writeDelete(b, q.table.Name, where) })
+}
+
+// mutationWhere narrows a limited or offset mutation to the keys its
+// SELECT picks, in its order: no engine limits UPDATE and DELETE alike.
+func (q Query[M]) mutationWhere() (frag, error) {
+	if q.limit == 0 && q.offset == 0 {
+		return q.renderWhere, nil
+	}
+	if q.table.PrimaryKey == "" {
+		return nil, fmt.Errorf("orm: a limited update or delete on %s needs a primary key", q.table.Name)
+	}
+	q.extras, q.eager = nil, nil
+	key := q.table.column(q.table.PrimaryKey)
+	return keyedWhere(q.table.PrimaryKey, func(b *SQL) { q.renderSelect(b, key.f) }), nil
+}
+
+// keyedWhere is WHERE key IN the keys sel selects, through a derived
+// table so MySQL accepts the mutated table in its own subquery.
+func keyedWhere(key string, sel frag) frag {
+	return func(b *SQL) {
+		b.Write(" WHERE ")
+		b.Ident(key)
+		b.Write(" IN (SELECT ")
+		b.Ident(key)
+		b.Write(" FROM (")
+		sel(b)
+		b.Write(") AS ")
+		b.Ident("mutated_keys")
+		b.Write(")")
+	}
 }
 
 func (q Query[M]) renderWhere(b *SQL) {

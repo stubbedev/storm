@@ -401,6 +401,7 @@ func TestRelationQueries(t *testing.T) {
 
 func TestWrites(t *testing.T) {
 	ctx := setup(t)
+	assertLimitedMutations(t, ctx, orm.DefaultConnection)
 
 	u := User{Name: "Frank", Email: "frank@example.com", Active: true, CountryID: 2}
 	if err := Users.Create(ctx, &u); err != nil {

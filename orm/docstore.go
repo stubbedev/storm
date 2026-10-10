@@ -2,6 +2,7 @@ package orm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -295,23 +296,66 @@ func docKey(keys []string, doc map[string]any) string {
 	return keyString(vals)
 }
 
-func (q Query[M]) updateDocs(ctx context.Context, sets []colSet, method string) (int64, bool, error) {
+func (q Query[M]) updateDocs(ctx context.Context, sets []colSet) (int64, bool, error) {
 	ds, ok, err := q.docstore(ctx)
 	if err != nil || !ok {
 		return 0, false, err
 	}
-	p, err := q.planOf(method)
+	p, err := q.planOf("update")
 	if err != nil {
 		return 0, true, err
 	}
+	n, err := updateDocs(ctx, ds, q.connName(), q.table.PrimaryKey, p, sets)
+	return n, true, err
+}
+
+func updateDocs(ctx context.Context, ds DocStore, conn, key string, p Plan, sets []colSet) (int64, error) {
 	u, err := docUpdate(sets)
 	if err != nil {
-		return 0, true, fmt.Errorf("orm: %s on %s: %w", method, q.table.Name, err)
+		return 0, fmt.Errorf("orm: update on %s: %w", p.Table, err)
+	}
+	if p, err = mutationPlan(ctx, ds, conn, key, p); err != nil {
+		return 0, fmt.Errorf("orm: update on %s: %w", p.Table, err)
 	}
 	start := time.Now()
-	n, err := ds.UpdateDocs(ctx, q.table.Name, p, u)
-	emitDoc(q.connName(), "update", p, time.Since(start), err)
-	return n, true, err
+	n, err := ds.UpdateDocs(ctx, p.Table, p, u)
+	emitDoc(conn, "update", p, time.Since(start), err)
+	return n, err
+}
+
+func deleteDocs(ctx context.Context, ds DocStore, conn, key string, p Plan) (int64, error) {
+	p, err := mutationPlan(ctx, ds, conn, key, p)
+	if err != nil {
+		return 0, fmt.Errorf("orm: delete on %s: %w", p.Table, err)
+	}
+	start := time.Now()
+	n, err := ds.DeleteDocs(ctx, p.Table, p)
+	emitDoc(conn, "delete", p, time.Since(start), err)
+	return n, err
+}
+
+// mutationPlan resolves a limited or offset mutation to the keys of the
+// documents it selects, since stores update and delete every match.
+func mutationPlan(ctx context.Context, ds DocStore, conn, key string, p Plan) (Plan, error) {
+	if p.Limit == 0 && p.Offset == 0 {
+		p.Orders = nil
+		return p, nil
+	}
+	if key == "" {
+		return p, errors.New("a limited update or delete needs a key column")
+	}
+	p.Columns = []string{key}
+	start := time.Now()
+	docs, err := ds.FindDocs(ctx, p.Table, p)
+	emitDoc(conn, "find keys", p, time.Since(start), err)
+	if err != nil {
+		return p, err
+	}
+	keys := make([]any, len(docs))
+	for i, d := range docs {
+		keys[i] = d[key]
+	}
+	return Plan{Table: p.Table, Where: List{Column: key, Values: keys}}, nil
 }
 
 // docUpdate is sets as a document update: literals are set, increments
@@ -344,18 +388,16 @@ func docFields(sets []colSet) (map[string]any, error) {
 	return fields, nil
 }
 
-func (q Query[M]) deleteDocs(ctx context.Context, method string) (int64, bool, error) {
+func (q Query[M]) deleteDocs(ctx context.Context) (int64, bool, error) {
 	ds, ok, err := q.docstore(ctx)
 	if err != nil || !ok {
 		return 0, false, err
 	}
-	p, err := q.planOf(method)
+	p, err := q.planOf("delete")
 	if err != nil {
 		return 0, true, err
 	}
-	start := time.Now()
-	n, err := ds.DeleteDocs(ctx, q.table.Name, p)
-	emitDoc(q.connName(), "delete", p, time.Since(start), err)
+	n, err := deleteDocs(ctx, ds, q.connName(), q.table.PrimaryKey, p)
 	return n, true, err
 }
 

@@ -1083,16 +1083,10 @@ func (r RowQuery) update(ctx context.Context, sets []colSet) (int64, error) {
 		if err != nil {
 			return 0, err
 		}
-		u, err := docUpdate(sets)
-		if err != nil {
-			return 0, fmt.Errorf("orm: update on %s: %w", r.name, err)
-		}
-		start := time.Now()
-		n, err := ds.UpdateDocs(ctx, r.name, p, u)
-		emitDoc(r.connName(), "update", p, time.Since(start), err)
-		return n, err
+		return updateDocs(ctx, ds, r.connName(), r.key, p, sets)
 	}
-	return mutate(ctx, r.connName(), r.name, r.renderWhere, func(b *SQL) { writeUpdate(b, r.name, sets, r.renderWhere) })
+	where := r.mutationWhere()
+	return mutate(ctx, r.connName(), r.name, where, func(b *SQL) { writeUpdate(b, r.name, sets, where) })
 }
 
 // UpdateOrInsert updates the rows matching the query and attrs with
@@ -1129,12 +1123,17 @@ func (r RowQuery) Delete(ctx context.Context) (int64, error) {
 		if err != nil {
 			return 0, err
 		}
-		start := time.Now()
-		n, err := ds.DeleteDocs(ctx, r.name, p)
-		emitDoc(r.connName(), "delete", p, time.Since(start), err)
-		return n, err
+		return deleteDocs(ctx, ds, r.connName(), r.key, p)
 	}
-	return mutate(ctx, r.connName(), r.name, r.renderWhere, func(b *SQL) { writeDelete(b, r.name, r.renderWhere) })
+	where := r.mutationWhere()
+	return mutate(ctx, r.connName(), r.name, where, func(b *SQL) { writeDelete(b, r.name, where) })
+}
+
+func (r RowQuery) mutationWhere() frag {
+	if r.limit == 0 && r.offset == 0 {
+		return r.renderWhere
+	}
+	return keyedWhere(r.key, func(b *SQL) { r.render(b, identExpr(r.keyColumn()).build) })
 }
 
 // scanMaps reads every remaining row into maps.

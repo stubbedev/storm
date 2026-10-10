@@ -219,8 +219,12 @@ func assertDocModelQueries(t *testing.T, ctx context.Context, conn string) {
 		lazy++
 	}
 	eq(t, conn+" lazy", lazy, 3)
-	eq(t, conn+" unconditional update", must(notes.WithoutGlobalScopes().Update(ctx, Notes.Views.Set(0))), int64(4))
-	eq(t, conn+" force delete", must(notes.WithoutGlobalScopes().WithTrashed().ForceDelete(ctx)), int64(4))
+	eq(t, conn+" limited update", must(notes.OrderBy(Notes.Views.Asc()).Offset(2).Limit(1).Update(ctx, Notes.Title.Set("top"))), int64(1))
+	eq(t, conn+" limited update hit the top", must(notes.OrderBy(Notes.Views.Asc()).Pluck(ctx, Notes.Title)), []string{"a", "b", "top"})
+	eq(t, conn+" offset delete", must(notes.OrderBy(Notes.Views.Asc()).Offset(1).Limit(1).ForceDelete(ctx)), int64(1))
+	eq(t, conn+" offset delete hit the second", must(notes.OrderBy(Notes.Views.Asc()).Pluck(ctx, Notes.Title)), []string{"a", "top"})
+	eq(t, conn+" unconditional update", must(notes.WithoutGlobalScopes().Update(ctx, Notes.Views.Set(0))), int64(3))
+	eq(t, conn+" force delete", must(notes.WithoutGlobalScopes().WithTrashed().ForceDelete(ctx)), int64(3))
 }
 
 // createWidgetTable creates widgets keyed by key, which adds the id column:
@@ -244,6 +248,38 @@ func seedWidgets(t *testing.T) []Widget {
 		{Name: "beta", Kind: "spring", Karma: 15},
 		{Name: "gamma", Kind: "gear", Karma: 25},
 	}
+}
+
+// assertLimitedMutations checks Limit, Offset and OrderBy narrow updates
+// and deletes to the rows a SELECT would pick, through both builders.
+func assertLimitedMutations(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	tCheck(t, schema.On(conn).DropIfExists(ctx, "widgets"))
+	tCheck(t, schema.On(conn).Create(ctx, "widgets", func(t *schema.Blueprint) {
+		t.BigInteger("id").Primary()
+		t.String("name")
+		t.String("kind")
+		t.BigInteger("karma").Default(0)
+		t.Timestamps()
+	}))
+	defer func() { tCheck(t, schema.On(conn).DropIfExists(ctx, "widgets")) }()
+	rows := orm.From("widgets").On(conn)
+	for i, name := range []string{"a", "b", "c", "d", "e"} {
+		ok(rows.Insert(ctx, map[string]any{"id": i + 1, "name": name, "kind": "plain", "karma": i + 1}))
+	}
+	byName := func() string {
+		return fmt.Sprint(must(rows.OrderBy("name").Pluck(ctx, "kind")))
+	}
+	widgets := Widgets.Query().On(conn)
+	eq(t, conn+" limited update", must(widgets.OrderBy(Widgets.Karma.Desc()).Limit(2).Update(ctx, Widgets.Kind.Set("top"))), int64(2))
+	eq(t, conn+" limited update hit the top two", byName(), "[plain plain plain top top]")
+	eq(t, conn+" offset update", must(widgets.OrderBy(Widgets.Karma.Asc()).Limit(1).Offset(1).Update(ctx, Widgets.Kind.Set("second"))), int64(1))
+	eq(t, conn+" offset update hit the second", byName(), "[plain second plain top top]")
+	eq(t, conn+" row limited update", must(rows.OrderBy("karma").Limit(1).Update(ctx, map[string]any{"kind": "first"})), int64(1))
+	eq(t, conn+" row limited update hit the first", byName(), "[first second plain top top]")
+	eq(t, conn+" limited delete", must(widgets.OrderBy(Widgets.Karma.Desc()).Limit(1).Delete(ctx)), int64(1))
+	eq(t, conn+" row limited delete", must(rows.OrderBy("karma").Limit(2).Delete(ctx)), int64(2))
+	eq(t, conn+" limited deletes left the middle", fmt.Sprint(must(rows.OrderBy("name").Pluck(ctx, "name"))), "[c d]")
 }
 
 func assertWidgets(t *testing.T, ctx context.Context, conn string) {
@@ -288,6 +324,7 @@ func TestDuckDB(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
+	assertLimitedMutations(t, ctx, "duck")
 	createWidgetTable(ctx, t, "duck", func(t *schema.Blueprint) { t.ID() })
 	for i := range seedWidgets(t) {
 		w := seedWidgets(t)[i]
@@ -353,6 +390,7 @@ func TestClickHouse(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
+	assertLimitedMutations(t, ctx, "ch")
 	createWidgetTable(ctx, t, "ch", func(t *schema.Blueprint) { t.BigInteger("id").Primary() })
 	for i, w := range seedWidgets(t) {
 		w.ID = int64(i + 1) // ClickHouse does not generate integer keys
