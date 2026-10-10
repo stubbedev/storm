@@ -623,7 +623,7 @@ func (r RowQuery) Cursor(ctx context.Context) iter.Seq2[map[string]any, error] {
 			flatten(func(yield func([]map[string]any, error) bool) { yield(r.Get(ctx)) })(yield)
 			return
 		}
-		rows, err := readRows(ctx, r.connName(), func(b *SQL) { r.render(b, nil) })
+		rows, err := r.read(ctx, func(b *SQL) { r.render(b, nil) })
 		if err != nil {
 			yield(nil, err)
 			return
@@ -713,6 +713,14 @@ func (r RowQuery) renderWhere(b *SQL) {
 	writeAnd(b, r.where)
 }
 
+// read runs f on the read pool, or the write pool for a locking read.
+func (r RowQuery) read(ctx context.Context, f frag) (*sql.Rows, error) {
+	if r.lock != NoLock {
+		return writeRows(ctx, r.connName(), f)
+	}
+	return readRows(ctx, r.connName(), f)
+}
+
 // docConn resolves the document store behind this builder's connection,
 // if any.
 func (r RowQuery) docConn(ctx context.Context) (DocStore, bool, error) {
@@ -791,7 +799,7 @@ func (r RowQuery) Get(ctx context.Context) ([]map[string]any, error) {
 		emitDoc(r.connName(), "find", p, time.Since(start), err)
 		return docs, err
 	}
-	rows, err := readRows(ctx, r.connName(), func(b *SQL) { r.render(b, nil) })
+	rows, err := r.read(ctx, func(b *SQL) { r.render(b, nil) })
 	if err != nil {
 		return nil, err
 	}
@@ -988,7 +996,7 @@ func (r RowQuery) Exists(ctx context.Context) (bool, error) {
 		rows, err := r.Limit(1).Get(ctx)
 		return len(rows) > 0, err
 	}
-	rows, err := readRows(ctx, r.connName(), func(b *SQL) { r.Limit(1).render(b, selectOne) })
+	rows, err := r.read(ctx, func(b *SQL) { r.Limit(1).render(b, selectOne) })
 	if err != nil {
 		return false, err
 	}

@@ -142,6 +142,10 @@ func TestReadWriteSplit(t *testing.T) {
 	eq(t, "selects read from the read pool", must(Users.Query().On("rw").Count(ctx)), int64(1))
 	_, err = Users.Where(Users.ID.Eq(1)).On("rw").Update(ctx, Users.Karma.Set(7))
 	eq(t, "writes go to the write pool", err != nil && strings.Contains(err.Error(), "no such table"), true)
+	_, err = Users.Query().On("rw").LockForUpdate().Get(ctx)
+	eq(t, "locking reads go to the write pool", err != nil && strings.Contains(err.Error(), "no such table"), true)
+	_, err = orm.From("users").On("rw").SharedLock().Get(ctx)
+	eq(t, "locking row reads go to the write pool", err != nil && strings.Contains(err.Error(), "no such table"), true)
 }
 
 func TestRowQueryBuilder(t *testing.T) {

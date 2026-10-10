@@ -617,7 +617,12 @@ func (q Query[M]) renderFrom(b *SQL) {
 
 func (q Query[M]) conn(ctx context.Context) (Conn, error) { return sqlConn(ctx, q.connName()) }
 
+// query reads on the read pool, or the write pool for a locking read,
+// whose lock means nothing on a replica.
 func (q Query[M]) query(ctx context.Context, f frag) (*sql.Rows, error) {
+	if q.lock != NoLock {
+		return writeRows(ctx, q.connName(), f)
+	}
 	return readRows(ctx, q.connName(), f)
 }
 
