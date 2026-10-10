@@ -153,8 +153,11 @@ func (x session) introspect(ctx context.Context, what string, queries map[engine
 func (x session) tables(ctx context.Context) ([]string, error) {
 	var out []string
 	err := x.introspect(ctx, "tables", map[engine]string{
-		engineSQLite:     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-		enginePostgres:   "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name",
+		engineSQLite: "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+		enginePostgres: `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relkind IN ('r', 'p') AND n.nspname = current_schema()
+				AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
+			ORDER BY c.relname`,
 		engineMySQL:      "SELECT table_name FROM information_schema.tables WHERE table_schema = database() AND table_type = 'BASE TABLE' ORDER BY table_name",
 		engineDuckDB:     "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name",
 		engineClickHouse: "SELECT name FROM system.tables WHERE database = currentDatabase() ORDER BY name",

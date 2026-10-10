@@ -23,16 +23,15 @@ type probe struct {
 }
 
 // extensions lists features that need an extension or a newer server than
-// the test containers run (PostGIS, pgvector before CREATE EXTENSION,
-// DuckDB spatial, MySQL 9 vectors); the engine's own error must name what
-// is missing.
+// the test containers run (DuckDB's spatial extension, MySQL 9 vectors);
+// the engine's own error must name what is missing.
 var extensions = map[string]map[string]string{
-	"geometry":              {"postgres": `type "geometry" does not exist`, "duckdb": "spatial extension"},
-	"geography":             {"postgres": `type "geography" does not exist`, "duckdb": "spatial extension"},
-	"spatialIndex":          {"postgres": `type "geometry" does not exist`, "duckdb": "spatial extension"},
-	"blueprintSpatialIndex": {"postgres": `type "geometry" does not exist`, "duckdb": "spatial extension"},
-	"vector":                {"postgres": `type "vector" does not exist`, "mysql": "vector(3)"},
-	"hnswIndex":             {"postgres": `type "vector" does not exist`, "mysql": "vector(3)"},
+	"geometry":              {"duckdb": "spatial extension"},
+	"geography":             {"duckdb": "spatial extension"},
+	"spatialIndex":          {"duckdb": "spatial extension"},
+	"blueprintSpatialIndex": {"duckdb": "spatial extension"},
+	"vector":                {"mysql": "vector(3)"},
+	"hnswIndex":             {"mysql": "vector(3)"},
 }
 
 var collations = map[string]string{
@@ -140,6 +139,14 @@ func assertBlueprintSurface(t *testing.T, ctx context.Context, conn string) {
 	t.Helper()
 	s := schema.On(conn)
 	engine := must(s.DriverName(ctx))
+	if engine == "postgres" {
+		db := must(orm.Connection(ctx, conn)).DB
+		for _, ext := range []string{"postgis", "vector"} {
+			must(db.ExecContext(ctx, "CREATE EXTENSION IF NOT EXISTS "+ext))
+		}
+		eq(t, "extension tables are not the user's", slices.Contains(must(s.Tables(ctx)), "spatial_ref_sys"), false)
+		ok(s.DropAllTables(ctx))
+	}
 	created, refused := 0, 0
 	for i, p := range blueprintProbes(engine) {
 		table := fmt.Sprintf("probe_%d", i)

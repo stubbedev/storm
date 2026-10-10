@@ -10,8 +10,12 @@
 name: storm
 services:
   postgres:
-    # pgvector's image is stock Postgres plus the vector extension.
-    image: pgvector/pgvector:pg17
+    # pgvector's image (stock Postgres plus the vector extension) with
+    # PostGIS added, so geometry columns and spatial indexes are tested.
+    build:
+      context: testdata/docker
+      dockerfile: postgres.Dockerfile
+    image: storm-postgres:pg17
     environment:
       POSTGRES_USER: storm
       POSTGRES_PASSWORD: storm
