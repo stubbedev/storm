@@ -399,8 +399,43 @@ func (s *MongoStore) FindDocs(ctx context.Context, p Plan) ([]map[string]any, er
 	}
 	for _, doc := range docs {
 		delete(doc, "_id")
+		for k, v := range doc {
+			doc[k] = fromBSON(v)
+		}
 	}
 	return docs, nil
+}
+
+// fromBSON turns the driver's BSON types into the plain values SQL rows
+// carry: nested documents into maps, arrays into slices, binary into
+// []byte, datetimes into UTC times and decimals into exact text.
+func fromBSON(v any) any {
+	switch x := v.(type) {
+	case bson.D:
+		m := make(map[string]any, len(x))
+		for _, e := range x {
+			m[e.Key] = fromBSON(e.Value)
+		}
+		return m
+	case map[string]any:
+		for k, e := range x {
+			x[k] = fromBSON(e)
+		}
+		return x
+	case bson.A:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = fromBSON(e)
+		}
+		return out
+	case bson.Binary:
+		return x.Data
+	case bson.DateTime:
+		return x.Time().UTC()
+	case bson.Decimal128:
+		return x.String()
+	}
+	return v
 }
 
 // InsertDocs stores each document under _id = its key, so MongoDB's own
@@ -585,7 +620,7 @@ func (s *MongoStore) AggregateDocs(ctx context.Context, p Plan, fn Aggregate, co
 	if len(out) == 0 {
 		return nil, nil
 	}
-	return out[0].V, nil
+	return fromBSON(out[0].V), nil
 }
 
 // mongoDoc converts a builder document to BSON: values implementing
@@ -608,8 +643,15 @@ func mongoDoc(doc map[string]any) (bson.D, error) {
 // returned, never papered over: Encrypted fails that way without a key,
 // and storing the value as-is would write it in plain text.
 func bsonValue(v any) (any, error) {
-	switch v.(type) {
-	case time.Time, string, bool, int, int32, int64, uint, uint32, uint64, float64, nil, []any, map[string]any:
+	switch x := v.(type) {
+	case time.Time:
+		return mongoTime(x)
+	case *time.Time:
+		if x == nil {
+			return nil, nil
+		}
+		return mongoTime(*x)
+	case string, bool, int, int32, int64, uint, uint32, uint64, float64, nil, []any, map[string]any:
 		return v, nil
 	}
 	val, ok := v.(driver.Valuer)
@@ -621,6 +663,15 @@ func bsonValue(v any) (any, error) {
 		return nil, fmt.Errorf("converting %T: %w", v, err)
 	}
 	return raw, nil
+}
+
+// mongoTime refuses a time finer than BSON's millisecond datetime rather
+// than storing it truncated.
+func mongoTime(t time.Time) (time.Time, error) {
+	if t.Nanosecond()%int(time.Millisecond) != 0 {
+		return t, fmt.Errorf("%s is finer than the millisecond MongoDB stores; truncate it (t.Truncate(time.Millisecond)) or use Timestamps(3)", t.Format(time.RFC3339Nano))
+	}
+	return t.UTC(), nil
 }
 
 // mongoFilter compiles a plan condition to a BSON filter.

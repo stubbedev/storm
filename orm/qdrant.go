@@ -772,6 +772,8 @@ func jsonValue(v any) (any, error) {
 	switch x := v.(type) {
 	case nil, string, bool, int, int32, int64, uint, uint32, uint64, float64, []any, map[string]any:
 		return v, nil
+	case []byte:
+		return nil, &ErrNotTranslatable{Reason: "binary values on Qdrant (payloads are JSON; store them as text)"}
 	case time.Time:
 		return x.UTC().Format(qdrantTime), nil
 	case *time.Time:
