@@ -45,6 +45,7 @@ type RowQuery struct {
 	lock     LockMode
 	limit    int
 	offset   int
+	err      error // the first invalid builder call, reported when the query runs
 }
 
 type rowUnion struct {
@@ -469,8 +470,17 @@ func (r RowQuery) UnionAll(other RowQuery) RowQuery {
 	return r
 }
 
-func (r RowQuery) Limit(n int) RowQuery  { r.limit = n; return r }
-func (r RowQuery) Offset(n int) RowQuery { r.offset = n; return r }
+// Limit takes at most n rows, n > 0; Offset skips n >= 0 rows. Other
+// values fail the query when it runs.
+func (r RowQuery) Limit(n int) RowQuery {
+	r.limit, r.err = n, cmp.Or(r.err, limitErr(n))
+	return r
+}
+
+func (r RowQuery) Offset(n int) RowQuery {
+	r.offset, r.err = n, cmp.Or(r.err, offsetErr(n))
+	return r
+}
 
 // ForPage limits the query to page (from 1) of perPage rows.
 func (r RowQuery) ForPage(page, perPage int) RowQuery {
@@ -610,6 +620,9 @@ func (r RowQuery) ToSQL() (string, []any, error) {
 
 // render writes the SELECT; list, when set, replaces the select list.
 func (r RowQuery) render(b *SQL, list frag) {
+	if r.err != nil {
+		b.fail(r.err)
+	}
 	b.Write("SELECT ")
 	if r.distinct {
 		b.Write("DISTINCT ")
@@ -670,6 +683,9 @@ func (r RowQuery) writeTable(b *SQL) {
 }
 
 func (r RowQuery) renderWhere(b *SQL) {
+	if r.err != nil {
+		b.fail(r.err)
+	}
 	if len(r.where) == 0 {
 		return
 	}
@@ -692,6 +708,9 @@ func (r RowQuery) plan(method string) (Plan, error) {
 }
 
 func (r RowQuery) planOf() (Plan, error) {
+	if r.err != nil {
+		return Plan{}, r.err
+	}
 	if len(r.joins) > 0 {
 		return Plan{}, &ErrNotTranslatable{Reason: "joins"}
 	}

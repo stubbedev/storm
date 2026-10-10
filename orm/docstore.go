@@ -111,6 +111,9 @@ func docStoreFor(ctx context.Context, conn string) (DocStore, bool, error) {
 // plan compiles the query for a document store, refusing the parts that
 // only exist in SQL.
 func (q Query[M]) plan() (Plan, error) {
+	if q.err != nil {
+		return Plan{}, q.err
+	}
 	p := Plan{Table: q.table.Name, Key: q.table.PrimaryKey, Limit: q.limit, Offset: q.offset}
 	notSupported := func(what string) (Plan, error) {
 		return Plan{}, &ErrNotTranslatable{Reason: what}

@@ -580,6 +580,9 @@ func keyedWhere(key string, sel frag) frag {
 }
 
 func (q Query[M]) renderWhere(b *SQL) {
+	if q.err != nil {
+		b.fail(q.err)
+	}
 	if len(q.where) > 0 {
 		b.Write(" WHERE ")
 		And(q.where...).f(b)

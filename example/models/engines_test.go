@@ -229,6 +229,8 @@ func assertDocLogic(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" set a big integer", must(notes.Where(Notes.Views.Eq(2)).Update(ctx, Notes.Views.Set(big))), int64(1))
 	eq(t, conn+" big integers read back exactly", must(notes.Where(Notes.Views.Gt(big-1)).Pluck(ctx, Notes.Views)), []int64{big})
 	eq(t, conn+" big integers in row maps", fmt.Sprint(must(rows.Where("views", orm.Gt, big-1).Pluck(ctx, "views"))), fmt.Sprint([]int64{big}))
+	_, err := notes.Limit(0).Get(ctx)
+	eq(t, conn+" a zero limit is refused", err != nil && strings.Contains(err.Error(), "Limit(0)"), true)
 	eq(t, conn+" logic cleanup", must(rows.Delete(ctx)), int64(4))
 }
 

@@ -35,7 +35,8 @@ type Query[M any] struct {
 	trashed    trashedMode
 	without    []string // removed global scopes
 	withoutAll bool
-	scoped     bool // global scopes already applied
+	scoped     bool  // global scopes already applied
+	err        error // the first invalid builder call, reported when the query runs
 }
 
 type selectAs struct {
@@ -271,10 +272,19 @@ func (q Query[M]) Reorder(orders ...Order[M]) Query[M] {
 	return q
 }
 
-func (q Query[M]) Limit(n int) Query[M]  { q.limit = n; return q }
-func (q Query[M]) Offset(n int) Query[M] { q.offset = n; return q }
-func (q Query[M]) Take(n int) Query[M]   { return q.Limit(n) }
-func (q Query[M]) Skip(n int) Query[M]   { return q.Offset(n) }
+// Limit takes at most n rows, n > 0; Offset skips n >= 0 rows. Other
+// values fail the query when it runs.
+func (q Query[M]) Limit(n int) Query[M] {
+	q.limit, q.err = n, cmp.Or(q.err, limitErr(n))
+	return q
+}
+
+func (q Query[M]) Offset(n int) Query[M] {
+	q.offset, q.err = n, cmp.Or(q.err, offsetErr(n))
+	return q
+}
+func (q Query[M]) Take(n int) Query[M] { return q.Limit(n) }
+func (q Query[M]) Skip(n int) Query[M] { return q.Offset(n) }
 
 // ForPage sets limit/offset for a 1-based page number.
 func (q Query[M]) ForPage(page, perPage int) Query[M] {
@@ -398,6 +408,9 @@ func (q Query[M]) renderSelect(b *SQL, list frag) {
 }
 
 func (q Query[M]) renderBody(b *SQL, list frag) {
+	if q.err != nil {
+		b.fail(q.err)
+	}
 	b.Write("SELECT ")
 	if q.distinct {
 		b.Write("DISTINCT ")
@@ -425,6 +438,20 @@ func (q Query[M]) renderBody(b *SQL, list frag) {
 	}
 	b.Dialect.Limit(b, q.limit, q.offset)
 	b.Write(b.Dialect.Lock(q.lock))
+}
+
+func limitErr(n int) error {
+	if n > 0 {
+		return nil
+	}
+	return fmt.Errorf("orm: Limit(%d): a limit must be positive", n)
+}
+
+func offsetErr(n int) error {
+	if n >= 0 {
+		return nil
+	}
+	return fmt.Errorf("orm: Offset(%d): an offset cannot be negative", n)
 }
 
 // writeUnion appends branch as the i-th union branch. A branch with its
