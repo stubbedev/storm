@@ -444,7 +444,7 @@ func (q Query[M]) ForceDelete(ctx context.Context) (int64, error) { return q.har
 
 // Restore un-deletes every matching soft deleted row.
 func (q Query[M]) Restore(ctx context.Context) (int64, error) {
-	return q.WithTrashed().Update(ctx, setLiteral[M](q.table.DeletedAt, nil))
+	return q.OnlyTrashed().Update(ctx, setLiteral[M](q.table.DeletedAt, nil))
 }
 
 // increment adds by to the column e renders as; decrement subtracts it.

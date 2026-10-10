@@ -448,6 +448,7 @@ func TestWrites(t *testing.T) {
 	}
 	eq(t, "force deleted", must(Users.Query().WithTrashed().Where(Users.ID.Eq(6)).Count(ctx)), int64(0))
 	eq(t, "mass restore", must(Users.Where(Users.Name.Eq("Eve")).Restore(ctx)), int64(1))
+	eq(t, "restore skips live rows", must(Users.Query().Restore(ctx)), int64(0))
 	eq(t, "mass soft delete", must(Users.Where(Users.Name.Eq("Eve")).Delete(ctx)), int64(1))
 	eq(t, "destroy", must(Users.Destroy(ctx, 4)), 1)
 	eq(t, "destroyed is trashed", must(Users.Query().OnlyTrashed().Count(ctx)), int64(2))
