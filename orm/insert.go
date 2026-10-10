@@ -258,10 +258,19 @@ func splitByKey[T any](items []T, key func(T) (string, bool), taken map[string]b
 
 // keyString identifies a key combination across value types: an int64 read
 // back matches the int that was written.
+// keyString is a comparable form of key values, the same for a value as
+// written and as read back: times as UTC instants, bytes as text.
 func keyString(vals []any) string {
 	parts := make([]string, len(vals))
 	for i, v := range vals {
-		parts[i] = fmt.Sprint(v)
+		switch x := boundValue(v).(type) {
+		case time.Time:
+			parts[i] = x.Format(time.RFC3339Nano)
+		case []byte:
+			parts[i] = string(x)
+		default:
+			parts[i] = fmt.Sprint(x)
+		}
 	}
 	return strings.Join(parts, "\x00")
 }
