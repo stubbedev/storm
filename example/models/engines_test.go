@@ -440,6 +440,7 @@ func assertLimitedMutations(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" offset update hit the second", byName(), "[plain second plain top top]")
 	eq(t, conn+" row limited update", must(rows.OrderBy("karma").Limit(1).Update(ctx, map[string]any{"kind": "first"})), int64(1))
 	eq(t, conn+" row limited update hit the first", byName(), "[first second plain top top]")
+	eq(t, conn+" an update that changes nothing still matched", must(rows.Where("id", orm.Eq, 3).Update(ctx, map[string]any{"kind": "plain"})), int64(1))
 	eq(t, conn+" limited delete", must(widgets.OrderBy(Widgets.Karma.Desc()).Limit(1).Delete(ctx)), int64(1))
 	eq(t, conn+" row limited delete", must(rows.OrderBy("karma").Limit(2).Delete(ctx)), int64(2))
 	eq(t, conn+" limited deletes left the middle", fmt.Sprint(must(rows.OrderBy("name").Pluck(ctx, "name"))), "[c d]")

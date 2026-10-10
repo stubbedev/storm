@@ -96,10 +96,17 @@ var (
 //
 //	orm.Open(orm.DefaultConnection, "sqlite", "file:app.db")
 //	orm.Open("analytics", "pgx", os.Getenv("ANALYTICS_DSN"))
+//
+// A MySQL or MariaDB DSN gets clientFoundRows=true unless it sets that parameter, so
+// Update and Delete report the rows they matched, as every other engine
+// does, rather than only the rows whose values changed.
 func Open(name, driver, dsn string) (*sql.DB, error) {
 	d, ok := DialectFor(driver)
 	if !ok {
 		return nil, fmt.Errorf("orm: no dialect known for driver %q; use AddConnection with an explicit dialect", driver)
+	}
+	if d == MySQL || d == MariaDB {
+		dsn = withFoundRows(dsn)
 	}
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
@@ -111,6 +118,16 @@ func Open(name, driver, dsn string) (*sql.DB, error) {
 	}
 	AddConnection(name, db, d)
 	return db, nil
+}
+
+func withFoundRows(dsn string) string {
+	if strings.Contains(dsn, "clientFoundRows=") {
+		return dsn
+	}
+	if strings.Contains(dsn, "?") {
+		return dsn + "&clientFoundRows=true"
+	}
+	return dsn + "?clientFoundRows=true"
 }
 
 // flavourTimeout bounds the server version query flavour runs.
