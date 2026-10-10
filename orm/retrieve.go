@@ -415,7 +415,29 @@ func explainOn(ctx context.Context, conn string, query frag) ([]map[string]any, 
 // Chunk processes results in pages of size (ordered queries only).
 // Return ErrStop from fn to stop early.
 func (q Query[M]) Chunk(ctx context.Context, size int, fn func([]M) error) error {
+	q = q.stableOrder(ctx)
 	return chunkPages(size, func(limit, offset int) ([]M, error) { return q.Limit(limit).Offset(offset).Get(ctx) }, fn)
+}
+
+// stableOrder ends the order with the primary key, so offset pages
+// neither skip nor repeat rows that tie on (or lack) the other orders.
+// Queries the key cannot order (grouped, distinct, unions, a select
+// without the key, vector searches) and document stores keep theirs.
+func (q Query[M]) stableOrder(ctx context.Context) Query[M] {
+	t := q.table
+	if t.PrimaryKey == "" || len(q.groups) > 0 || q.distinct || len(q.unions) > 0 {
+		return q
+	}
+	if q.selects != nil && !slices.Contains(names(q.selects), t.PrimaryKey) {
+		return q
+	}
+	if slices.ContainsFunc(q.orders, func(o Order[M]) bool { return o.vec != nil || o.col != nil && o.col.Name() == t.PrimaryKey }) {
+		return q
+	}
+	if _, doc, err := q.docstore(ctx); err != nil || doc {
+		return q
+	}
+	return q.OrderBy(t.keyOrder())
 }
 
 // ChunkByID pages by primary key, safe when fn modifies the rows it gets.
@@ -630,6 +652,7 @@ type CursorPage[M any] struct {
 // Paginate returns page (from 1) of perPage models with the total count;
 // it works on every engine, document stores included.
 func (q Query[M]) Paginate(ctx context.Context, perPage, page int) (Page[M], error) {
+	q = q.stableOrder(ctx)
 	return paginate(perPage, page, func() (int64, error) { return q.Count(ctx) },
 		func(limit, offset int) ([]M, error) { return q.Limit(limit).Offset(offset).Get(ctx) })
 }
@@ -637,6 +660,7 @@ func (q Query[M]) Paginate(ctx context.Context, perPage, page int) (Page[M], err
 // SimplePaginate is Paginate without the count query: it only reports
 // whether another page follows.
 func (q Query[M]) SimplePaginate(ctx context.Context, perPage, page int) (SimplePage[M], error) {
+	q = q.stableOrder(ctx)
 	return simplePaginate(perPage, page, func(limit, offset int) ([]M, error) { return q.Limit(limit).Offset(offset).Get(ctx) })
 }
 

@@ -500,7 +500,12 @@ func (r RowQuery) SimplePaginate(ctx context.Context, perPage, page int) (Simple
 	return simplePaginate(perPage, page, r.pageOf(ctx))
 }
 
+// pageOf fetches offset pages, ordered by the key column when the query
+// has no order, so pages are stable.
 func (r RowQuery) pageOf(ctx context.Context) func(limit, offset int) ([]map[string]any, error) {
+	if len(r.orders) == 0 && len(r.groups) == 0 && !r.distinct && len(r.unions) == 0 {
+		r = r.OrderBy(r.keyColumn())
+	}
 	return func(limit, offset int) ([]map[string]any, error) { return r.Limit(limit).Offset(offset).Get(ctx) }
 }
 

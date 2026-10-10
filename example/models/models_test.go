@@ -741,6 +741,21 @@ func TestPaginationAndIteration(t *testing.T) {
 		}
 	}
 	eq(t, "row cursor pages over NULLs and times", int64(len(rowsSeen)), total)
+	byTie := map[int64]bool{}
+	for page := 1; page <= int(total); page++ {
+		for _, u := range must(Users.Query().WithTrashed().OrderBy(Users.Active.Desc()).Paginate(ctx, 1, page)).Items {
+			byTie[u.ID] = true
+		}
+	}
+	eq(t, "offset pages over tied orders cover every row once", int64(len(byTie)), total)
+	rowTie := map[string]bool{}
+	ok(orm.From("users").Chunk(ctx, 2, func(rows []map[string]any) error {
+		for _, r := range rows {
+			rowTie[fmt.Sprint(r["id"])] = true
+		}
+		return nil
+	}))
+	eq(t, "unordered row chunks cover every row once", int64(len(rowTie)), total)
 	must(Users.Query().Where(Users.CountryID.IsNull()).ForceDelete(ctx))
 	ordered := Posts.Query().OrderBy(Posts.Views.Desc(), Posts.ID.Asc())
 	all := titles(must(ordered.Get(ctx)))
