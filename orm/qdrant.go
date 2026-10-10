@@ -332,24 +332,7 @@ func (s *QdrantStore) FindDocs(ctx context.Context, p Plan) ([]map[string]any, e
 		return nil, err
 	}
 	if p.Vector != nil {
-		limit := 10
-		if p.Limit > 0 {
-			limit = p.Limit
-		}
-		body := map[string]any{
-			"vector":       p.Vector.Floats,
-			"limit":        limit,
-			"with_payload": true,
-			"filter":       filter,
-		}
-		if p.Offset > 0 {
-			body["offset"] = p.Offset
-		}
-		var res qdrantResult[[]qdrantPoint]
-		if err := s.do(ctx, http.MethodPost, collectionPath(table, "/points/search"), body, &res); err != nil {
-			return nil, err
-		}
-		return pointsToDocs(res.Result, key), nil
+		return s.search(ctx, p, filter)
 	}
 	if len(p.Orders) > 1 {
 		return nil, &ErrNotTranslatable{Reason: "more than one order (Qdrant orders by payload field or by vector)"}
@@ -425,6 +408,29 @@ func liftKeyset(where Node, key string) (Node, any) {
 	return where, nil
 }
 
+// search ranks the matching points by distance from p.Vector. Without a
+// limit it pages through every match, as an unlimited SQL KNN query
+// returns every row.
+func (s *QdrantStore) search(ctx context.Context, p Plan, filter map[string]any) ([]map[string]any, error) {
+	page := p.Limit
+	if page == 0 {
+		page = scrollBatch
+	}
+	body := map[string]any{"vector": p.Vector.Floats, "limit": page, "with_payload": true, "filter": filter}
+	var docs []map[string]any
+	for offset := p.Offset; ; offset += page {
+		body["offset"] = offset
+		var res qdrantResult[[]qdrantPoint]
+		if err := s.do(ctx, http.MethodPost, collectionPath(p.Table, "/points/search"), body, &res); err != nil {
+			return nil, err
+		}
+		docs = append(docs, pointsToDocs(res.Result, p.Key)...)
+		if p.Limit > 0 || len(res.Result) < page {
+			return docs, nil
+		}
+	}
+}
+
 // scrollBatch is how many points one scroll request fetches.
 const scrollBatch = 256
 
@@ -483,6 +489,13 @@ func (s *QdrantStore) scroll(ctx context.Context, p Plan, filter map[string]any,
 		}
 		body["offset"] = res.Result.Next
 	}
+	if len(p.Orders) == 1 && len(docs) < want {
+		rest, err := s.missingLast(ctx, p, want-len(docs))
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, rest...)
+	}
 	if skipAfter && len(docs) > 0 && fmt.Sprint(docs[0][key]) == fmt.Sprint(after) {
 		docs = docs[1:]
 	}
@@ -491,6 +504,22 @@ func (s *QdrantStore) scroll(ctx context.Context, p Plan, filter map[string]any,
 		docs = docs[:p.Limit]
 	}
 	return docs, nil
+}
+
+// missingLast reads up to n matching points that lack p's order field,
+// which Qdrant's order_by leaves out; they sort last, as NULLs do in
+// ascending Postgres order.
+func (s *QdrantStore) missingLast(ctx context.Context, p Plan, n int) ([]map[string]any, error) {
+	parts := []Node{NullTest{Column: p.Orders[0].Column}}
+	if p.Where != nil {
+		parts = append(parts, p.Where)
+	}
+	q := Plan{Table: p.Table, Key: p.Key, Where: Composite{Parts: parts}, Limit: n}
+	filter, err := qdrantFilter(q.Where)
+	if err != nil {
+		return nil, err
+	}
+	return s.scroll(ctx, q, filter, nil)
 }
 
 // InsertDocs stores new points, refusing ids already taken: Qdrant's PUT

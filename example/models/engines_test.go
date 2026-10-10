@@ -951,6 +951,36 @@ func TestQdrant(t *testing.T) {
 	eq(t, "withKey finds by point id", must(keyed.Find(ctx, 7))["name"], any("seven"))
 	ok(store.DropCollection(ctx, "keyed"))
 
+	before := must(Docs.Query().On("qdrant").Count(ctx))
+	extra := make([]Doc, 300)
+	ids := make([]any, len(extra))
+	for i := range extra {
+		extra[i] = Doc{ID: fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1), Title: "extra", Vec: orm.NewVector3(1, float64(i), 0)}
+		ids[i] = extra[i].ID
+	}
+	ok(Docs.Query().On("qdrant").Insert(ctx, extra...))
+	all := must(Docs.Query().On("qdrant").OrderBy(Docs.Vec.Nearest(orm.NewVector3(1, 0, 0), orm.Cosine)).Get(ctx))
+	eq(t, "unlimited nearest returns every match", int64(len(all)), before+300)
+	eq(t, "extra cleanup", must(Docs.Query().On("qdrant").WhereKey(ids...).Delete(ctx)), int64(300))
+
+	ok(store.DropCollection(ctx, "many"))
+	rank := orm.DocIndex{Name: "many_rank", Fields: []orm.DocField{{Name: "rank", Kind: orm.KindInt}}}
+	ok(store.CreateCollection(ctx, orm.Collection{Name: "many", Indexes: []orm.DocIndex{rank}}))
+	many := orm.From("many").On("qdrant")
+	points := make([]map[string]any, 300)
+	for i := range points {
+		points[i] = map[string]any{"id": fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1)}
+		if i%3 > 0 {
+			points[i]["rank"] = 300 - i
+		}
+	}
+	ok(many.Insert(ctx, points...))
+	ordered := must(many.OrderBy("rank").Get(ctx))
+	eq(t, "order by keeps points missing the field", len(ordered), 300)
+	eq(t, "points missing the field sort last", fmt.Sprint(ordered[0]["rank"], " ", ordered[199]["rank"], " ", ordered[200]["rank"]), "1 299 <nil>")
+	eq(t, "limited order by reaches points missing the field", len(must(many.OrderBy("rank").Offset(190).Limit(20).Get(ctx))), 20)
+	ok(store.DropCollection(ctx, "many"))
+
 	moved := must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("far")).First(ctx))
 	moved.Vec = orm.NewVector3(0, 0, 1)
 	ok(Docs.Query().On("qdrant").Save(ctx, &moved))
