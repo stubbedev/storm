@@ -608,6 +608,26 @@ func TestEventsAndScopes(t *testing.T) {
 	eq(t, "global scope", must(users.Query().Count(ctx)), int64(3))
 	eq(t, "withoutGlobalScope", must(users.Query().WithoutGlobalScope("karma").Count(ctx)), int64(6))
 	eq(t, "withoutGlobalScopes", must(users.Query().WithoutGlobalScopes().Count(ctx)), int64(7))
+
+	querying := isolatedUsers()
+	var seen []int64
+	querying.On(orm.Created, func(ctx context.Context, u *User) error {
+		n, err := querying.Query().Where(Users.ID.Eq(u.ID)).Count(ctx)
+		seen = append(seen, n)
+		return err
+	})
+	ok(querying.Create(ctx, &User{Name: "Hal", Email: "hal@example.com"}))
+	ok(orm.Transaction(ctx, func(ctx context.Context) error {
+		return querying.Create(ctx, &User{Name: "Ida", Email: "ida@example.com"})
+	}))
+	eq(t, "created listeners can query", seen, []int64{1, 1})
+
+	var events int
+	var stop func()
+	stop = orm.Listen(func(orm.QueryEvent) { events++; stop() })
+	must(Users.Query().Count(ctx))
+	must(Users.Query().Count(ctx))
+	eq(t, "a listener can stop itself", events, 1)
 }
 
 func TestPaginationAndIteration(t *testing.T) {

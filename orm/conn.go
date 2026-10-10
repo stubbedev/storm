@@ -394,9 +394,14 @@ type QueryEvent struct {
 	Err        error
 }
 
+type listener struct {
+	id int
+	fn func(QueryEvent)
+}
+
 var (
 	listenMu  sync.RWMutex
-	listeners = map[int]func(QueryEvent){}
+	listeners []listener
 	listenSeq int
 )
 
@@ -407,11 +412,11 @@ func Listen(fn func(QueryEvent)) (stop func()) {
 	defer listenMu.Unlock()
 	listenSeq++
 	id := listenSeq
-	listeners[id] = fn
+	listeners = append(slices.Clip(listeners), listener{id, fn})
 	return func() {
 		listenMu.Lock()
 		defer listenMu.Unlock()
-		delete(listeners, id)
+		listeners = slices.DeleteFunc(slices.Clone(listeners), func(l listener) bool { return l.id == id })
 	}
 }
 
@@ -424,9 +429,10 @@ func Emit(e QueryEvent) {
 		logMu.Unlock()
 	}
 	listenMu.RLock()
-	defer listenMu.RUnlock()
-	for _, fn := range listeners {
-		fn(e)
+	current := listeners
+	listenMu.RUnlock()
+	for _, l := range current {
+		l.fn(e)
 	}
 }
 

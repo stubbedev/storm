@@ -1,8 +1,10 @@
 package orm
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -110,14 +112,8 @@ func (q Query[M]) performInsert(ctx context.Context, m *M) error {
 		if err != nil {
 			return err
 		}
-		defer closeRows(rows)
-		if rows.Next() {
-			if err := rows.Scan(t.Ptr(m, t.PrimaryKey)); err != nil {
-				return err
-			}
-		}
-		if err := rows.Err(); err != nil {
-			return err
+		if err := scanReturnedKey(rows, t.Ptr(m, t.PrimaryKey)); err != nil {
+			return fmt.Errorf("orm: insert into %s: %w", t.Name, err)
 		}
 	default:
 		res, err := q.exec(ctx, stmt)
@@ -137,6 +133,17 @@ func (q Query[M]) performInsert(ctx context.Context, m *M) error {
 	st.recentlyCreated = true
 	st.changes = slices.Clone(t.Columns)
 	return t.fire(ctx, Created, m)
+}
+
+func scanReturnedKey(rows *sql.Rows, dst any) error {
+	defer closeRows(rows)
+	if !rows.Next() {
+		return cmp.Or(rows.Err(), errors.New("RETURNING gave no key"))
+	}
+	if err := rows.Scan(dst); err != nil {
+		return err
+	}
+	return rows.Err()
 }
 
 func (q Query[M]) insertDoc(ctx context.Context, m *M) (bool, error) {
