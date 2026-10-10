@@ -575,13 +575,15 @@ func mongoFilter(n Node) (bson.D, error) {
 	if n == nil {
 		return bson.D{}, nil
 	}
-	d, err := mongoCond(n)
-	if err != nil {
-		return nil, err
-	}
-	return d, nil
+	return mongoCond(lowerNegations(n, false))
 }
 
+// mongoNever matches no document.
+var mongoNever = bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: bson.A{}}}}}
+
+// mongoCond compiles a negation-lowered condition. Negative leaves also
+// exclude null and missing fields, which SQL's NULL never satisfies, and a
+// comparison with nil matches nothing, as col = NULL does in SQL.
 func mongoCond(n Node) (bson.D, error) {
 	switch c := n.(type) {
 	case Field:
@@ -589,11 +591,14 @@ func mongoCond(n Node) (bson.D, error) {
 		if err != nil {
 			return nil, err
 		}
+		if v == nil {
+			return mongoNever, nil
+		}
 		switch c.Op {
 		case "=":
 			return bson.D{{Key: c.Column, Value: v}}, nil
 		case "<>", "!=":
-			return bson.D{{Key: c.Column, Value: bson.D{{Key: "$ne", Value: v}}}}, nil
+			return bson.D{{Key: c.Column, Value: bson.D{{Key: "$nin", Value: bson.A{v, nil}}}}}, nil
 		case ">", ">=", "<", "<=":
 			return bson.D{{Key: c.Column, Value: bson.D{{Key: "$" + mongoOp(c.Op), Value: v}}}}, nil
 		case "LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE":
@@ -605,26 +610,30 @@ func mongoCond(n Node) (bson.D, error) {
 			if strings.Contains(c.Op, "ILIKE") {
 				match = append(match, bson.E{Key: "$options", Value: "i"})
 			}
-			val := any(match)
 			if strings.HasPrefix(c.Op, "NOT") {
-				val = bson.D{{Key: "$not", Value: match}}
+				return bson.D{{Key: c.Column, Value: bson.D{{Key: "$not", Value: match}, {Key: "$ne", Value: nil}}}}, nil
 			}
-			return bson.D{{Key: c.Column, Value: val}}, nil
+			return bson.D{{Key: c.Column, Value: match}}, nil
 		}
 		return nil, &ErrNotTranslatable{Reason: "operator " + c.Op}
 	case List:
-		vals := make([]any, len(c.Values))
+		if len(c.Values) == 0 {
+			if c.Not {
+				return bson.D{}, nil
+			}
+			return mongoNever, nil
+		}
+		vals := make(bson.A, len(c.Values), len(c.Values)+1)
 		for i, v := range c.Values {
 			var err error
 			if vals[i], err = bsonValue(v); err != nil {
 				return nil, err
 			}
 		}
-		op := "$in"
 		if c.Not {
-			op = "$nin"
+			return bson.D{{Key: c.Column, Value: bson.D{{Key: "$nin", Value: append(vals, nil)}}}}, nil
 		}
-		return bson.D{{Key: c.Column, Value: bson.D{{Key: op, Value: vals}}}}, nil
+		return bson.D{{Key: c.Column, Value: bson.D{{Key: "$in", Value: vals}}}}, nil
 	case Range:
 		lo, err := bsonValue(c.Lo)
 		if err != nil {
@@ -634,14 +643,13 @@ func mongoCond(n Node) (bson.D, error) {
 		if err != nil {
 			return nil, err
 		}
-		inner := bson.D{{Key: "$gte", Value: lo}, {Key: "$lte", Value: hi}}
 		if c.Not {
 			return bson.D{{Key: "$or", Value: bson.A{
 				bson.D{{Key: c.Column, Value: bson.D{{Key: "$lt", Value: lo}}}},
 				bson.D{{Key: c.Column, Value: bson.D{{Key: "$gt", Value: hi}}}},
 			}}}, nil
 		}
-		return bson.D{{Key: c.Column, Value: inner}}, nil
+		return bson.D{{Key: c.Column, Value: bson.D{{Key: "$gte", Value: lo}, {Key: "$lte", Value: hi}}}}, nil
 	case NullTest:
 		if c.Not {
 			return bson.D{{Key: c.Column, Value: bson.D{{Key: "$ne", Value: nil}}}}, nil
@@ -655,37 +663,24 @@ func mongoCond(n Node) (bson.D, error) {
 				return nil, err
 			}
 			if len(sub) == 0 {
+				if c.Or {
+					return bson.D{}, nil
+				}
 				continue
 			}
 			parts = append(parts, sub)
 		}
-		if c.Or {
+		switch {
+		case len(parts) == 0 && c.Or:
+			return mongoNever, nil
+		case len(parts) == 0:
+			return bson.D{}, nil
+		case c.Or:
 			return bson.D{{Key: "$or", Value: parts}}, nil
 		}
-		// AND: flatten sub-docs' keys; overlapping keys stay in $and.
-		merged := bson.D{}
-		conflict := false
-		for _, sub := range parts {
-			sd, _ := sub.(bson.D)
-			for _, e := range sd {
-				for _, m := range merged {
-					if m.Key == e.Key {
-						conflict = true
-					}
-				}
-			}
-			merged = append(merged, sd...)
-		}
-		if conflict {
-			return bson.D{{Key: "$and", Value: parts}}, nil
-		}
-		return merged, nil
+		return bson.D{{Key: "$and", Value: parts}}, nil
 	case Negate:
-		inner, err := mongoCond(c.Part)
-		if err != nil {
-			return nil, err
-		}
-		return bson.D{{Key: "$nor", Value: bson.A{inner}}}, nil
+		return nil, &ErrNotTranslatable{Reason: "negating this condition"}
 	case notTranslatable:
 		return nil, &ErrNotTranslatable{Reason: "conditions on " + c.reason}
 	}

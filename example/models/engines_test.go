@@ -177,6 +177,44 @@ var Notes = func() NoteSchema {
 	return s
 }()
 
+// assertDocLogic checks a document store evaluates nested AND / OR / NOT
+// and null (missing) fields as SQL's three-valued logic does: a negative
+// condition never matches a document lacking the field.
+func assertDocLogic(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	rows := orm.From("notes").On(conn)
+	ok(rows.Insert(ctx,
+		map[string]any{"id": "00000000-0000-4000-8000-000000000001", "title": "x", "views": 1},
+		map[string]any{"id": "00000000-0000-4000-8000-000000000002", "views": 2},
+		map[string]any{"id": "00000000-0000-4000-8000-000000000003", "title": "y", "views": 3},
+		map[string]any{"id": "00000000-0000-4000-8000-000000000004", "title": "x", "views": 4}))
+	notes := Notes.Query().On(conn).WithoutGlobalScopes()
+	for what, c := range map[string]struct {
+		cond orm.Cond[Note]
+		want int64
+	}{
+		"ne skips missing":           {Notes.Title.Ne("x"), 1},
+		"not in skips missing":       {Notes.Title.NotIn("x"), 1},
+		"not eq skips missing":       {orm.Not(Notes.Title.Eq("x")), 1},
+		"not between":                {orm.Not(Notes.Views.Between(2, 3)), 2},
+		"or of a negation":           {orm.Or(Notes.Title.Ne("x"), Notes.Views.Eq(2)), 2},
+		"or of an and":               {orm.Or(orm.And(Notes.Views.Gt(1), Notes.Title.Eq("x")), Notes.Views.Eq(1)), 2},
+		"and of ors":                 {orm.And(orm.Or(Notes.Views.Eq(1), Notes.Views.Eq(2)), orm.Or(Notes.Views.Eq(2), Notes.Views.Eq(3))), 1},
+		"not of an or with a null":   {orm.Not(orm.Or(Notes.Views.Eq(1), Notes.Title.Eq("x"))), 1},
+		"not of a not":               {orm.Not(orm.Not(Notes.Title.Eq("x"))), 2},
+		"not of an and":              {orm.Not(orm.And(Notes.Views.Gt(1), Notes.Title.Eq("x"))), 2},
+		"empty in matches nothing":   {Notes.Title.In(), 0},
+		"empty not in matches every": {Notes.Title.NotIn(), 4},
+	} {
+		eq(t, conn+" "+what, must(notes.Where(c.cond).Count(ctx)), c.want)
+	}
+	eq(t, conn+" row and then or", must(rows.Where("views", orm.Gt, 1).Where("title", orm.Eq, "x").OrWhere("views", orm.Eq, 1).Count(ctx)), int64(2))
+	eq(t, conn+" row compare with nil matches nothing", must(rows.Where("title", orm.Eq, nil).Count(ctx)), int64(0))
+	eq(t, conn+" row not in skips missing", must(rows.WhereNotIn("title", "y").Count(ctx)), int64(2))
+	eq(t, conn+" row null", must(rows.WhereNull("title").Count(ctx)), int64(1))
+	eq(t, conn+" logic cleanup", must(rows.Delete(ctx)), int64(4))
+}
+
 // assertDocModelQueries runs the model builder's implicit conditions (soft
 // deletes, global scopes, key lookups) and its key walks against a
 // document store.
@@ -633,6 +671,7 @@ func TestMongo(t *testing.T) {
 	eq(t, "unsigned decrement", must(orm.From("documents").On("mongo").Where("title", orm.Eq, "near").Decrement(ctx, "views", uint8(1))), int64(1))
 
 	assertDocMigrations(t, ctx, "mongo")
+	assertDocLogic(t, ctx, "mongo")
 	assertDocModelQueries(t, ctx, "mongo")
 
 	txDocs := orm.From("tx_docs").On("mongo")
@@ -831,6 +870,7 @@ func TestQdrant(t *testing.T) {
 	assertDocMigrations(t, ctx, "qdrant")
 	ok(store.DropCollection(ctx, "notes"))
 	ok(store.CreateCollection(ctx, orm.Collection{Name: "notes", Indexes: []orm.DocIndex{{Name: "notes_views", Fields: []orm.DocField{{Name: "views", Kind: orm.KindInt}}}}}))
+	assertDocLogic(t, ctx, "qdrant")
 	assertDocModelQueries(t, ctx, "qdrant")
 	ok(store.DropCollection(ctx, "notes"))
 	_, err = Docs.Query().On("qdrant").Sum(ctx, Docs.Views)

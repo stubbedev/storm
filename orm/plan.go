@@ -83,6 +83,54 @@ func (NullTest) node()  {}
 func (Composite) node() {}
 func (Negate) node()    {}
 
+var negatedOps = map[string]string{
+	"=": "<>", "<>": "=", "!=": "=",
+	">": "<=", ">=": "<", "<": ">=", "<=": ">",
+	"LIKE": "NOT LIKE", "NOT LIKE": "LIKE", "ILIKE": "NOT ILIKE", "NOT ILIKE": "ILIKE",
+}
+
+// lowerNegations rewrites n so negation sits only in leaves, as SQL's
+// three-valued logic evaluates it: a row matches where the condition is
+// true, so NOT (a = 1) is a <> 1 and, like it, never matches a null a.
+// Stores then only need null-excluding negative leaves. A leaf with an
+// operator it cannot invert stays wrapped in Negate for the store to
+// refuse.
+func lowerNegations(n Node, negate bool) Node {
+	switch c := n.(type) {
+	case Field:
+		if !negate {
+			return c
+		}
+		op, ok := negatedOps[c.Op]
+		if !ok {
+			return Negate{Part: c}
+		}
+		c.Op = op
+		return c
+	case List:
+		c.Not = c.Not != negate
+		return c
+	case Range:
+		c.Not = c.Not != negate
+		return c
+	case NullTest:
+		c.Not = c.Not != negate
+		return c
+	case Composite:
+		parts := make([]Node, len(c.Parts))
+		for i, p := range c.Parts {
+			parts[i] = lowerNegations(p, negate)
+		}
+		return Composite{Or: c.Or != negate, Parts: parts}
+	case Negate:
+		return lowerNegations(c.Part, !negate)
+	}
+	if negate {
+		return Negate{Part: n}
+	}
+	return n
+}
+
 // notTranslatable marks SQL-only conditions (raw SQL, subqueries, joins on
 // other tables, JSON functions) so document stores can name the offender.
 type notTranslatable struct{ reason string }

@@ -613,52 +613,55 @@ func jsonValue(v any) (any, error) {
 	return v, nil
 }
 
-// qdrantFilter compiles a plan condition to a Qdrant filter object. Each
-// condition lands in must / must_not / should; the shapes Qdrant cannot
-// express (LIKE, deep nesting) are refused.
+// qdrantFilter compiles a plan condition to a Qdrant filter object; the
+// shapes Qdrant cannot express (LIKE) are refused.
 func qdrantFilter(n Node) (map[string]any, error) {
 	if n == nil {
 		return map[string]any{}, nil
 	}
-	conds, err := qdrantConds(n)
-	if err != nil {
-		return nil, err
-	}
-	buckets := map[string][]map[string]any{"must": {}, "must_not": {}, "should": {}}
-	for _, c := range conds {
-		buckets[c.bucket] = append(buckets[c.bucket], c.cond)
-	}
-	f := map[string]any{}
-	for kind, list := range buckets {
-		if len(list) > 0 {
-			f[kind] = list
-		}
-	}
-	return f, nil
+	return qdrantCompile(lowerNegations(n, false))
 }
 
-type qdrantCond struct {
-	bucket string
-	cond   map[string]any
+// qdrantNever matches no point.
+func qdrantNever() map[string]any {
+	return map[string]any{"must": []any{map[string]any{"has_id": []any{}}}}
 }
 
-func qdrantConds(n Node) ([]qdrantCond, error) {
+// qdrantExcluding is a filter matching neither cond nor points whose
+// column is null or missing, which SQL's negations never match.
+func qdrantExcluding(column string, cond map[string]any) map[string]any {
+	return map[string]any{"must_not": []any{cond, map[string]any{"is_empty": map[string]any{"key": column}}}}
+}
+
+// qdrantCompile compiles a negation-lowered condition into a filter;
+// compound conditions nest, since a filter is itself a Qdrant condition.
+func qdrantCompile(n Node) (map[string]any, error) {
+	must := func(cond map[string]any) map[string]any { return map[string]any{"must": []any{cond}} }
 	switch c := n.(type) {
 	case Field:
 		v, err := jsonValue(c.Value)
 		if err != nil {
 			return nil, err
 		}
+		if v == nil {
+			return qdrantNever(), nil
+		}
 		switch c.Op {
 		case "=":
-			return []qdrantCond{{"must", matchCond(c.Column, v)}}, nil
+			return must(matchCond(c.Column, v)), nil
 		case "<>", "!=":
-			return []qdrantCond{{"must_not", matchCond(c.Column, v)}}, nil
+			return qdrantExcluding(c.Column, matchCond(c.Column, v)), nil
 		case ">", ">=", "<", "<=":
-			return []qdrantCond{{"must", map[string]any{"key": c.Column, "range": map[string]any{rangeOp(c.Op): v}}}}, nil
+			return must(map[string]any{"key": c.Column, "range": map[string]any{rangeOp(c.Op): v}}), nil
 		}
 		return nil, &ErrNotTranslatable{Reason: "operator " + c.Op + " on Qdrant"}
 	case List:
+		if len(c.Values) == 0 {
+			if c.Not {
+				return map[string]any{}, nil
+			}
+			return qdrantNever(), nil
+		}
 		vals := make([]any, len(c.Values))
 		for i, v := range c.Values {
 			var err error
@@ -666,16 +669,12 @@ func qdrantConds(n Node) ([]qdrantCond, error) {
 				return nil, err
 			}
 		}
-		bucket := "must"
+		cond := map[string]any{"key": c.Column, "match": map[string]any{"any": vals}}
 		if c.Not {
-			bucket = "must_not"
+			return qdrantExcluding(c.Column, cond), nil
 		}
-		return []qdrantCond{{bucket, map[string]any{"key": c.Column, "match": map[string]any{"any": vals}}}}, nil
+		return must(cond), nil
 	case Range:
-		bucket := "must"
-		if c.Not {
-			bucket = "must_not"
-		}
 		lo, err := jsonValue(c.Lo)
 		if err != nil {
 			return nil, err
@@ -684,40 +683,43 @@ func qdrantConds(n Node) ([]qdrantCond, error) {
 		if err != nil {
 			return nil, err
 		}
-		return []qdrantCond{{bucket, map[string]any{"key": c.Column, "range": map[string]any{"gte": lo, "lte": hi}}}}, nil
+		cond := map[string]any{"key": c.Column, "range": map[string]any{"gte": lo, "lte": hi}}
+		if c.Not {
+			return qdrantExcluding(c.Column, cond), nil
+		}
+		return must(cond), nil
 	case NullTest:
 		empty := map[string]any{"is_empty": map[string]any{"key": c.Column}}
 		if c.Not {
-			return []qdrantCond{{"must_not", empty}}, nil
+			return map[string]any{"must_not": []any{empty}}, nil
 		}
-		return []qdrantCond{{"must", empty}}, nil
+		return must(empty), nil
 	case Composite:
-		parts := make([]qdrantCond, 0)
+		parts := make([]any, 0, len(c.Parts))
 		for _, p := range c.Parts {
-			sub, err := qdrantConds(p)
+			sub, err := qdrantCompile(p)
 			if err != nil {
 				return nil, err
 			}
-			parts = append(parts, sub...)
-		}
-		if c.Or {
-			// should: any single condition matching satisfies the filter.
-			for i := range parts {
-				parts[i].bucket = "should"
+			if len(sub) == 0 {
+				if c.Or {
+					return map[string]any{}, nil
+				}
+				continue
 			}
-			return parts, nil
+			parts = append(parts, sub)
 		}
-		return parts, nil
+		switch {
+		case len(parts) == 0 && c.Or:
+			return qdrantNever(), nil
+		case len(parts) == 0:
+			return map[string]any{}, nil
+		case c.Or:
+			return map[string]any{"should": parts}, nil
+		}
+		return map[string]any{"must": parts}, nil
 	case Negate:
-		inner, err := qdrantConds(c.Part)
-		if err != nil {
-			return nil, err
-		}
-		if len(inner) != 1 {
-			return nil, &ErrNotTranslatable{Reason: "negating a compound condition on Qdrant"}
-		}
-		inner[0].bucket = map[string]string{"must": "must_not", "must_not": "must", "should": "must_not"}[inner[0].bucket]
-		return inner, nil
+		return nil, &ErrNotTranslatable{Reason: "negating this condition on Qdrant"}
 	case notTranslatable:
 		return nil, &ErrNotTranslatable{Reason: "conditions on " + c.reason + " on Qdrant"}
 	}

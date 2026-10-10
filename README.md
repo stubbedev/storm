@@ -439,7 +439,9 @@ MongoDB), and the model lifecycle — `Create`, `Save` (dirty columns only),
 `Pluck` / `PluckMap` / `Value` of columns, `Sum` / `Avg` / `Min` / `Max`
 (an aggregation pipeline on MongoDB), length-aware and simple pagination,
 chunking (`ChunkByID` and `Lazy` included), transactions (MongoDB replica
-sets), and `orm.From(...)` table queries. Keys must be
+sets), and `orm.From(...)` table queries. Conditions follow SQL's
+three-valued logic, so `Ne`, `NotIn` and `Not(...)` never match a document
+missing the field, and a comparison with `nil` matches nothing. Keys must be
 UUID, ULID or manual (assigned automatically when missing). Every
 operation reaches `orm.Listen` and the query log with a readable rendering
 of the plan. What refuses, with a precise error naming the part
