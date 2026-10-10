@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"database/sql/driver"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -105,7 +106,12 @@ func wrapVector(b *SQL, v any, fn string) bool {
 
 func (b *SQL) bind(v any) {
 	if b.inline {
-		b.sb.WriteString(literal(b.Dialect, v))
+		text, err := literal(b.Dialect, v)
+		if err != nil {
+			b.fail(err)
+			return
+		}
+		b.sb.WriteString(text)
 		return
 	}
 	b.args = append(b.args, v)
@@ -186,24 +192,43 @@ func render(d Dialect, f frag) (string, []any, error) {
 	return b.String(), b.args, b.err
 }
 
-func literal(d Dialect, v any) string {
+// literal is v as an SQL literal of dialect d, for ToRawSQL: driver
+// values are converted first, and strings are escaped for the dialect,
+// backslashes included where MySQL, MariaDB and ClickHouse treat them as
+// escapes.
+func literal(d Dialect, v any) (string, error) {
+	if val, ok := v.(driver.Valuer); ok {
+		raw, err := val.Value()
+		if err != nil {
+			return "", fmt.Errorf("orm: converting %T: %w", v, err)
+		}
+		return literal(d, raw)
+	}
 	switch v := v.(type) {
 	case nil:
-		return "NULL"
+		return "NULL", nil
 	case string:
-		return "'" + strings.ReplaceAll(v, "'", "''") + "'"
+		return stringLiteral(d, v), nil
 	case []byte:
-		return "'" + strings.ReplaceAll(string(v), "'", "''") + "'"
+		return stringLiteral(d, string(v)), nil
 	case bool:
-		return d.Bool(v)
+		return d.Bool(v), nil
 	case time.Time:
-		return "'" + v.UTC().Format("2006-01-02 15:04:05.999999999") + "'"
+		return "'" + v.UTC().Format("2006-01-02 15:04:05.999999999") + "'", nil
 	case int:
-		return strconv.Itoa(v)
+		return strconv.Itoa(v), nil
 	case int64:
-		return strconv.FormatInt(v, 10)
+		return strconv.FormatInt(v, 10), nil
 	case float64:
-		return strconv.FormatFloat(v, 'g', -1, 64)
+		return strconv.FormatFloat(v, 'g', -1, 64), nil
 	}
-	return literal(d, fmt.Sprint(v))
+	return stringLiteral(d, fmt.Sprint(v)), nil
+}
+
+func stringLiteral(d Dialect, s string) string {
+	switch d.Name() {
+	case "mysql", "mariadb", "clickhouse":
+		s = strings.ReplaceAll(s, `\`, `\\`)
+	}
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }

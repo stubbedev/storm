@@ -134,6 +134,39 @@ func lowerNegations(n Node, negate bool) Node {
 	return n
 }
 
+// planColumns lists every column p names: its key, conditions, orders and
+// projection.
+func planColumns(p Plan) []string {
+	cols := append([]string{}, p.Columns...)
+	for _, o := range p.Orders {
+		cols = append(cols, o.Column)
+	}
+	var walk func(Node)
+	walk = func(n Node) {
+		switch c := n.(type) {
+		case Field:
+			cols = append(cols, c.Column)
+		case List:
+			cols = append(cols, c.Column)
+		case Range:
+			cols = append(cols, c.Column)
+		case NullTest:
+			cols = append(cols, c.Column)
+		case Composite:
+			for _, part := range c.Parts {
+				walk(part)
+			}
+		case Negate:
+			walk(c.Part)
+		}
+	}
+	walk(p.Where)
+	if p.Key != "" {
+		cols = append(cols, p.Key)
+	}
+	return cols
+}
+
 // unqualified strips a "table." prefix naming table itself from col, the
 // form a row query on a document store accepts as SQL does; any other dot
 // stays, as the nested-field path both stores read it as.

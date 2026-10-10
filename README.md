@@ -45,6 +45,7 @@ renders correctly for each, and the full test suite runs against all eight.
 - [Library-only usage](#library-only-usage)
 - [Queries without a model](#queries-without-a-model)
 - [Encrypted and hashed columns](#encrypted-and-hashed-columns)
+- [Injection safety](#injection-safety)
 - [Packages](#packages)
 - [Editor hints](#editor-hints)
 - [Eloquent feature map](#eloquent-feature-map)
@@ -529,6 +530,23 @@ u.Password.Matches("secret")   // verify
 loaded hash as-is, so re-saving a model never double-hashes. `orm.JSON[V]`
 remains the cast for plain JSON columns, and any `sql.Scanner` /
 `driver.Valuer` type slots in as a custom cast.
+
+## Injection safety
+
+Every value is a bound parameter, every table and column name is quoted
+with the engine's escaping, and comparison operators are the typed
+`orm.Op` constants (anything else fails the query). Raw SQL only enters
+through APIs that say so — `WhereRaw`, `SelectRaw`, `OrderByRaw`,
+`HavingRaw`, `orm.Raw`, `orm.RawExpr`, `orm.FromRaw`, `orm.Select` and
+`orm.Statement` — and their `?` placeholders are counted against their
+arguments. `ToRawSQL` escapes inlined strings for the dialect, backslashes
+included on MySQL, MariaDB and ClickHouse. On MongoDB a field name with a
+`$` part is refused and equality matches with `$eq`, so neither a name nor
+a value from input can become an operator. Schema names written into DDL
+unquoted (charsets, collations, MySQL engines) must be plain names;
+expression options (generated columns, checks, partial index conditions,
+ClickHouse engines, partition keys and TTLs, `DefaultRaw`) are raw SQL by
+design and belong in migration code, not input.
 
 ## Packages
 

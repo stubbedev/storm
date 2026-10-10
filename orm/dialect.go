@@ -218,7 +218,7 @@ func standardLike(b *SQL, e AnyExpr, pattern string, caseless, not bool) {
 }
 
 func (d sqliteDialect) Truncate(table string) []string {
-	return []string{"DELETE FROM " + d.Quote(table), "DELETE FROM sqlite_sequence WHERE name = " + literal(d, table)}
+	return []string{"DELETE FROM " + d.Quote(table), "DELETE FROM sqlite_sequence WHERE name = " + stringLiteral(d, table)}
 }
 
 func (sqliteDialect) UpdatePrefix(b *SQL, table string) {

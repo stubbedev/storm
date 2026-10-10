@@ -476,6 +476,9 @@ func (s *MongoStore) UpsertDocs(ctx context.Context, table, key string, docs []m
 	for i, doc := range docs {
 		filter := bson.D{}
 		for _, c := range uniqueBy {
+			if err := mongoFieldName(c); err != nil {
+				return err
+			}
 			v, err := bsonValue(doc[c])
 			if err != nil {
 				return fmt.Errorf("orm: mongo upsert into %s: %w", table, err)
@@ -599,6 +602,9 @@ func (s *MongoStore) AggregateDocs(ctx context.Context, p Plan, fn Aggregate, co
 	if p.Vector != nil {
 		return nil, &ErrNotTranslatable{Reason: "vector search on MongoDB"}
 	}
+	if err := mongoFieldName(column); err != nil {
+		return nil, err
+	}
 	op, ok := map[Aggregate]string{AggregateSum: "$sum", AggregateAvg: "$avg", AggregateMin: "$min", AggregateMax: "$max"}[fn]
 	if !ok {
 		return nil, fmt.Errorf("orm: mongo aggregate on %s: unknown %s", table, fn)
@@ -633,6 +639,9 @@ func (s *MongoStore) AggregateDocs(ctx context.Context, p Plan, fn Aggregate, co
 func mongoDoc(doc map[string]any) (bson.D, error) {
 	d := make(bson.D, 0, len(doc))
 	for _, k := range sortedKeys(doc) {
+		if err := mongoFieldName(k); err != nil {
+			return nil, err
+		}
 		v, err := bsonValue(doc[k])
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", k, err)
@@ -642,7 +651,6 @@ func mongoDoc(doc map[string]any) (bson.D, error) {
 	return d, nil
 }
 
-// pick is the fields of doc named by keys.
 // bsonValue is v as MongoDB stores it. A driver.Valuer's error is
 // returned, never papered over: Encrypted fails that way without a key,
 // and storing the value as-is would write it in plain text.
@@ -680,10 +688,30 @@ func mongoTime(t time.Time) (time.Time, error) {
 
 // mongoFilter compiles a plan condition to a BSON filter.
 func mongoFilter(p Plan) (bson.D, error) {
+	for _, c := range planColumns(p) {
+		if err := mongoFieldName(c); err != nil {
+			return nil, err
+		}
+	}
 	if p.Where == nil {
 		return bson.D{}, nil
 	}
 	return mongoCond(lowerNegations(p.Where, false), p.Key)
+}
+
+// mongoFieldName refuses a column name MongoDB would read as an operator
+// ($where, $ne, ...) anywhere in its path, so a name taken from input
+// cannot change what a query does.
+func mongoFieldName(name string) error {
+	if name == "" || strings.ContainsRune(name, 0) {
+		return fmt.Errorf("orm: %q is not a MongoDB field name", name)
+	}
+	for part := range strings.SplitSeq(name, ".") {
+		if strings.HasPrefix(part, "$") {
+			return fmt.Errorf("orm: %q is not a MongoDB field name: a $ part is an operator", name)
+		}
+	}
+	return nil
 }
 
 // mongoNever matches no document.
@@ -704,7 +732,7 @@ func mongoCond(n Node, key string) (bson.D, error) {
 		}
 		switch c.Op {
 		case "=":
-			return bson.D{{Key: mongoField(c.Column, key), Value: v}}, nil
+			return bson.D{{Key: mongoField(c.Column, key), Value: bson.D{{Key: "$eq", Value: v}}}}, nil
 		case "<>", "!=":
 			return bson.D{{Key: mongoField(c.Column, key), Value: bson.D{{Key: "$nin", Value: bson.A{v, nil}}}}}, nil
 		case ">", ">=", "<", "<=":

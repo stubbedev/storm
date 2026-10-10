@@ -442,6 +442,41 @@ func assertLikes(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" row ilike", must(orm.From("widgets").On(conn).Where("name", orm.ILike, "ALPHA").Count(ctx)), int64(2))
 }
 
+// assertInjectionSafety feeds hostile names and values through every
+// builder entry point: identifiers are quoted, values bound, inlined
+// literals escaped, and schema names refused, so none can change the
+// statement.
+func assertInjectionSafety(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	rows := scratchWidgets(t, ctx, conn, "a", "b")
+	hostile := []string{`' OR '1'='1`, `x\' OR 1=1 -- `, `"; DROP TABLE widgets; --`, "` OR 1=1 -- ", `a') OR ('1'='1`}
+	for _, h := range hostile {
+		eq(t, conn+" hostile value bound: "+h, must(rows.Where("name", orm.Eq, h).Count(ctx)), int64(0))
+		eq(t, conn+" hostile typed value bound: "+h, must(Widgets.Query().On(conn).Where(Widgets.Name.Eq(h)).Count(ctx)), int64(0))
+		eq(t, conn+" hostile pattern bound: "+h, must(Widgets.Query().On(conn).Where(Widgets.Name.Contains(h)).Count(ctx)), int64(0))
+		matched, err := Widgets.Query().On(conn).Where(Widgets.Name.JSON[string](h).Eq("x")).Get(ctx)
+		eq(t, conn+" hostile JSON path bound: "+h, err != nil || len(matched) == 0, true)
+		n, err := rows.Where(h, orm.Eq, "a").Count(ctx)
+		eq(t, conn+" hostile column quoted: "+h, err != nil || n == 0, true)
+		ordered, err := rows.OrderBy(h).Get(ctx)
+		eq(t, conn+" hostile order quoted: "+h, err != nil || len(ordered) == 2, true)
+		_, err = orm.From(h).On(conn).Count(ctx)
+		eq(t, conn+" hostile table quoted: "+h, err != nil, true)
+		selected, err := rows.Select(h).Get(ctx)
+		eq(t, conn+" hostile select quoted: "+h, err != nil || len(selected) == 2, true)
+		raw := must(Widgets.Query().On(conn).Where(Widgets.Name.Eq(h)).ToRawSQL())
+		inlined := must(orm.SelectOn(ctx, conn, raw))
+		eq(t, conn+" hostile literal escaped: "+h, len(inlined), 0)
+		err = schema.On(conn).Create(ctx, "hostile_names", func(t *schema.Blueprint) {
+			t.ID()
+			t.String("name").Collation(h)
+		})
+		_, refused := errors.AsType[*schema.UnsupportedError](err)
+		eq(t, conn+" hostile collation refused: "+h, refused, true)
+	}
+	eq(t, conn+" widgets survive", must(rows.Count(ctx)), int64(2))
+}
+
 // assertLimitedMutations checks Limit, Offset and OrderBy narrow updates
 // and deletes to the rows a SELECT would pick, through both builders.
 func assertLimitedMutations(t *testing.T, ctx context.Context, conn string) {
@@ -522,6 +557,7 @@ func TestDuckDB(t *testing.T) {
 
 	assertLimitedMutations(t, ctx, "duck")
 	assertLikes(t, ctx, "duck")
+	assertInjectionSafety(t, ctx, "duck")
 	assertTransactionModes(t, ctx, "duck", true)
 	assertBigNumbers(t, ctx, "duck", true)
 	createWidgetTable(ctx, t, "duck", func(t *schema.Blueprint) { t.ID() })
@@ -596,6 +632,7 @@ func TestClickHouse(t *testing.T) {
 
 	assertLimitedMutations(t, ctx, "ch")
 	assertLikes(t, ctx, "ch")
+	assertInjectionSafety(t, ctx, "ch")
 	assertTransactionModes(t, ctx, "ch", false)
 	assertBigNumbers(t, ctx, "ch", true)
 	createWidgetTable(ctx, t, "ch", func(t *schema.Blueprint) { t.BigInteger("id").Primary() })
@@ -820,6 +857,18 @@ func TestMongo(t *testing.T) {
 	_, isSlice := blob["tags"].([]any)
 	eq(t, "nested documents and arrays read as maps and slices", isMap && nestedMap && isSlice, true)
 	ok(schema.On("mongo").Drop(ctx, "blobs"))
+	hostileDocs := orm.From("documents").On("mongo")
+	total := must(hostileDocs.Count(ctx))
+	_, err = hostileDocs.Where("$where", orm.Eq, "sleep(100) || true").Count(ctx)
+	eq(t, "mongo operator as a column refused", err != nil && strings.Contains(err.Error(), "operator"), true)
+	_, err = hostileDocs.Where("meta.$ne", orm.Eq, 1).Count(ctx)
+	eq(t, "mongo operator inside a path refused", err != nil, true)
+	eq(t, "mongo operator as a value is data", must(hostileDocs.Where("title", orm.Eq, map[string]any{"$ne": ""}).Count(ctx)), int64(0))
+	_, err = hostileDocs.OrderBy("$natural").Get(ctx)
+	eq(t, "mongo operator as an order refused", err != nil, true)
+	err = hostileDocs.Insert(ctx, map[string]any{"id": "hostile", "$set": map[string]any{"title": "x"}})
+	eq(t, "mongo operator as a field refused", err != nil, true)
+	eq(t, "mongo documents untouched", must(hostileDocs.Count(ctx)), total)
 	fine := time.Date(2026, 3, 1, 12, 0, 0, 123456789, time.UTC)
 	_, err = Notes.Query().On("mongo").Update(ctx, Notes.Seen.Set(&fine))
 	eq(t, "sub-millisecond times refused", err != nil && strings.Contains(err.Error(), "finer than the millisecond"), true)

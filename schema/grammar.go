@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -284,8 +285,29 @@ func (g grammar) literal(v any) string {
 		return "'" + v.UTC().Format("2006-01-02 15:04:05") + "'"
 	case nil:
 		return "NULL"
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprint(v)
+	case float32:
+		return strconv.FormatFloat(float64(v), 'g', -1, 32)
+	case float64:
+		return strconv.FormatFloat(v, 'g', -1, 64)
 	}
-	return fmt.Sprint(v)
+	return g.literal(fmt.Sprint(v))
+}
+
+// namePattern is a charset, collation or engine name: written into DDL as
+// is on some engines, so it may hold nothing that could end the clause.
+var namePattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+
+// checkNames refuses charset, collation or engine names that are not
+// plain names.
+func (g grammar) checkNames(table, what string, names ...string) error {
+	for _, n := range names {
+		if n != "" && !namePattern.MatchString(n) {
+			return g.unsupported(table, "name "+strconv.Quote(n)+" for "+what, "charset, collation and engine names are plain names")
+		}
+	}
+	return nil
 }
 
 // defaultValue renders a column's default, spelling UseCurrent the
@@ -350,6 +372,9 @@ func (g grammar) columnDef(c *Column, nullability bool) (string, error) {
 	table := c.bp.table
 	typ, err := g.typeOf(c)
 	if err != nil {
+		return "", err
+	}
+	if err := g.checkNames(table, "column "+c.Name, c.CharsetName, c.CollationName); err != nil {
 		return "", err
 	}
 	if c.CharsetName != "" && !g.mysqlFamily() {
@@ -476,6 +501,13 @@ func isNumeric(t string) bool {
 // checkTableOptions refuses table options the engine has no use for, and
 // options that only apply when the table is created.
 func (g grammar) checkTableOptions(bp *Blueprint, creating bool) error {
+	names := []string{bp.charset, bp.collation}
+	if g.mysqlFamily() {
+		names = append(names, bp.engine)
+	}
+	if err := g.checkNames(bp.table, "the table", names...); err != nil {
+		return err
+	}
 	switch {
 	case bp.engine != "" && !creating:
 		return g.unsupported(bp.table, "change the table engine", "table options apply only when creating the table")
