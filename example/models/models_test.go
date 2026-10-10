@@ -444,6 +444,14 @@ func TestWrites(t *testing.T) {
 	ok(Users.Save(ctx, &trashed))
 	u = must(Users.Find(ctx, 6))
 
+	at := time.Date(2026, 3, 1, 12, 0, 0, 0, time.FixedZone("UTC+2", 2*3600))
+	frank := Users.Where(Users.ID.Eq(6))
+	must(frank.Update(ctx, Users.CreatedAt.Set(at)))
+	eq(t, "offset time reads back as the same instant", must(Users.Find(ctx, 6)).CreatedAt.Equal(at), true)
+	eq(t, "offset time equals its UTC form", must(frank.Where(Users.CreatedAt.Eq(at.UTC())).Count(ctx)), int64(1))
+	eq(t, "offset time orders as an instant", must(frank.Where(Users.CreatedAt.Gt(time.Date(2026, 3, 1, 10, 30, 0, 0, time.UTC))).Count(ctx)), int64(0))
+	eq(t, "raw SQL inlines times in UTC", strings.Contains(Users.Where(Users.CreatedAt.Eq(at)).ToRawSQL(), "'2026-03-01 10:00:00'"), true)
+
 	eq(t, "mass update", must(Users.Where(Users.CountryID.Eq(2)).Update(ctx, Users.Active.Set(false))), int64(3))
 	eq(t, "increment", must(Posts.Where(Posts.ID.Eq(1)).Increment(ctx, Posts.Views, 10)), int64(1))
 	eq(t, "incremented", must(Posts.Find(ctx, 1)).Views, int64(550))

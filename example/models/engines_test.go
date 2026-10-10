@@ -134,6 +134,7 @@ type Note struct {
 	ID        string     `db:"id"`
 	Title     string     `db:"title"`
 	Views     int64      `db:"views"`
+	Seen      *time.Time `db:"seen"`
 	DeletedAt *time.Time `db:"deleted_at"`
 }
 
@@ -142,7 +143,7 @@ var noteTable = &orm.Table[Note]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyUUID,
 	DeletedAt:  "deleted_at",
-	Columns:    []string{"id", "title", "views", "deleted_at"},
+	Columns:    []string{"id", "title", "views", "seen", "deleted_at"},
 	Ptr: func(m *Note, column string) any {
 		switch column {
 		case "id":
@@ -151,6 +152,8 @@ var noteTable = &orm.Table[Note]{
 			return &m.Title
 		case "views":
 			return &m.Views
+		case "seen":
+			return &m.Seen
 		case "deleted_at":
 			return &m.DeletedAt
 		}
@@ -164,6 +167,7 @@ type NoteSchema struct {
 	ID    orm.Column[Note, string]
 	Title orm.Column[Note, string]
 	Views orm.Column[Note, int64]
+	Seen  orm.Column[Note, *time.Time]
 }
 
 var Notes = func() NoteSchema {
@@ -172,6 +176,7 @@ var Notes = func() NoteSchema {
 		ID:    orm.NewColumn(noteTable, "id", func(m *Note) *string { return &m.ID }),
 		Title: orm.NewColumn(noteTable, "title", func(m *Note) *string { return &m.Title }),
 		Views: orm.NewColumn(noteTable, "views", func(m *Note) *int64 { return &m.Views }),
+		Seen:  orm.NewColumn(noteTable, "seen", func(m *Note) **time.Time { return &m.Seen }),
 	}
 	noteTable.AddGlobalScope("published", func(q orm.Query[Note]) orm.Query[Note] { return q.Where(s.Title.Ne("draft")) })
 	return s
@@ -212,6 +217,11 @@ func assertDocLogic(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" row compare with nil matches nothing", must(rows.Where("title", orm.Eq, nil).Count(ctx)), int64(0))
 	eq(t, conn+" row not in skips missing", must(rows.WhereNotIn("title", "y").Count(ctx)), int64(2))
 	eq(t, conn+" row null", must(rows.WhereNull("title").Count(ctx)), int64(1))
+	at := time.Date(2026, 3, 1, 12, 0, 0, 0, time.FixedZone("UTC+2", 2*3600))
+	eq(t, conn+" set an offset time", must(notes.Where(Notes.Views.Eq(1)).Update(ctx, Notes.Seen.Set(&at))), int64(1))
+	utc := at.UTC()
+	eq(t, conn+" offset time equals its UTC form", must(notes.Where(Notes.Seen.Eq(&utc)).Count(ctx)), int64(1))
+	eq(t, conn+" offset time reads back as the same instant", must(notes.Where(Notes.Views.Eq(1)).First(ctx)).Seen.Equal(at), true)
 	eq(t, conn+" logic cleanup", must(rows.Delete(ctx)), int64(4))
 }
 

@@ -56,10 +56,26 @@ type argRenderer interface{ renderArg(b *SQL, v any) bool }
 
 // Arg appends a bound argument using the dialect's placeholder syntax.
 func (b *SQL) Arg(v any) {
+	v = inUTC(v)
 	if r, ok := b.Dialect.(argRenderer); ok && r.renderArg(b, v) {
 		return
 	}
 	b.bind(v)
+}
+
+// inUTC moves times to UTC before they are bound: engines that store
+// wall-clock timestamps (Postgres timestamp, SQLite text) would otherwise
+// keep the caller's offset or drop it, shifting or misordering instants.
+func inUTC(v any) any {
+	switch t := v.(type) {
+	case time.Time:
+		return t.UTC()
+	case *time.Time:
+		if t != nil {
+			return t.UTC()
+		}
+	}
+	return v
 }
 
 // wrapVector binds v inside fn(...) when it is a vector value.
@@ -148,7 +164,7 @@ func literal(d Dialect, v any) string {
 	case bool:
 		return d.Bool(v)
 	case time.Time:
-		return "'" + v.Format("2006-01-02 15:04:05") + "'"
+		return "'" + v.UTC().Format("2006-01-02 15:04:05.999999999") + "'"
 	case int:
 		return strconv.Itoa(v)
 	case int64:

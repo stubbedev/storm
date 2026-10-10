@@ -593,6 +593,10 @@ func (s *QdrantStore) CountDocs(ctx context.Context, table string, p Plan) (int6
 	return res.Result.Count, nil
 }
 
+// qdrantTime is fixed-width RFC 3339 in UTC, so equal instants are equal
+// strings and string order is time order.
+const qdrantTime = "2006-01-02T15:04:05.000000000Z"
+
 // jsonValue converts a value to its JSON representation for payloads. A
 // driver.Valuer's error is returned, never papered over: Encrypted fails
 // that way without a key, and storing the value as-is would write it in
@@ -602,7 +606,12 @@ func jsonValue(v any) (any, error) {
 	case nil, string, bool, int, int32, int64, uint, uint32, uint64, float64, []any, map[string]any:
 		return v, nil
 	case time.Time:
-		return x.Format(time.RFC3339Nano), nil
+		return x.UTC().Format(qdrantTime), nil
+	case *time.Time:
+		if x == nil {
+			return nil, nil
+		}
+		return x.UTC().Format(qdrantTime), nil
 	case driver.Valuer:
 		raw, err := x.Value()
 		if err != nil {
