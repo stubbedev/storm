@@ -79,7 +79,7 @@ type Video struct {
 	Tags     []Tag
 }
 
-//orm:table comments
+//orm:table comments time_precision=6
 type Comment struct {
 	orm.Model
 	ID              int64     `db:"id"`

@@ -40,7 +40,10 @@ type Table[M any] struct {
 	UpdatedAt  string
 	DeletedAt  string // non-empty enables soft deletes
 	MorphAlias string // value stored in *_type columns; defaults to Name
-	Columns    []string
+	// TimePrecision is how many fractional second digits the maintained
+	// timestamps keep, 0 (default) to 9; match the columns' precision.
+	TimePrecision int
+	Columns       []string
 	// NullZero lists columns whose zero value is written as NULL
 	// (db:"country_id,nullzero"), e.g. optional foreign keys.
 	NullZero []string

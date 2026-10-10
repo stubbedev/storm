@@ -90,6 +90,7 @@ Directive options (`//orm:table <name> [options]`):
 | `key_type=increments\|uuid\|ulid\|manual` | key generation (default: increments for integer keys) |
 | `connection=<name>` | registered connection to use |
 | `timestamps=false` | don't maintain `created_at` / `updated_at` |
+| `time_precision=6` | keep 6 fractional second digits in the maintained timestamps (default whole seconds); pair with `t.Timestamps(6)` |
 | `soft_deletes` | `deleted_at` soft deletes |
 | `morph=<alias>` | value stored in `*_type` columns (default: table name) |
 | `schema=<Name>` | generated schema value name (default: CamelCase table) |

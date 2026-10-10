@@ -580,7 +580,7 @@ func (r *BelongsToManyRel[M, R, P, K, RK]) AttachedTo(related *R) Cond[M] {
 // Attach inserts pivot rows for parent; parent key and morph type are filled
 // in, pivot timestamps maintained. Extra pivot columns come from the P values.
 func (r *BelongsToManyRel[M, R, P, K, RK]) Attach(ctx context.Context, parent *M, pivots ...P) error {
-	ts := now()
+	ts := r.pivot.now()
 	for i := range pivots {
 		*r.pivotParent.Ptr(&pivots[i]) = r.parentKey.Get(parent)
 		if r.pivotType != nil {

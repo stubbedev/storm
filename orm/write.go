@@ -13,9 +13,16 @@ import (
 	"time"
 )
 
-// now is the timestamp used for created/updated/deleted columns, at second
-// precision like Laravel's default date format. Replaceable in tests.
-var now = func() time.Time { return time.Now().UTC().Truncate(time.Second) }
+// now is the timestamp the table maintains its created, updated and
+// deleted columns with: UTC, at TimePrecision fractional second digits
+// (whole seconds by default, like Laravel's date format).
+func (t *Table[M]) now() time.Time {
+	unit := time.Second
+	for range t.TimePrecision {
+		unit /= 10
+	}
+	return time.Now().UTC().Truncate(unit)
+}
 
 // ---------------------------------------------------------------------------
 // Single-model writes (fire events, maintain timestamps and dirty state)
@@ -67,7 +74,7 @@ func (q Query[M]) performInsert(ctx context.Context, m *M) error {
 		return err
 	}
 	if timestamps(ctx) {
-		ts := now()
+		ts := t.now()
 		for _, c := range []string{t.CreatedAt, t.UpdatedAt} {
 			if c != "" && isZero(t.value(m, c)) {
 				t.setValue(m, c, ts)
@@ -160,7 +167,7 @@ func (q Query[M]) performUpdate(ctx context.Context, m *M) error {
 		return err
 	}
 	if t.UpdatedAt != "" && timestamps(ctx) && !slices.Contains(t.Dirty(m), t.UpdatedAt) {
-		t.setValue(m, t.UpdatedAt, now())
+		t.setValue(m, t.UpdatedAt, t.now())
 	}
 	dirty := t.Dirty(m)
 	sets := make([]Assignment[M], len(dirty))
@@ -197,7 +204,7 @@ func (q Query[M]) DeleteModel(ctx context.Context, m *M) error {
 		return err
 	}
 	if t.softDeletes() {
-		ts := now()
+		ts := t.now()
 		t.setValue(m, t.DeletedAt, ts)
 		sets := []Assignment[M]{setLiteral[M](t.DeletedAt, ts)}
 		if t.UpdatedAt != "" && timestamps(ctx) {
@@ -263,7 +270,7 @@ func (t *Table[M]) Touch(ctx context.Context, m *M) error {
 	if t.UpdatedAt == "" {
 		return nil
 	}
-	t.setValue(m, t.UpdatedAt, now())
+	t.setValue(m, t.UpdatedAt, t.now())
 	return t.Save(ctx, m)
 }
 
@@ -398,7 +405,7 @@ func Fill[M any](m *M, sets ...Assignment[M]) { fill(m, sets) }
 func (q Query[M]) Update(ctx context.Context, sets ...Assignment[M]) (int64, error) {
 	t := q.table
 	if t.UpdatedAt != "" && timestamps(ctx) && !slices.ContainsFunc(sets, func(a Assignment[M]) bool { return a.col == t.UpdatedAt }) {
-		sets = append(slices.Clip(sets), setLiteral[M](t.UpdatedAt, now()))
+		sets = append(slices.Clip(sets), setLiteral[M](t.UpdatedAt, t.now()))
 	}
 	return q.update(ctx, sets)
 }
@@ -427,7 +434,7 @@ func (q Query[M]) Decrement[V Number](ctx context.Context, col Column[M, V], by 
 // Delete deletes every matching row — soft deletes if the table uses them.
 func (q Query[M]) Delete(ctx context.Context) (int64, error) {
 	if q.table.softDeletes() {
-		return q.Update(ctx, setLiteral[M](q.table.DeletedAt, now()))
+		return q.Update(ctx, setLiteral[M](q.table.DeletedAt, q.table.now()))
 	}
 	return q.hardDelete(ctx)
 }
@@ -648,7 +655,7 @@ func (q Query[M]) InsertGetID(ctx context.Context, m M) (int64, error) {
 // when uniqueBy conflicts. Timestamps are maintained.
 func (q Query[M]) Upsert(ctx context.Context, ms []M, uniqueBy []AnyColumn[M], update ...AnyColumn[M]) error {
 	t := q.table
-	ts := now()
+	ts := t.now()
 	for i := range ms {
 		for _, c := range []string{t.CreatedAt, t.UpdatedAt} {
 			if c != "" && isZero(t.value(&ms[i], c)) {

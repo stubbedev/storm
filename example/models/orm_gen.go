@@ -43,12 +43,13 @@ var AuditLog = AuditLogSchema{
 }
 
 var commentsTable = &orm.Table[Comment]{
-	Name:       "comments",
-	PrimaryKey: "id",
-	KeyType:    orm.KeyAutoIncrement,
-	CreatedAt:  "created_at",
-	UpdatedAt:  "updated_at",
-	Columns:    []string{"id", "commentable_id", "commentable_type", "body", "created_at", "updated_at"},
+	Name:          "comments",
+	PrimaryKey:    "id",
+	KeyType:       orm.KeyAutoIncrement,
+	CreatedAt:     "created_at",
+	UpdatedAt:     "updated_at",
+	TimePrecision: 6,
+	Columns:       []string{"id", "commentable_id", "commentable_type", "body", "created_at", "updated_at"},
 	Ptr: func(m *Comment, column string) any {
 		switch column {
 		case "id":

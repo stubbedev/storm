@@ -437,3 +437,15 @@ func TestObserverLifecycle(t *testing.T) {
 	eq(t, "nothing inserted", must(Users.Query().WithTrashed().Count(ctx)), before)
 	eq(t, "an observer without methods panics", panics(func() { Users.Observe(struct{}{}) }), true)
 }
+
+func TestMaintainedTimePrecision(t *testing.T) {
+	ctx := setup(t)
+	post := must(Posts.Find(ctx, 1))
+	c := Comment{Body: "precise"}
+	ok(PostComments.Create(ctx, &post, &c))
+	eq(t, "microsecond timestamps", c.CreatedAt.Nanosecond()%1000 == 0 && c.CreatedAt.Equal(c.UpdatedAt), true)
+	eq(t, "they round-trip", must(Comments.Find(ctx, c.ID)).CreatedAt.Equal(c.CreatedAt), true)
+	fresh := Post{UserID: 1, Title: "whole seconds"}
+	ok(Posts.Create(ctx, &fresh))
+	eq(t, "default precision is whole seconds", fresh.CreatedAt.Nanosecond(), 0)
+}

@@ -23,6 +23,7 @@
 //	timestamps=false      don't maintain created_at / updated_at
 //	soft_deletes          use deleted_at for soft deletes
 //	morph=<alias>         value stored in polymorphic *_type columns (default: table name)
+//	time_precision=<n>    fractional second digits of maintained timestamps (default 0)
 //	schema=<Name>         name of the generated schema value (default: table in CamelCase)
 //
 // Column tag options: pk (primary key), virtual (selected only, never
@@ -62,6 +63,7 @@ type model struct {
 	Connection, Key, KeyType   string
 	CreatedAt, UpdatedAt       string
 	DeletedAt, Morph           string
+	TimePrecision              int
 	ModelField                 string
 	Fields                     []field
 }
@@ -261,6 +263,13 @@ func buildModel(name string, st *ast.StructType, opts map[string]string, byName 
 		}
 		m.DeletedAt = "deleted_at"
 	}
+	if p, ok := opts["time_precision"]; ok {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 || n > 9 {
+			fail("time_precision must be 0 to 9, got %q", p)
+		}
+		m.TimePrecision = n
+	}
 	return m
 }
 
@@ -269,7 +278,7 @@ func directive(doc *ast.CommentGroup) (map[string]string, bool) {
 	if doc == nil {
 		return nil, false
 	}
-	known := []string{"key", "key_type", "connection", "timestamps", "soft_deletes", "morph", "schema"}
+	known := []string{"key", "key_type", "connection", "timestamps", "soft_deletes", "morph", "schema", "time_precision"}
 	for _, c := range doc.List {
 		rest, ok := strings.CutPrefix(c.Text, "//orm:table ")
 		if !ok {
@@ -360,6 +369,9 @@ var {{.Var}} = &orm.Table[{{.Struct}}]{
 {{- end}}
 {{- if .Morph}}
 	MorphAlias: "{{.Morph}}",
+{{- end}}
+{{- if .TimePrecision}}
+	TimePrecision: {{.TimePrecision}},
 {{- end}}
 {{- $nz := false}}{{range .Fields}}{{if .NullZero}}{{$nz = true}}{{end}}{{end}}
 {{- if $nz}}

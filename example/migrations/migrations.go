@@ -74,7 +74,7 @@ func init() {
 			t.ID()
 			t.Morphs("commentable")
 			t.Text("body")
-			t.Timestamps()
+			t.Timestamps(6)
 		}),
 		create("2026_01_01_000005_create_roles_table", "roles", func(t *B) {
 			t.ID()
