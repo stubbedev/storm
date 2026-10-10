@@ -943,6 +943,9 @@ func (r *MorphToRel[M, K]) Is(owner any) Cond[M] {
 // HasMorph is whereHasMorph for one target type: the owner is an R matching scopes.
 func (r *MorphToRel[M, K]) HasMorph[R any](key Column[R, K], scopes ...func(Query[R]) Query[R]) Cond[M] {
 	sub := key.table.Query()
+	if key.table.Name == r.id.table.Name {
+		sub.alias = selfAlias
+	}
 	sub = chain(scopes)(sub.Where(key.EqCol(r.id.outer())))
 	return And(r.typ.Eq(key.table.morphAlias()), Exists[M](sub))
 }

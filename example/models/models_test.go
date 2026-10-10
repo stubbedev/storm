@@ -396,6 +396,11 @@ func TestRelationQueries(t *testing.T) {
 
 	onPopular := must(Comments.Where(CommentCommentable.HasMorph(Posts.ID, Published, Popular(100))).OrderBy(Comments.ID.Asc()).Pluck(ctx, Comments.Body))
 	eq(t, "whereHasMorph", onPopular, []string{"Great", "Finally", "Welcome"})
+	reply := Comment{CommentableID: 1, CommentableType: "comments", Body: "Reply"}
+	ok(Comments.Create(ctx, &reply))
+	replies := must(Comments.Where(CommentCommentable.HasMorph(Comments.ID)).Pluck(ctx, Comments.Body))
+	eq(t, "whereHasMorph on its own table", replies, []string{"Reply"})
+	must(Comments.Query().WhereKey(reply.ID).Delete(ctx))
 
 	stats := must(Users.Query().
 		WithCount(UserPosts, Users.PostsCount).
