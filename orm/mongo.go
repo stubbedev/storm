@@ -604,14 +604,6 @@ func mongoDoc(doc map[string]any) (bson.D, error) {
 }
 
 // pick is the fields of doc named by keys.
-func pick(doc map[string]any, keys []string) map[string]any {
-	out := make(map[string]any, len(keys))
-	for _, k := range keys {
-		out[k] = doc[k]
-	}
-	return out
-}
-
 // bsonValue is v as MongoDB stores it. A driver.Valuer's error is
 // returned, never papered over: Encrypted fails that way without a key,
 // and storing the value as-is would write it in plain text.
