@@ -218,6 +218,8 @@ func assertDocLogic(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" row compare with nil matches nothing", must(rows.Where("title", orm.Eq, nil).Count(ctx)), int64(0))
 	eq(t, conn+" row not in skips missing", must(rows.WhereNotIn("title", "y").Count(ctx)), int64(2))
 	eq(t, conn+" row null", must(rows.WhereNull("title").Count(ctx)), int64(1))
+	eq(t, conn+" qualified where", must(rows.Where("notes.views", orm.Eq, 1).Count(ctx)), int64(1))
+	eq(t, conn+" qualified order and pluck", fmt.Sprint(must(rows.OrderBy("notes.views").Limit(1).Pluck(ctx, "notes.title"))), "[x]")
 	at := time.Date(2026, 3, 1, 12, 0, 0, 0, time.FixedZone("UTC+2", 2*3600))
 	eq(t, conn+" set an offset time", must(notes.Where(Notes.Views.Eq(1)).Update(ctx, Notes.Seen.Set(&at))), int64(1))
 	utc := at.UTC()
@@ -416,6 +418,7 @@ func assertLimitedMutations(t *testing.T, ctx context.Context, conn string) {
 		ok(rows.Insert(ctx, map[string]any{"id": i + 1, "name": name, "kind": "plain", "karma": i + 1}))
 	}
 	eq(t, conn+" offset without limit", len(must(rows.OrderBy("name").Offset(3).Get(ctx))), 2)
+	eq(t, conn+" qualified pluck", fmt.Sprint(must(rows.OrderBy("widgets.name").Pluck(ctx, "widgets.name"))), "[a b c d e]")
 	widgetQuery := Widgets.Query().On(conn)
 	taken := orm.Attrs(Widgets.ID.Set(int64(1)))
 	eq(t, conn+" createOrFirst returns the taken key", must(widgetQuery.CreateOrFirst(ctx, taken, Widgets.Name.Set("dup"))).Name, "a")

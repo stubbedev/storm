@@ -2,6 +2,7 @@ package orm
 
 import (
 	"errors"
+	"strings"
 )
 
 // Plan is the engine-independent form of a query: what document stores
@@ -128,6 +129,43 @@ func lowerNegations(n Node, negate bool) Node {
 	}
 	if negate {
 		return Negate{Part: n}
+	}
+	return n
+}
+
+// unqualified strips a "table." prefix naming table itself from col, the
+// form a row query on a document store accepts as SQL does; any other dot
+// stays, as the nested-field path both stores read it as.
+func unqualified(col, table string) string {
+	if prefix, rest, ok := strings.Cut(col, "."); ok && prefix == table {
+		return rest
+	}
+	return col
+}
+
+// unqualifiedNode is n with unqualified applied to every column.
+func unqualifiedNode(n Node, table string) Node {
+	switch c := n.(type) {
+	case Field:
+		c.Column = unqualified(c.Column, table)
+		return c
+	case List:
+		c.Column = unqualified(c.Column, table)
+		return c
+	case Range:
+		c.Column = unqualified(c.Column, table)
+		return c
+	case NullTest:
+		c.Column = unqualified(c.Column, table)
+		return c
+	case Composite:
+		parts := make([]Node, len(c.Parts))
+		for i, p := range c.Parts {
+			parts[i] = unqualifiedNode(p, table)
+		}
+		return Composite{Or: c.Or, Parts: parts}
+	case Negate:
+		return Negate{Part: unqualifiedNode(c.Part, table)}
 	}
 	return n
 }

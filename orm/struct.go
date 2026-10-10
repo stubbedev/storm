@@ -704,7 +704,7 @@ func (r RowQuery) planOf() (Plan, error) {
 		if o.col == "" {
 			return Plan{}, &ErrNotTranslatable{Reason: "random order"}
 		}
-		p.Orders = append(p.Orders, PlanOrder{Column: o.col, Desc: o.desc})
+		p.Orders = append(p.Orders, PlanOrder{Column: unqualified(o.col, r.name), Desc: o.desc})
 	}
 	for _, t := range r.selects {
 		if t.col == "" {
@@ -713,10 +713,10 @@ func (r RowQuery) planOf() (Plan, error) {
 		if t.alias != "" {
 			return Plan{}, &ErrNotTranslatable{Reason: "column aliases"}
 		}
-		p.Columns = append(p.Columns, t.col)
+		p.Columns = append(p.Columns, unqualified(t.col, r.name))
 	}
 	if len(r.nodes) > 0 {
-		p.Where = Composite{Parts: r.nodes}
+		p.Where = unqualifiedNode(Composite{Parts: r.nodes}, r.name)
 		if err := checkSameTable(p.Where, r.name); err != nil {
 			return Plan{}, err
 		}
@@ -803,7 +803,7 @@ func (r RowQuery) Pluck(ctx context.Context, col string) ([]any, error) {
 	}
 	out := make([]any, len(rows))
 	for i, row := range rows {
-		out[i] = row[col]
+		out[i] = row[resultName(col)]
 	}
 	return out, nil
 }
