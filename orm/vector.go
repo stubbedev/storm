@@ -2,8 +2,10 @@ package orm
 
 import (
 	"database/sql/driver"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -167,7 +169,10 @@ func (v *Vector[N]) Scan(src any) error {
 	case string:
 		return v.parse(s)
 	case []byte:
-		return v.parse(string(s))
+		if len(s) > 0 && s[0] == '[' && s[len(s)-1] == ']' {
+			return v.parse(string(s))
+		}
+		return v.unpack(s)
 	case []float64:
 		return v.set(append([]float64(nil), s...))
 	case []float32:
@@ -188,6 +193,28 @@ func (v *Vector[N]) Scan(src any) error {
 		return v.set(comps)
 	}
 	return fmt.Errorf("orm: cannot scan %T into a Vector", src)
+}
+
+// unpack reads the packed little-endian float32 form MariaDB and MySQL 9
+// return for VECTOR columns.
+func (v *Vector[N]) unpack(raw []byte) error {
+	if len(raw)%4 != 0 {
+		return fmt.Errorf("orm: %d bytes are not a packed float32 vector", len(raw))
+	}
+	comps := make([]float64, len(raw)/4)
+	for i := range comps {
+		comps[i] = float64(math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:])))
+	}
+	return v.set(comps)
+}
+
+// vectorOf reports v's components when v is a non-zero vector value of
+// any dimension.
+func vectorOf(v any) ([]float64, bool) {
+	if vv, ok := v.(interface{ Floats() []float64 }); ok {
+		return vv.Floats(), vv.Floats() != nil
+	}
+	return nil, false
 }
 
 func toFloat(v any) (float64, error) {

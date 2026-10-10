@@ -604,16 +604,6 @@ func (s *QdrantStore) CountDocs(ctx context.Context, table string, p Plan) (int6
 	return res.Result.Count, nil
 }
 
-// vectorOf reports v's components when v is a vector value.
-func vectorOf(v any) ([]float64, bool) {
-	if vv, ok := v.(interface {
-		Floats() []float64
-	}); ok {
-		return vv.Floats(), vv.Floats() != nil
-	}
-	return nil, false
-}
-
 // jsonValue converts a value to its JSON representation for payloads. A
 // driver.Valuer's error is returned, never papered over: Encrypted fails
 // that way without a key, and storing the value as-is would write it in

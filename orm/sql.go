@@ -48,8 +48,23 @@ func (b *SQL) Ident(name string) {
 	}
 }
 
+// vectorArgs marks dialects whose vector columns take a vector built from
+// its text form (MariaDB's VEC_FromText, MySQL's STRING_TO_VECTOR).
+type vectorArgs interface{ vectorFromText() string }
+
 // Arg appends a bound argument using the dialect's placeholder syntax.
 func (b *SQL) Arg(v any) {
+	va, wraps := b.Dialect.(vectorArgs)
+	if _, isVector := vectorOf(v); wraps && isVector {
+		b.sb.WriteString(va.vectorFromText() + "(")
+		b.bind(v)
+		b.sb.WriteString(")")
+		return
+	}
+	b.bind(v)
+}
+
+func (b *SQL) bind(v any) {
 	if b.inline {
 		b.sb.WriteString(literal(b.Dialect, v))
 		return

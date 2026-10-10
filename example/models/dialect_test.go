@@ -2,6 +2,7 @@ package models_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -182,6 +183,34 @@ func TestMySQLFlavour(t *testing.T) {
 
 	stmt, _ := Events.Query().OrderBy(Events.Vec.Nearest(orm.NewVector3(1, 1, 0), orm.Cosine)).ToSQLFor(orm.MariaDB)
 	eq(t, "mariadb vector distance", strings.Contains(stmt, "VEC_DISTANCE_COSINE(`events`.`vec`, VEC_FromText(?))"), true)
+	if want != "mariadb" {
+		return
+	}
+	tCheck(t, schema.Create(ctx, "documents", func(t *schema.Blueprint) {
+		t.UUIDPrimary()
+		t.String("title")
+		t.BigInteger("views")
+		t.Vector("vec", 3)
+		t.HnswIndex("vec", orm.L2)
+	}))
+	for _, d := range []Doc{
+		{Title: "near", Vec: orm.NewVector3(1, 0, 0)},
+		{Title: "far", Vec: orm.NewVector3(10, 10, 10)},
+		{Title: "middle", Vec: orm.NewVector3(5, 5, 5)},
+	} {
+		ok(Docs.Query().Create(ctx, &d))
+	}
+	near := must(Docs.Query().Where(Docs.Title.Eq("near")).First(ctx))
+	eq(t, "mariadb vectors read back", near.Vec.String(), "[1,0,0]")
+	for _, m := range []orm.VectorMetric{orm.L2, orm.Cosine} {
+		titles := must(Docs.Query().OrderBy(Docs.Vec.Nearest(orm.NewVector3(0.9, 0.1, 0), m)).Pluck(ctx, Docs.Title))
+		eq(t, fmt.Sprintf("mariadb nearest by metric %d", m), titles[0], "near")
+	}
+	_, err := Docs.Query().OrderBy(Docs.Vec.Nearest(orm.NewVector3(1, 0, 0), orm.InnerProduct)).Get(ctx)
+	eq(t, "mariadb has no inner product", err != nil, true)
+	err = schema.Table(ctx, "documents", func(t *schema.Blueprint) { t.HnswIndex("vec", orm.InnerProduct) })
+	_, refused := errors.AsType[*schema.UnsupportedError](err)
+	eq(t, "inner product index refused", refused, true)
 }
 
 func TestDialectCapabilities(t *testing.T) {

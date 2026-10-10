@@ -97,8 +97,8 @@ func (duckdbDialect) Truncate(table string) []string {
 }
 
 func (duckdbDialect) VectorDistance(b *SQL, e AnyExpr, arg any, m VectorMetric) {
-	fs := floatsOf(arg)
-	if fs == nil {
+	fs, ok := vectorOf(arg)
+	if !ok {
 		b.Write("array_distance(")
 		e.build(b)
 		b.Write(", ")
@@ -127,13 +127,6 @@ func (duckdbDialect) VectorDistance(b *SQL, e AnyExpr, arg any, m VectorMetric) 
 		b.Write(strconv.FormatFloat(f, 'g', -1, 64))
 	}
 	b.Write("] AS FLOAT[" + n + "]))")
-}
-
-func floatsOf(arg any) []float64 {
-	if vv, ok := arg.(interface{ Floats() []float64 }); ok {
-		return vv.Floats()
-	}
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -294,7 +287,7 @@ func (clickhouseDialect) VectorDistance(b *SQL, e AnyExpr, arg any, m VectorMetr
 	b.Write(map[VectorMetric]string{L2: "L2Distance(", Cosine: "cosineDistance(", InnerProduct: "-dotProduct("}[m])
 	e.build(b)
 	b.Write(", ")
-	if fs := floatsOf(arg); fs != nil {
+	if fs, ok := vectorOf(arg); ok {
 		b.Arg(fs)
 	} else {
 		b.Arg(arg)

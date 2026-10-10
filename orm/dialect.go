@@ -425,12 +425,14 @@ func (mysqlDialect) DeletePrefix(b *SQL, table string) {
 	b.Ident(table)
 }
 
+func (mysqlDialect) vectorFromText() string { return "STRING_TO_VECTOR" }
+
 func (mysqlDialect) VectorDistance(b *SQL, e AnyExpr, arg any, m VectorMetric) {
 	b.Write("DISTANCE(")
 	e.build(b)
-	b.Write(", STRING_TO_VECTOR(")
+	b.Write(", ")
 	b.Arg(arg)
-	b.Write("), ", map[VectorMetric]string{L2: "'EUCLIDEAN'", Cosine: "'COSINE'", InnerProduct: "'DOT'"}[m], ")")
+	b.Write(", ", map[VectorMetric]string{L2: "'EUCLIDEAN'", Cosine: "'COSINE'", InnerProduct: "'DOT'"}[m], ")")
 }
 
 // ---------------------------------------------------------------------------
@@ -449,12 +451,14 @@ func (mariadbDialect) Lock(m LockMode) string {
 
 // VectorDistance uses MariaDB's VEC_DISTANCE functions, which have no
 // inner-product form; that metric fails with an unknown-function error.
+func (mariadbDialect) vectorFromText() string { return "VEC_FromText" }
+
 func (mariadbDialect) VectorDistance(b *SQL, e AnyExpr, arg any, m VectorMetric) {
 	b.Write(map[VectorMetric]string{L2: "VEC_DISTANCE_EUCLIDEAN(", Cosine: "VEC_DISTANCE_COSINE(", InnerProduct: "orm_vector_metric_unsupported("}[m])
 	e.build(b)
-	b.Write(", VEC_FromText(")
+	b.Write(", ")
 	b.Arg(arg)
-	b.Write("))")
+	b.Write(")")
 }
 
 // ---------------------------------------------------------------------------

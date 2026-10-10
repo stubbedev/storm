@@ -908,8 +908,28 @@ func (g grammar) inlineIndex(table string, cmd *command) (string, error) {
 		return "FULLTEXT INDEX " + name + cols, nil
 	case cmdSpatial:
 		return "SPATIAL INDEX " + name + cols, nil
+	case cmdHnsw:
+		distance, err := g.mariadbDistance(table, cmd)
+		if err != nil {
+			return "", err
+		}
+		return "VECTOR INDEX " + name + cols + " DISTANCE=" + distance, nil
 	}
-	return "", g.unsupported(table, cmd.kind.String()+" "+cmd.index.IndexName, "hnsw vector indexes need pgvector")
+	return "", g.unsupported(table, cmd.kind.String()+" "+cmd.index.IndexName, "this index kind has no inline form here")
+}
+
+// mariadbDistance is the DISTANCE option of a MariaDB vector index for the
+// metric an HnswIndex declares; MariaDB has no inner-product distance.
+func (g grammar) mariadbDistance(table string, cmd *command) (string, error) {
+	op := cmd.kind.String() + " " + cmd.index.IndexName
+	if g.engine != engineMariaDB {
+		return "", g.unsupported(table, op, "vector indexes need pgvector or MariaDB 11.7+")
+	}
+	distance, ok := map[string]string{"vector_l2_ops": "euclidean", "vector_cosine_ops": "cosine", "": "euclidean"}[cmd.index.VectorOp]
+	if !ok {
+		return "", g.unsupported(table, op, "MariaDB vector indexes measure euclidean or cosine distance, not inner product")
+	}
+	return distance, nil
 }
 
 func (g grammar) mysqlAlgorithm(idx *Index) string {
@@ -955,8 +975,15 @@ func (g grammar) createIndex(table string, cmd *command, ifNot bool) (string, er
 		}
 		return "", g.unsupported(table, op, "spatial indexes need Postgres, MySQL or MariaDB")
 	case cmdHnsw:
+		if g.engine == engineMariaDB {
+			distance, err := g.mariadbDistance(table, cmd)
+			if err != nil {
+				return "", err
+			}
+			return "CREATE VECTOR INDEX " + name + on + cols + " DISTANCE=" + distance, nil
+		}
 		if g.engine != enginePostgres {
-			return "", g.unsupported(table, op, "hnsw vector indexes need pgvector")
+			return "", g.unsupported(table, op, "vector indexes need pgvector or MariaDB 11.7+")
 		}
 		return "CREATE INDEX " + name + on + " USING hnsw (" + g.quote(cmd.columns[0]) + " " + cmp.Or(idx.VectorOp, "vector_l2_ops") + ")", nil
 	}

@@ -24,15 +24,15 @@ type probe struct {
 
 // extensions lists features that need an extension or a newer server than
 // the test containers run (PostGIS, pgvector before CREATE EXTENSION,
-// DuckDB spatial, MySQL 9 / MariaDB 11.7 vectors); the engine's own error
-// must name what is missing.
+// DuckDB spatial, MySQL 9 vectors); the engine's own error must name what
+// is missing.
 var extensions = map[string]map[string]string{
 	"geometry":              {"postgres": `type "geometry" does not exist`, "duckdb": "spatial extension"},
 	"geography":             {"postgres": `type "geography" does not exist`, "duckdb": "spatial extension"},
 	"spatialIndex":          {"postgres": `type "geometry" does not exist`, "duckdb": "spatial extension"},
 	"blueprintSpatialIndex": {"postgres": `type "geometry" does not exist`, "duckdb": "spatial extension"},
-	"vector":                {"postgres": `type "vector" does not exist`, "mysql": "vector(3)", "mariadb": "Unknown data type: 'vector'"},
-	"hnswIndex":             {"postgres": `type "vector" does not exist`, "mysql": "vector(3)", "mariadb": "Unknown data type: 'vector'"},
+	"vector":                {"postgres": `type "vector" does not exist`, "mysql": "vector(3)"},
+	"hnswIndex":             {"postgres": `type "vector" does not exist`, "mysql": "vector(3)"},
 }
 
 var collations = map[string]string{

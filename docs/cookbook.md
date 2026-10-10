@@ -821,7 +821,7 @@ scaffolds the file above.
 ## Running the test databases
 
 ```sh
-docker compose up -d --wait   # Postgres 17 :54329, MySQL 8.4 :33069, MariaDB 11.4 :33070
+docker compose up -d --wait   # Postgres 17 :54329, MySQL 8.4 :33069, MariaDB 11.8 :33070
 just test-all
 ```
 

@@ -624,7 +624,7 @@ legitimately differs.
 | SQLite | in-memory or file; JSON1 for JSON columns |
 | Postgres (pgvector) | full parity plus `orm.Vector` columns with HNSW indexes (`t.HnswIndex`) |
 | MySQL 8 / 9 | `DISTANCE()` vector ordering (HeatWave); fulltext and spatial indexes |
-| MariaDB | its own dialect: `INSERT ... RETURNING`, `LOCK IN SHARE MODE`, `VEC_DISTANCE_*` vectors (11.7+) |
+| MariaDB | its own dialect: `INSERT ... RETURNING`, `LOCK IN SHARE MODE`; 11.7+ `VECTOR` columns with `VECTOR INDEX` (`t.HnswIndex`, euclidean or cosine) and `VEC_DISTANCE_*` ordering |
 | DuckDB | embedded OLAP; `orm.From("read_csv('f.csv')")` queries flat files; auto-increment via sequences |
 | ClickHouse | `Update`/`Delete` are synchronous mutations, counted before they run; upserts read the taken keys first; no transactions or generated integer keys |
 | MongoDB | document store: the typed builder translates; joins, unions, subqueries and raw SQL refuse with `orm.ErrNotTranslatable`; keys are uuid/ulid/manual; migrations declare a validator |
@@ -659,7 +659,7 @@ toggling has no effect inside a transaction.
 
 ```sh
 just test                      # SQLite, no setup needed
-docker compose up -d --wait    # Postgres 17 (pgvector), MySQL 8.4, MariaDB 11.4,
+docker compose up -d --wait    # Postgres 17 (pgvector), MySQL 8.4, MariaDB 11.8,
                                # ClickHouse 25, MongoDB 8, Qdrant 1.15
 just test-all                  # every engine
 ```
