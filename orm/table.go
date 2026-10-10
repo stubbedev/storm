@@ -94,7 +94,7 @@ func (t *Table[M]) column(name string) Scalar[M, any] {
 
 func (t *Table[M]) keyOrder() Order[M] {
 	pk := tableColumn[M]{t, t.PrimaryKey}
-	return Order[M]{f: func(b *SQL) { pk.build(b); b.Write(" ASC") }, col: pk}
+	return Order[M]{f: func(b *SQL) { pk.build(b); b.Write(" ASC") }, e: pk, col: pk}
 }
 
 // value reads a column's current value from m.

@@ -223,6 +223,13 @@ name, err := Users.Query().OrderBy(Users.Karma.Desc()).Value(ctx, Users.Name)
 NULLs) have no value and return `orm.ErrNotFound`, never a zero that
 could be real.
 
+A plain order puts NULLs where the engine does — first ascending on
+SQLite, MySQL and MariaDB, last on Postgres, DuckDB and ClickHouse — which
+is what their indexes are built for. `Users.CountryID.Asc().NullsLast()`
+sorts them last on every engine. Offset pagination and chunking end the
+order with the primary key, so ties never skip or repeat rows, and cursor
+pagination sorts nullable columns NULLs last itself.
+
 ## Chunking, iterators, pagination
 
 ```go

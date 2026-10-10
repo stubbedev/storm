@@ -741,6 +741,20 @@ func TestPaginationAndIteration(t *testing.T) {
 		}
 	}
 	eq(t, "row cursor pages over NULLs and times", int64(len(rowsSeen)), total)
+	for _, desc := range []bool{false, true} {
+		order := Users.CountryID.Asc()
+		if desc {
+			order = Users.CountryID.Desc()
+		}
+		ordered := must(Users.Query().WithTrashed().OrderBy(order.NullsLast(), Users.ID.Asc()).Get(ctx))
+		tail := ordered[len(ordered)-2:]
+		eq(t, fmt.Sprintf("nulls last (desc %v)", desc), fmt.Sprint(tail[0].CountryID, tail[1].CountryID), "0 0")
+		eq(t, fmt.Sprintf("nulls last keeps the values first (desc %v)", desc), ordered[0].CountryID != 0, true)
+	}
+	newest := must(Users.Query().WithTrashed().Latest().CursorPaginate(ctx, 2, ""))
+	eq(t, "latest pages by cursor", len(newest.Items), 2)
+	_, err := Countries.Query().Latest().Get(ctx)
+	eq(t, "latest without a created-at column refused", err != nil && strings.Contains(err.Error(), "created-at"), true)
 	byTie := map[int64]bool{}
 	for page := 1; page <= int(total); page++ {
 		for _, u := range must(Users.Query().WithTrashed().OrderBy(Users.Active.Desc()).Paginate(ctx, 1, page)).Items {

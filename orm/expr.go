@@ -2,6 +2,7 @@ package orm
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -148,7 +149,7 @@ func (s Scalar[M, V]) NotBetween(lo, hi V) Cond[M] { return s.between("NOT BETWE
 func (s Scalar[M, V]) IsNull() Cond[M]    { return s.suffix(" IS NULL") }
 func (s Scalar[M, V]) IsNotNull() Cond[M] { return s.suffix(" IS NOT NULL") }
 
-func (s Scalar[M, V]) Asc() Order[M] { return Order[M]{f: s.order(" ASC")} }
+func (s Scalar[M, V]) Asc() Order[M] { return Order[M]{f: s.order(" ASC"), e: s} }
 
 // As selects the expression under a name in a row query: a column whose
 // joined tables share its name, Users.Name.As("user"), or an aggregate,
@@ -156,7 +157,7 @@ func (s Scalar[M, V]) Asc() Order[M] { return Order[M]{f: s.order(" ASC")} }
 func (s Scalar[M, V]) As(alias string) Aliased {
 	return Aliased{selectTerm{f: s.f, col: s.col, alias: alias}}
 }
-func (s Scalar[M, V]) Desc() Order[M] { return Order[M]{f: s.order(" DESC"), desc: true} }
+func (s Scalar[M, V]) Desc() Order[M] { return Order[M]{f: s.order(" DESC"), e: s, desc: true} }
 
 // JSON extracts a value from a JSON column: Users.Settings.JSON[string]("theme").
 // The result type is chosen explicitly at the call site.
@@ -323,8 +324,8 @@ func NewVirtualColumn[M, V any](t *Table[M], name string, ptr func(*M) *V) Colum
 func (c Column[M, V]) Name() string      { return c.name }
 func (c Column[M, V]) Get(m *M) V        { return *c.ptr(m) }
 func (c Column[M, V]) Ptr(m *M) *V       { return c.ptr(m) }
-func (c Column[M, V]) Asc() Order[M]     { return Order[M]{f: c.order(" ASC"), col: c} }
-func (c Column[M, V]) Desc() Order[M]    { return Order[M]{f: c.order(" DESC"), col: c, desc: true} }
+func (c Column[M, V]) Asc() Order[M]     { return Order[M]{f: c.order(" ASC"), e: c, col: c} }
+func (c Column[M, V]) Desc() Order[M]    { return Order[M]{f: c.order(" DESC"), e: c, col: c, desc: true} }
 func (c Column[M, V]) anyPtr(m *M) any   { return c.ptr(m) }
 func (c Column[M, V]) anyValue(m *M) any { return *c.ptr(m) }
 
@@ -433,10 +434,25 @@ func colSets[M any](as []Assignment[M]) []colSet {
 // Order is an ORDER BY term for model M.
 type Order[M any] struct {
 	f         frag
+	e         AnyExpr      // the ordered expression, when the order has one
 	col       AnyColumn[M] // set when ordering by a plain column (needed by CursorPaginate)
 	vec       *VectorOrder // set when ordering by distance from a vector
 	desc      bool
 	nullsLast bool
+}
+
+// NullsLast sorts NULLs after every value, in either direction and on
+// every engine; a plain order puts them where the engine does (first on
+// SQLite, MySQL and MariaDB ascending, last on Postgres, DuckDB and
+// ClickHouse).
+func (o Order[M]) NullsLast() Order[M] {
+	e, desc := o.e, o.desc
+	if e == nil {
+		o.f = func(b *SQL) { b.fail(errors.New("orm: NullsLast needs a column or expression order")) }
+		return o
+	}
+	o.f, o.nullsLast = func(b *SQL) { b.Dialect.NullsLast(b, e, desc) }, true
+	return o
 }
 
 // RawOrder is orderByRaw.

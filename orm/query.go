@@ -241,7 +241,7 @@ func (q Query[M]) OrderBy(orders ...Order[M]) Query[M] {
 // OrderByOf orders by a joined model's columns.
 func (q Query[M]) OrderByOf[O any](orders ...Order[O]) Query[M] {
 	for _, o := range orders {
-		q.orders = append(slices.Clip(q.orders), Order[M]{f: o.f, desc: o.desc})
+		q.orders = append(slices.Clip(q.orders), Order[M]{f: o.f, e: o.e, desc: o.desc, nullsLast: o.nullsLast})
 	}
 	return q
 }
@@ -255,11 +255,14 @@ func (q Query[M]) Oldest(cols ...AnyColumn[M]) Query[M] { return q.byTimestamp(f
 func (q Query[M]) byTimestamp(desc bool, cols []AnyColumn[M]) Query[M] {
 	dir := map[bool]string{true: " DESC", false: " ASC"}[desc]
 	if len(cols) == 0 {
-		t := q.table
-		return q.OrderBy(Order[M]{f: func(b *SQL) { b.Col(t.Name, t.CreatedAt); b.Write(dir) }, desc: desc})
+		if q.table.CreatedAt == "" {
+			q.err = cmp.Or(q.err, fmt.Errorf("orm: Latest or Oldest on %s needs a column: the table maintains no created-at column", q.table.Name))
+			return q
+		}
+		cols = []AnyColumn[M]{tableColumn[M]{q.table, q.table.CreatedAt}}
 	}
 	for _, c := range cols {
-		q = q.OrderBy(Order[M]{f: func(b *SQL) { c.build(b); b.Write(dir) }, col: c, desc: desc})
+		q = q.OrderBy(Order[M]{f: func(b *SQL) { c.build(b); b.Write(dir) }, e: c, col: c, desc: desc})
 	}
 	return q
 }
