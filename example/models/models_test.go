@@ -459,6 +459,12 @@ func TestWrites(t *testing.T) {
 	eq(t, "offset time orders as an instant", must(frank.Where(Users.CreatedAt.Gt(time.Date(2026, 3, 1, 10, 30, 0, 0, time.UTC))).Count(ctx)), int64(0))
 	eq(t, "raw SQL inlines times in UTC", strings.Contains(must(Users.Where(Users.CreatedAt.Eq(at)).ToRawSQL()), "'2026-03-01 10:00:00'"), true)
 
+	ok(Users.Query().Insert(ctx, User{ID: 50, Name: "Keyed", Email: "keyed@example.com"}, User{Name: "Generated", Email: "generated@example.com"}))
+	eq(t, "mixed keys keep the explicit key", must(Users.Find(ctx, 50)).Name, "Keyed")
+	generated := must(Users.Where(Users.Email.Eq("generated@example.com")).First(ctx))
+	eq(t, "mixed keys generate the missing key", generated.ID != 0 && generated.ID != 50, true)
+	eq(t, "mixed keys cleanup", must(Users.Query().WhereKey(int64(50), generated.ID).ForceDelete(ctx)), int64(2))
+
 	eq(t, "mass update", must(Users.Where(Users.CountryID.Eq(2)).Update(ctx, Users.Active.Set(false))), int64(3))
 	eq(t, "increment", must(Posts.Where(Posts.ID.Eq(1)).Increment(ctx, Posts.Views, 10)), int64(1))
 	eq(t, "incremented", must(Posts.Find(ctx, 1)).Views, int64(550))

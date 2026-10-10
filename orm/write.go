@@ -769,12 +769,29 @@ func (q Query[M]) insertRows(ctx context.Context, ms []M, c conflict) error {
 		}
 		return c.storeDocs(ctx, ds, q.connName(), t.Name, docs, t.PrimaryKey)
 	}
-	cols := slices.Clone(t.Columns)
-	if t.KeyType == KeyAutoIncrement && t.PrimaryKey != "" &&
-		!slices.ContainsFunc(ptrs, func(m *M) bool { return !isZero(t.key(m)) }) {
-		cols = slices.DeleteFunc(cols, func(c string) bool { return c == t.PrimaryKey })
+	if t.KeyType != KeyAutoIncrement || t.PrimaryKey == "" {
+		return q.insertSQLRows(ctx, t.Columns, ptrs, c)
 	}
-	return insertSQL(ctx, q.connName(), t.Name, cols, q.modelRows(cols, ptrs), c, t.PrimaryKey)
+	keyed := slices.DeleteFunc(slices.Clone(ptrs), func(m *M) bool { return isZero(t.key(m)) })
+	unkeyed := slices.DeleteFunc(ptrs, func(m *M) bool { return !isZero(t.key(m)) })
+	generated := slices.DeleteFunc(slices.Clone(t.Columns), func(c string) bool { return c == t.PrimaryKey })
+	switch {
+	case len(keyed) == 0:
+		return q.insertSQLRows(ctx, generated, unkeyed, c)
+	case len(unkeyed) == 0:
+		return q.insertSQLRows(ctx, t.Columns, keyed, c)
+	}
+	return TransactionOn(ctx, q.connName(), func(ctx context.Context) error {
+		if err := q.insertSQLRows(ctx, generated, unkeyed, c); err != nil {
+			return err
+		}
+		return q.insertSQLRows(ctx, t.Columns, keyed, c)
+	})
+}
+
+// insertSQLRows inserts ms over cols in one statement.
+func (q Query[M]) insertSQLRows(ctx context.Context, cols []string, ms []*M, c conflict) error {
+	return insertSQL(ctx, q.connName(), q.table.Name, cols, q.modelRows(cols, ms), c, q.table.PrimaryKey)
 }
 
 func (q Query[M]) renderInsert(b *SQL, verb string, cols []string, ms []*M) {
