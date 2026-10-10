@@ -271,6 +271,7 @@ func TestBlueprintSurface(t *testing.T) {
 	assertForeignKeys(t, ctx, orm.DefaultConnection)
 	assertDropHelpers(t, ctx, orm.DefaultConnection)
 	assertTimePrecision(t, ctx, orm.DefaultConnection)
+	assertIndexForms(t, ctx, orm.DefaultConnection)
 
 	ok(schema.Create(ctx, "shortcuts", func(b *schema.Blueprint) { b.ID(); b.String("a") }))
 	ok(schema.Table(ctx, "shortcuts", func(b *schema.Blueprint) { b.String("b").Nullable() }))
@@ -331,4 +332,48 @@ func assertTimePrecision(t *testing.T, ctx context.Context, conn string) {
 	ok(s.Drop(ctx, "stamps"))
 	err := s.Create(ctx, "stamps", func(b *schema.Blueprint) { b.UUIDPrimary(); b.Timestamp("at", 7) })
 	eq(t, conn+" precision past microseconds refused", err != nil && strings.Contains(err.Error(), "0 to 6"), true)
+}
+
+// assertIndexForms creates a partial unique index and an expression index:
+// where the engine has them they must behave, elsewhere they are refused.
+func assertIndexForms(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	s := schema.On(conn)
+	engine := must(s.DriverName(ctx))
+	refusedOr := func(what string, err error) bool {
+		t.Helper()
+		if u, ok := errors.AsType[*schema.UnsupportedError](err); ok {
+			eq(t, what+" refusal names "+engine, u.Engine, engine)
+			return true
+		}
+		ok(err)
+		return false
+	}
+	ok(s.DropIfExists(ctx, "accounts"))
+	err := s.Create(ctx, "accounts", func(b *schema.Blueprint) {
+		b.UUIDPrimary()
+		b.String("email")
+		b.Timestamp("deleted_at").Nullable()
+		b.Unique("email").Where("deleted_at IS NULL")
+	})
+	if !refusedOr("partial index", err) {
+		accounts := orm.From("accounts").On(conn)
+		ok(accounts.Insert(ctx, map[string]any{"id": "0198c0de-0000-7000-8000-0000000000c1", "email": "x@y.z", "deleted_at": time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}))
+		ok(accounts.Insert(ctx, map[string]any{"id": "0198c0de-0000-7000-8000-0000000000c2", "email": "x@y.z"}))
+		eq(t, engine+" partial unique ignores deleted rows", must(accounts.Count(ctx)), int64(2))
+		eq(t, engine+" partial unique holds for live rows", accounts.Insert(ctx, map[string]any{"id": "0198c0de-0000-7000-8000-0000000000c3", "email": "x@y.z"}) != nil, true)
+		ok(s.Drop(ctx, "accounts"))
+	}
+	ok(s.DropIfExists(ctx, "accounts"))
+	err = s.Create(ctx, "accounts", func(b *schema.Blueprint) {
+		b.UUIDPrimary()
+		b.String("email")
+		b.RawIndex("lower(email)", "accounts_email_lower")
+	})
+	if !refusedOr("expression index", err) {
+		eq(t, engine+" expression index exists", must(s.HasIndex(ctx, "accounts", []string{"accounts_email_lower"})), true)
+		ok(s.Table(ctx, "accounts", func(b *schema.Blueprint) { b.DropIndex("accounts_email_lower") }))
+		eq(t, engine+" expression index dropped", must(s.HasIndex(ctx, "accounts", []string{"accounts_email_lower"})), false)
+	}
+	ok(s.DropIfExists(ctx, "accounts"))
 }

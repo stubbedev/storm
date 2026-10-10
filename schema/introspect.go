@@ -253,11 +253,11 @@ func (x session) indexes(ctx context.Context, table string) ([]IndexInfo, error)
 			SELECT 'primary', primary_key, false, true FROM system.tables WHERE database = currentDatabase() AND name = ? AND primary_key != ''`,
 	}, x.tableArgs(table), func(r *sql.Rows) error {
 		var i IndexInfo
-		var cols string
+		var cols sql.NullString
 		if err := r.Scan(&i.Name, &cols, &i.Unique, &i.Primary); err != nil {
 			return err
 		}
-		i.Columns = x.indexColumns(cols)
+		i.Columns = x.indexColumns(cols.String)
 		out = append(out, i)
 		return nil
 	})

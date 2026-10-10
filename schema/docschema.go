@@ -142,6 +142,9 @@ func docIndex(ds orm.DocSchema, table string, cmd *command, fields []orm.DocFiel
 	case cmdForeign:
 		return orm.DocIndex{}, docUnsupported(ds, table, cmd.kind.String(), "documents have no foreign keys")
 	}
+	if cmd.index.Expression != "" || cmd.index.Predicate != "" {
+		return orm.DocIndex{}, docUnsupported(ds, table, cmd.kind.String(), "expression and partial indexes are SQL")
+	}
 	idx := orm.DocIndex{
 		Name:    cmd.index.IndexName,
 		Unique:  cmd.kind == cmdUnique || cmd.kind == cmdPrimary,

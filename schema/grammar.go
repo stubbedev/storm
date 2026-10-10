@@ -925,10 +925,13 @@ func (g grammar) foreign(table string, f *Foreign) (string, error) {
 // ClickHouse table creation a single statement (and CreateIfNotExists
 // idempotent).
 func (g grammar) inlineIndex(table string, cmd *command) (string, error) {
+	if err := g.checkIndexForm(table, cmd); err != nil {
+		return "", err
+	}
 	if g.engine == engineClickHouse {
 		return g.clickhouseIndex(table, cmd)
 	}
-	name, cols := g.quote(cmd.index.IndexName), " ("+g.list(cmd.columns)+")"
+	name, cols := g.quote(cmd.index.IndexName), g.indexTarget(cmd)
 	switch cmd.kind {
 	case cmdUnique:
 		return "UNIQUE KEY " + name + cols + g.mysqlAlgorithm(cmd.index), nil
@@ -975,12 +978,15 @@ func (g grammar) createIndex(table string, cmd *command, ifNot bool) (string, er
 		def, err := g.clickhouseIndex(table, cmd)
 		return "ALTER TABLE " + g.quote(table) + " ADD " + def, err
 	}
+	if err := g.checkIndexForm(table, cmd); err != nil {
+		return "", err
+	}
 	exists := ""
 	if ifNot && !g.mysqlFamily() {
 		exists = "IF NOT EXISTS "
 	}
 	name, on := exists+g.quote(idx.IndexName), " ON "+g.quote(table)
-	cols := " (" + g.list(cmd.columns) + ")"
+	cols := g.indexTarget(cmd)
 	op := cmd.kind.String() + " " + idx.IndexName
 	switch cmd.kind {
 	case cmdFullText:
@@ -1019,11 +1025,15 @@ func (g grammar) createIndex(table string, cmd *command, ifNot bool) (string, er
 	}
 	unique := map[bool]string{true: "UNIQUE ", false: ""}[cmd.kind == cmdUnique]
 	s := "CREATE " + unique + "INDEX " + name + on
+	where := ""
+	if idx.Predicate != "" {
+		where = " WHERE " + idx.Predicate
+	}
 	switch {
 	case idx.Algo == "":
-		return s + cols, nil
+		return s + cols + where, nil
 	case g.engine == enginePostgres:
-		return s + " USING " + idx.Algo + cols, nil
+		return s + " USING " + idx.Algo + cols + where, nil
 	case g.engine == engineDuckDB:
 		return "", g.unsupported(table, op+" using "+idx.Algo, "DuckDB picks its index structure itself")
 	case g.mysqlFamily():
@@ -1032,6 +1042,33 @@ func (g grammar) createIndex(table string, cmd *command, ifNot bool) (string, er
 		return s + cols, nil
 	}
 	return "", g.unsupported(table, op+" using "+idx.Algo, "SQLite indexes are always B-trees")
+}
+
+// indexTarget is the parenthesised column list, or the expression of a
+// RawIndex.
+func (g grammar) indexTarget(cmd *command) string {
+	if cmd.index.Expression != "" {
+		return " ((" + cmd.index.Expression + "))"
+	}
+	return " (" + g.list(cmd.columns) + ")"
+}
+
+// checkIndexForm refuses partial and expression indexes where the engine
+// has none.
+func (g grammar) checkIndexForm(table string, cmd *command) error {
+	op := cmd.kind.String() + " " + cmd.index.IndexName
+	if cmd.index.Predicate != "" {
+		if g.engine != enginePostgres && g.engine != engineSQLite {
+			return g.unsupported(table, op+" over part of the rows", "partial indexes need Postgres or SQLite")
+		}
+		if cmd.kind != cmdIndex && cmd.kind != cmdUnique {
+			return g.unsupported(table, op+" over part of the rows", "only plain and unique indexes can be partial")
+		}
+	}
+	if cmd.index.Expression != "" && g.engine == engineMariaDB {
+		return g.unsupported(table, op+" on an expression", "MariaDB indexes columns only; index a generated column")
+	}
+	return nil
 }
 
 func (g grammar) comments(bp *Blueprint) []string {

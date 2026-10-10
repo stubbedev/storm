@@ -783,6 +783,15 @@ on that connection — a MongoDB or Qdrant one included (see the README's
 store keeps its log there. `Migrator` exposes the same operations
 programmatically, for example to migrate in tests.
 
+Indexes can be partial or cover an expression:
+
+```go
+t.Unique("email").Where("deleted_at IS NULL")    // unique among live rows (Postgres, SQLite)
+t.RawIndex("lower(email)", "users_email_lower")  // expression index (not MariaDB)
+```
+
+Engines without the form refuse it with a `schema.UnsupportedError`.
+
 Time columns take an optional precision, the fractional second digits
 stored: `t.Timestamp("at", 6)`, `t.Timestamps(3)`, `t.DateTime("seen",
 6).UseCurrent()` (MySQL's default becomes `CURRENT_TIMESTAMP(6)`). The

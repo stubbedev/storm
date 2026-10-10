@@ -207,7 +207,10 @@ func (g grammar) clickhouseIndex(table string, cmd *command) (string, error) {
 		return "", g.unsupported(table, op, "ClickHouse has data skipping indexes only; use Index(...).Algorithm(\"tokenbf_v1(...)\") or similar")
 	}
 	expr := g.list(cmd.columns)
-	if len(cmd.columns) > 1 {
+	switch {
+	case cmd.index.Expression != "":
+		expr = cmd.index.Expression
+	case len(cmd.columns) > 1:
 		expr = "(" + expr + ")"
 	}
 	return "INDEX " + g.quote(cmd.index.IndexName) + " " + expr + " TYPE " + cmp.Or(cmd.index.Algo, "bloom_filter") + " GRANULARITY 1", nil

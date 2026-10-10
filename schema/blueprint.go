@@ -547,11 +547,13 @@ func (c *Column) Constrained(tableAndColumn ...string) *Foreign {
 
 // Index is an index definition with chainable modifiers.
 type Index struct {
-	IndexName string
-	Columns   []string
-	Algo      string // btree, hash, gin, gist, hnsw, ...; ClickHouse skip index type
-	Lang      string // full text language (Postgres)
-	VectorOp  string // pgvector operator class (vector_cosine_ops, ...)
+	IndexName  string
+	Columns    []string
+	Algo       string // btree, hash, gin, gist, hnsw, ...; ClickHouse skip index type
+	Lang       string // full text language (Postgres)
+	VectorOp   string // pgvector operator class (vector_cosine_ops, ...)
+	Expression string // RawIndex: the indexed SQL expression instead of columns
+	Predicate  string // Where: the rows a partial index covers
 }
 
 func vectorOpClass(m orm.VectorMetric) string {
@@ -567,6 +569,11 @@ func vectorOpClass(m orm.VectorMetric) string {
 
 func (i *Index) Name(name string) *Index { i.IndexName = name; return i }
 
+// Where makes the index partial: it covers only the rows the SQL
+// predicate holds for, so Unique("email").Where("deleted_at IS NULL") keeps
+// emails unique among live rows. Postgres and SQLite have partial indexes.
+func (i *Index) Where(predicate string) *Index { i.Predicate = predicate; return i }
+
 // Algorithm sets the index method: USING on Postgres, MySQL and DuckDB; the
 // data skipping index TYPE on ClickHouse (bloom_filter by default, or
 // minmax, set(100), ...).
@@ -577,7 +584,15 @@ func (i *Index) Language(lang string) *Index  { i.Lang = lang; return i }
 // key, which also becomes the sorting key unless OrderBy sets one.
 func (b *Blueprint) Primary(cols ...string) *Index { return b.index(cmdPrimary, "primary", cols) }
 
-func (b *Blueprint) Unique(cols ...string) *Index   { return b.index(cmdUnique, "unique", cols) }
+func (b *Blueprint) Unique(cols ...string) *Index { return b.index(cmdUnique, "unique", cols) }
+
+// RawIndex indexes an SQL expression (rawIndex): RawIndex("lower(email)",
+// "users_email_lower"). MariaDB indexes columns only.
+func (b *Blueprint) RawIndex(expression, name string) *Index {
+	idx := &Index{IndexName: name, Expression: expression}
+	b.commands = append(b.commands, &command{kind: cmdIndex, index: idx})
+	return idx
+}
 func (b *Blueprint) Index(cols ...string) *Index    { return b.index(cmdIndex, "index", cols) }
 func (b *Blueprint) FullText(cols ...string) *Index { return b.index(cmdFullText, "fulltext", cols) }
 
