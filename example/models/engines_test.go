@@ -379,6 +379,7 @@ func assertLimitedMutations(t *testing.T, ctx context.Context, conn string) {
 	for i, name := range []string{"a", "b", "c", "d", "e"} {
 		ok(rows.Insert(ctx, map[string]any{"id": i + 1, "name": name, "kind": "plain", "karma": i + 1}))
 	}
+	eq(t, conn+" offset without limit", len(must(rows.OrderBy("name").Offset(3).Get(ctx))), 2)
 	byName := func() string {
 		return fmt.Sprint(must(rows.OrderBy("name").Pluck(ctx, "kind")))
 	}

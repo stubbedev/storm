@@ -34,6 +34,8 @@ var DuckDB Dialect = duckdbDialect{}
 
 func (duckdbDialect) Name() string { return "duckdb" }
 
+func (duckdbDialect) Limit(b *SQL, l, o int) { limit(b, l, o, "") }
+
 func (duckdbDialect) Bool(v bool) string {
 	return map[bool]string{true: "true", false: "false"}[v]
 }
