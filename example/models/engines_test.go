@@ -243,7 +243,7 @@ func assertDocModelQueries(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" without global scope", must(notes.WithoutGlobalScope("published").Count(ctx)), int64(4))
 	eq(t, conn+" scoped exists", must(notes.Where(Notes.Views.Eq(4)).Exists(ctx)), false)
 	eq(t, conn+" soft delete", must(notes.Where(Notes.Title.Eq("a")).Delete(ctx)), int64(1))
-	eq(t, conn+" soft deleted hidden", must(notes.Pluck(ctx, Notes.Title)), []string{"b", "c"})
+	eq(t, conn+" soft deleted hidden", must(notes.OrderBy(Notes.Views.Asc()).Pluck(ctx, Notes.Title)), []string{"b", "c"})
 	eq(t, conn+" with trashed", must(notes.WithTrashed().Count(ctx)), int64(3))
 	eq(t, conn+" only trashed", must(notes.OnlyTrashed().Pluck(ctx, Notes.Title)), []string{"a"})
 	eq(t, conn+" pluck map", must(notes.OrderBy(Notes.Views.Asc()).PluckMap(ctx, Notes.Title, Notes.Views)), map[string]int64{"b": 2, "c": 3})
