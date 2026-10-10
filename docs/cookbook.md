@@ -144,7 +144,8 @@ Users.Where(Users.ID.In(1, 2), Users.Karma.Between(10, 50), Users.Email.Like("%@
 Users.Where(Users.Settings.IsNull())
 Users.Query().WhereKey(1, 4)
 Users.Where(Users.CreatedAt.EqCol(Users.UpdatedAt))             // whereColumn
-Users.Where(orm.AnyOf("LIKE", "%car%", Users.Name, Users.Email)) // whereAny
+Users.Where(orm.AnyOf(orm.ILike, "%car%", Users.Name, Users.Email)) // whereAny
+Users.Where(Users.Name.Contains("50%"), Users.Email.EndsWith("@example.com")) // literal text
 Users.Where(orm.Raw[User]("karma % 2 = ?", 1))                  // whereRaw
 
 Posts.Where(orm.Year(Posts.CreatedAt).Eq(2026))                 // whereYear
@@ -163,6 +164,14 @@ Users.Query().When(onlyActive, func(q orm.Query[User]) orm.Query[User] {
 	return q.Where(Users.Active.Eq(true))
 })
 ```
+
+`Like` and `NotLike` take a SQL pattern (`%` any run, `_` one character,
+`\` escaping either) and are case-sensitive on every engine; `ILike` and
+`NotILike` ignore case on every engine. `Contains`, `StartsWith` and
+`EndsWith` match their text literally (`orm.EscapeLike` escapes it), and
+wildcards match across newlines everywhere. An operator outside the `orm.`
+constants fails the query with an error.
+
 
 Subqueries:
 
@@ -537,7 +546,7 @@ err = orm.From("users").UpdateOrInsert(ctx,
 ```
 
 Operators are `orm.Op` constants (`orm.Eq`, `orm.Neq`, `orm.Gt`, `orm.Gte`,
-`orm.Lt`, `orm.Lte`, `orm.Like`, `orm.NotLike`, `orm.Ilike`, `orm.NotIlike`);
+`orm.Lt`, `orm.Lte`, `orm.Like`, `orm.NotLike`, `orm.ILike`, `orm.NotILike`);
 string literals still convert. When a model exists, its typed columns carry
 over — completion lists the valid columns and the values are compile-checked:
 

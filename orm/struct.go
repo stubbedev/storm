@@ -71,19 +71,8 @@ func (r RowQuery) WithKey(col string) RowQuery { r.key = col; return r }
 
 func (r RowQuery) connName() string { return cmp.Or(r.conn, DefaultConnection) }
 
-func checkOp(op string) {
-	if _, ok := negations[Op(op)]; !ok {
-		panic(fmt.Sprintf("orm: unknown comparison operator %q", op))
-	}
-}
-
 func (r RowQuery) cond(col string, op Op, v any) (frag, Node) {
-	checkOp(string(op))
-	return func(b *SQL) {
-		b.Ident(col)
-		b.Write(" ", string(op), " ")
-		b.Arg(v)
-	}, Field{Column: col, Op: string(op), Value: v}
+	return func(b *SQL) { compare(b, identExpr(col), op, v) }, Field{Column: col, Op: string(op), Value: v}
 }
 
 // Where adds a simple column condition (where('active', '=', true)); the
@@ -226,11 +215,12 @@ func rawCond(sql string, args []any) frag {
 }
 
 func columnCond(first string, op Op, second string) frag {
-	checkOp(string(op))
 	return func(b *SQL) {
-		b.Ident(first)
-		b.Write(" ", string(op), " ")
-		b.Ident(second)
+		if knownOp(b, op) {
+			b.Ident(first)
+			b.Write(" ", string(op), " ")
+			b.Ident(second)
+		}
 	}
 }
 

@@ -409,6 +409,7 @@ func TestRelationQueries(t *testing.T) {
 func TestWrites(t *testing.T) {
 	ctx := setup(t)
 	assertLimitedMutations(t, ctx, orm.DefaultConnection)
+	assertLikes(t, ctx, orm.DefaultConnection)
 	assertBigNumbers(t, ctx, orm.DefaultConnection, driver == "mysql")
 
 	u := User{Name: "Frank", Email: "frank@example.com", Active: true, CountryID: 2}

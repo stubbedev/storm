@@ -96,17 +96,10 @@ func (duckdbDialect) JSONHasKey(b *SQL, e AnyExpr, path []string) {
 
 // FullText matches term anywhere in any of exprs, ignoring case like the
 // other engines' natural-language search.
-func (duckdbDialect) FullText(b *SQL, exprs []AnyExpr, term string) {
-	b.Write("(")
-	for i, e := range exprs {
-		if i > 0 {
-			b.Write(" OR ")
-		}
-		e.build(b)
-		b.Write(" ILIKE ")
-		b.Arg("%" + term + "%")
-	}
-	b.Write(")")
+func (duckdbDialect) FullText(b *SQL, exprs []AnyExpr, term string) { likeAny(b, exprs, term) }
+
+func (duckdbDialect) Like(b *SQL, e AnyExpr, pattern string, caseless, not bool) {
+	standardLike(b, e, pattern, caseless, not)
 }
 
 func (duckdbDialect) Truncate(table string) []string {
@@ -170,6 +163,15 @@ func (clickhouseDialect) AutoKeys() bool { return false }
 func (clickhouseDialect) Lock(LockMode) string { return "" }
 
 func (clickhouseDialect) Random() string { return "rand()" }
+
+// Like on ClickHouse, whose LIKE is case-sensitive, ILIKE caseless, and
+// backslash the fixed escape.
+func (clickhouseDialect) Like(b *SQL, e AnyExpr, pattern string, caseless, not bool) {
+	e.build(b)
+	b.Write(map[bool]string{true: " NOT", false: ""}[not])
+	b.Write(map[bool]string{true: " ILIKE ", false: " LIKE "}[caseless])
+	b.Arg(pattern)
+}
 
 func (clickhouseDialect) Limit(b *SQL, l, o int) {
 	if l > 0 {

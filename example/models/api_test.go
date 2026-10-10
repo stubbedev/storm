@@ -23,19 +23,19 @@ func TestScalarExpressions(t *testing.T) {
 	eq(t, "ltCol", get(Users.Where(Users.Karma.LtCol(fortyTwo))), []string{"Bob", "Dave"})
 	eq(t, "lteCol", get(Users.Where(Users.Karma.LteCol(fortyTwo))), []string{"Alice", "Bob", "Dave"})
 	eq(t, "cmp", get(Users.Where(Users.Karma.Cmp(orm.Gt, fortyTwo))), []string{"Carol"})
-	eq(t, "unknown operator panics", panics(func() { Users.Karma.Cmp("<=>", fortyTwo) }), true)
+	_, err := Users.Where(Users.Karma.Cmp("<=>", fortyTwo)).Get(ctx)
+	eq(t, "unknown operator refused", err != nil && strings.Contains(err.Error(), "unknown comparison operator"), true)
 
-	eq(t, "notLike", get(Users.Where(Users.Name.NotLike("ar"))), []string{"Alice", "Bob", "Dave"})
+	eq(t, "notLike", get(Users.Where(Users.Name.NotLike("%ar%"))), []string{"Alice", "Bob", "Dave"})
 	eq(t, "notIn", get(Users.Where(Users.ID.NotIn(1, 2))), []string{"Carol", "Dave"})
 	eq(t, "notInSub", get(Users.Where(Users.ID.NotInSub(Posts.Query().Subquery(Posts.UserID)))), []string{"Dave"})
 	eq(t, "notBetween", get(Users.Where(Users.Karma.NotBetween(10, 50))), []string{"Carol", "Dave"})
 	eq(t, "notExists", get(Users.Where(orm.NotExists[User](Posts.Where(Posts.UserID.EqCol(Users.ID))))), []string{"Dave"})
 	eq(t, "allOf", get(Users.Where(orm.AllOf(orm.Like, "%e%", Users.Name, Users.Email))), []string{"Alice", "Dave"})
 	eq(t, "allOf negates every operator", get(Users.Where(orm.AllOf(orm.Gte, 17, Users.Karma))), []string{"Alice", "Bob", "Carol"})
-	eq(t, "anyOf unknown operator panics", panics(func() { orm.AnyOf[User]("~", "x", Users.Name) }), true)
-	if driver == "pgx" {
-		eq(t, "allOf ilike", get(Users.Where(orm.AllOf(orm.Ilike, "%A%", Users.Name, Users.Email))), []string{"Alice", "Carol", "Dave"})
-	}
+	_, err = Users.Where(orm.AnyOf[User]("~", "x", Users.Name)).Get(ctx)
+	eq(t, "anyOf unknown operator refused", err != nil && strings.Contains(err.Error(), "unknown comparison operator"), true)
+	eq(t, "allOf ilike", get(Users.Where(orm.AllOf(orm.ILike, "%A%", Users.Name, Users.Email))), []string{"Alice", "Carol", "Dave"})
 
 	byLower := must(Users.Query().OrderBy(orm.Lower(Users.Name).Desc()).Get(ctx))
 	eq(t, "expression desc", names(byLower), []string{"Dave", "Carol", "Bob", "Alice"})

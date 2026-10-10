@@ -37,6 +37,9 @@ type Dialect interface {
 	JSONOverlaps(b *SQL, e AnyExpr, v any)
 	JSONLength(b *SQL, e AnyExpr)
 	JSONHasKey(b *SQL, e AnyExpr, path []string)
+	// Like writes a LIKE match of e against pattern (% and _ wildcards, \
+	// escaping them), case-sensitive unless caseless, negated when not.
+	Like(b *SQL, e AnyExpr, pattern string, caseless, not bool)
 	// FullText writes a full text match of term against exprs (whereFullText).
 	FullText(b *SQL, exprs []AnyExpr, term string)
 	// VectorDistance orders by the distance between the vector expression e
@@ -136,17 +139,73 @@ func (sqliteDialect) JSONHasKey(b *SQL, e AnyExpr, path []string) {
 
 // FullText on SQLite falls back to case-insensitive LIKE on each column;
 // real full text search there needs an FTS5 virtual table.
-func (sqliteDialect) FullText(b *SQL, exprs []AnyExpr, term string) {
+func (sqliteDialect) FullText(b *SQL, exprs []AnyExpr, term string) { likeAny(b, exprs, term) }
+
+// Like on SQLite: LIKE ignores ASCII case there, so a case-sensitive match
+// is GLOB over the pattern translated to GLOB's wildcards.
+func (sqliteDialect) Like(b *SQL, e AnyExpr, pattern string, caseless, not bool) {
+	e.build(b)
+	b.Write(map[bool]string{true: " NOT", false: ""}[not])
+	if caseless {
+		b.Write(" LIKE ")
+		b.Arg(pattern)
+		b.Write(` ESCAPE '\'`)
+		return
+	}
+	b.Write(" GLOB ")
+	b.Arg(globPattern(pattern))
+}
+
+// globPattern is a LIKE pattern as a GLOB pattern: % and _ become * and ?,
+// and GLOB's own metacharacters match themselves.
+func globPattern(pattern string) string {
+	var g strings.Builder
+	escaped := false
+	for _, r := range pattern {
+		switch {
+		case escaped:
+			escaped = false
+			g.WriteString(globLiteral(r))
+		case r == '\\':
+			escaped = true
+		case r == '%':
+			g.WriteByte('*')
+		case r == '_':
+			g.WriteByte('?')
+		default:
+			g.WriteString(globLiteral(r))
+		}
+	}
+	return g.String()
+}
+
+func globLiteral(r rune) string {
+	if r == '*' || r == '?' || r == '[' {
+		return "[" + string(r) + "]"
+	}
+	return string(r)
+}
+
+// likeAny matches term anywhere in any of exprs, ignoring case.
+func likeAny(b *SQL, exprs []AnyExpr, term string) {
 	b.Write("(")
 	for i, e := range exprs {
 		if i > 0 {
 			b.Write(" OR ")
 		}
-		e.build(b)
-		b.Write(" LIKE ")
-		b.Arg("%" + term + "%")
+		b.Dialect.Like(b, e, "%"+EscapeLike(term)+"%", true, false)
 	}
 	b.Write(")")
+}
+
+// standardLike is LIKE / ILIKE with an explicit backslash escape
+// (Postgres, DuckDB).
+func standardLike(b *SQL, e AnyExpr, pattern string, caseless, not bool) {
+	e.build(b)
+	b.Write(map[bool]string{true: " NOT", false: ""}[not])
+	b.Write(map[bool]string{true: " ILIKE ", false: " LIKE "}[caseless])
+	b.Arg(pattern)
+	b.Write(` ESCAPE '\'`)
 }
 
 func (d sqliteDialect) Truncate(table string) []string {
@@ -218,6 +277,10 @@ func (postgresDialect) AutoKeys() bool           { return true }
 func (postgresDialect) InsertVerb(bool) string   { return "INSERT" }
 func (postgresDialect) Random() string           { return "RANDOM()" }
 func (postgresDialect) Limit(b *SQL, l, o int)   { limit(b, l, o, "") }
+
+func (postgresDialect) Like(b *SQL, e AnyExpr, pattern string, caseless, not bool) {
+	standardLike(b, e, pattern, caseless, not)
+}
 
 func (postgresDialect) Lock(m LockMode) string {
 	return map[LockMode]string{ForUpdate: " FOR UPDATE", ForShare: " FOR SHARE"}[m]
@@ -331,6 +394,28 @@ func (mysqlDialect) Returning() bool        { return false }
 func (mysqlDialect) AutoKeys() bool         { return true }
 func (mysqlDialect) Random() string         { return "RAND()" }
 func (mysqlDialect) Limit(b *SQL, l, o int) { limit(b, l, o, "18446744073709551615") }
+
+// Like on MySQL and MariaDB, where LIKE follows the column's collation
+// (case-insensitive by default): a binary pattern makes the match
+// case-sensitive, lowering both sides makes it caseless on any collation.
+// Backslash is LIKE's default escape there.
+func (mysqlDialect) Like(b *SQL, e AnyExpr, pattern string, caseless, not bool) {
+	if caseless {
+		fn(b, "LOWER", e)
+	} else {
+		e.build(b)
+	}
+	b.Write(map[bool]string{true: " NOT", false: ""}[not], " LIKE ")
+	if caseless {
+		b.Write("LOWER(")
+		b.Arg(pattern)
+		b.Write(")")
+		return
+	}
+	b.Write("CAST(")
+	b.Arg(pattern)
+	b.Write(" AS BINARY)")
+}
 
 func (mysqlDialect) InsertVerb(ignore bool) string {
 	if ignore {

@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -710,10 +711,11 @@ func mongoCond(n Node, key string) (bson.D, error) {
 			if err != nil {
 				return nil, err
 			}
-			match := bson.D{{Key: "$regex", Value: re}}
+			options := "s"
 			if strings.Contains(c.Op, "ILIKE") {
-				match = append(match, bson.E{Key: "$options", Value: "i"})
+				options = "si"
 			}
+			match := bson.D{{Key: "$regex", Value: re}, {Key: "$options", Value: options}}
 			if strings.HasPrefix(c.Op, "NOT") {
 				return bson.D{{Key: mongoField(c.Column, key), Value: bson.D{{Key: "$not", Value: match}, {Key: "$ne", Value: nil}}}}, nil
 			}
@@ -795,8 +797,9 @@ func mongoOp(op string) string {
 	return map[string]string{">": "gt", ">=": "gte", "<": "lt", "<=": "lte"}[op]
 }
 
-// likeRegex turns a SQL LIKE pattern (with % and _) into an anchored
-// case-sensitive regular expression.
+// likeRegex turns a SQL LIKE pattern (%, _ and \ escapes) into an
+// anchored regular expression; the s option lets wildcards cross newlines
+// as they do in SQL.
 func likeRegex(v any) (string, error) {
 	s, ok := v.(string)
 	if !ok {
@@ -804,17 +807,20 @@ func likeRegex(v any) (string, error) {
 	}
 	var b strings.Builder
 	b.WriteString("^")
+	escaped := false
 	for _, r := range s {
-		switch r {
-		case '%':
+		switch {
+		case escaped:
+			escaped = false
+			b.WriteString(regexp.QuoteMeta(string(r)))
+		case r == '\\':
+			escaped = true
+		case r == '%':
 			b.WriteString(".*")
-		case '_':
+		case r == '_':
 			b.WriteString(".")
 		default:
-			if strings.ContainsRune(`\.+*?()[]{}|^$`, r) {
-				b.WriteRune('\\')
-			}
-			b.WriteRune(r)
+			b.WriteString(regexp.QuoteMeta(string(r)))
 		}
 	}
 	b.WriteString("$")

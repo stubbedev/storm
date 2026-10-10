@@ -149,7 +149,7 @@ func assertEvents(t *testing.T, ctx context.Context, conn string) {
 	}
 	eq(t, conn+" random order", len(must(Events.Query().On(conn).InRandomOrder().Get(ctx))), 2)
 
-	raw := must(Events.Query().On(conn).Where(Events.Active.Eq(true), Events.Body.Like("warn")).ToRawSQL())
+	raw := must(Events.Query().On(conn).Where(Events.Active.Eq(true), Events.Body.Contains("warn")).ToRawSQL())
 	c := must(orm.Connection(ctx, conn))
 	rows := must(c.DB.QueryContext(ctx, raw))
 	matched := 0

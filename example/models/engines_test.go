@@ -400,9 +400,9 @@ func assertTransactionModes(t *testing.T, ctx context.Context, conn string, tran
 	eq(t, conn+" failed nested transaction rolls back the whole", errors.Is(err, orm.ErrNestedFailed) && must(rows.Count(ctx)) == 2, true)
 }
 
-// assertLimitedMutations checks Limit, Offset and OrderBy narrow updates
-// and deletes to the rows a SELECT would pick, through both builders.
-func assertLimitedMutations(t *testing.T, ctx context.Context, conn string) {
+// scratchWidgets creates a fresh widgets table holding names (ids 1.., karma
+// equal to the id, kind "plain"), dropped when the test ends.
+func scratchWidgets(t *testing.T, ctx context.Context, conn string, names ...string) orm.RowQuery {
 	t.Helper()
 	tCheck(t, schema.On(conn).DropIfExists(ctx, "widgets"))
 	tCheck(t, schema.On(conn).Create(ctx, "widgets", func(t *schema.Blueprint) {
@@ -412,11 +412,39 @@ func assertLimitedMutations(t *testing.T, ctx context.Context, conn string) {
 		t.BigInteger("karma").Default(0)
 		t.Timestamps()
 	}))
-	defer func() { tCheck(t, schema.On(conn).DropIfExists(ctx, "widgets")) }()
+	t.Cleanup(func() { tCheck(t, schema.On(conn).DropIfExists(context.Background(), "widgets")) })
 	rows := orm.From("widgets").On(conn)
-	for i, name := range []string{"a", "b", "c", "d", "e"} {
+	for i, name := range names {
 		ok(rows.Insert(ctx, map[string]any{"id": i + 1, "name": name, "kind": "plain", "karma": i + 1}))
 	}
+	return rows
+}
+
+// assertLikes checks LIKE means the same on every engine: the pattern's
+// wildcards and escapes, case sensitivity, and matches across newlines.
+func assertLikes(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	scratchWidgets(t, ctx, conn, "100%", "1000", "a_b", "axb", "Alpha", "alpha", "line\nbreak", "star*")
+	widgets := Widgets.Query().On(conn)
+	count := func(c orm.Cond[Widget]) int64 { return must(widgets.Where(c).Count(ctx)) }
+	eq(t, conn+" contains escapes %", count(Widgets.Name.Contains("100%")), int64(1))
+	eq(t, conn+" like wildcards", count(Widgets.Name.Like("a_b")), int64(2))
+	eq(t, conn+" like escapes", count(Widgets.Name.Like(`a\_b`)), int64(1))
+	eq(t, conn+" like is case-sensitive", count(Widgets.Name.StartsWith("Al")), int64(1))
+	eq(t, conn+" ilike ignores case", count(Widgets.Name.ILike("al%")), int64(2))
+	eq(t, conn+" not ilike", count(Widgets.Name.NotILike("AL%")), int64(6))
+	eq(t, conn+" like crosses newlines", count(Widgets.Name.Contains("break")), int64(1))
+	eq(t, conn+" not like", count(Widgets.Name.NotLike("%a%")), int64(2))
+	eq(t, conn+" glob metacharacters are text", count(Widgets.Name.EndsWith("*")), int64(1))
+	eq(t, conn+" row like", must(orm.From("widgets").On(conn).Where("name", orm.Like, "1%").Count(ctx)), int64(2))
+	eq(t, conn+" row ilike", must(orm.From("widgets").On(conn).Where("name", orm.ILike, "ALPHA").Count(ctx)), int64(2))
+}
+
+// assertLimitedMutations checks Limit, Offset and OrderBy narrow updates
+// and deletes to the rows a SELECT would pick, through both builders.
+func assertLimitedMutations(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	rows := scratchWidgets(t, ctx, conn, "a", "b", "c", "d", "e")
 	eq(t, conn+" offset without limit", len(must(rows.OrderBy("name").Offset(3).Get(ctx))), 2)
 	eq(t, conn+" qualified pluck", fmt.Sprint(must(rows.OrderBy("widgets.name").Pluck(ctx, "widgets.name"))), "[a b c d e]")
 	widgetQuery := Widgets.Query().On(conn)
@@ -455,7 +483,7 @@ func assertWidgets(t *testing.T, ctx context.Context, conn string) {
 	eq(t, "order desc", ws[0].Name, "gamma")
 	n := must(Widgets.Query().On(conn).Count(ctx))
 	eq(t, "count", n, int64(3))
-	first := must(Widgets.Query().On(conn).Where(Widgets.Name.Like("alp")).First(ctx))
+	first := must(Widgets.Query().On(conn).Where(Widgets.Name.StartsWith("alp")).First(ctx))
 	eq(t, "like", first.Name, "alpha")
 
 	w := first
@@ -491,6 +519,7 @@ func TestDuckDB(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	assertLimitedMutations(t, ctx, "duck")
+	assertLikes(t, ctx, "duck")
 	assertTransactionModes(t, ctx, "duck", true)
 	assertBigNumbers(t, ctx, "duck", true)
 	createWidgetTable(ctx, t, "duck", func(t *schema.Blueprint) { t.ID() })
@@ -559,6 +588,7 @@ func TestClickHouse(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	assertLimitedMutations(t, ctx, "ch")
+	assertLikes(t, ctx, "ch")
 	assertTransactionModes(t, ctx, "ch", false)
 	assertBigNumbers(t, ctx, "ch", true)
 	createWidgetTable(ctx, t, "ch", func(t *schema.Blueprint) { t.BigInteger("id").Primary() })
@@ -733,9 +763,10 @@ func TestMongo(t *testing.T) {
 	eq(t, "orIgnore inserted missing", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("ignored newcomer")).Count(ctx)), int64(1))
 	assertDocPagination(t, ctx, "mongo", 4)
 
-	eq(t, "like", must(Docs.Query().On("mongo").Where(Docs.Title.Like("ea")).Count(ctx)), int64(1))
-	eq(t, "like escapes regex syntax", must(Docs.Query().On("mongo").Where(Docs.Title.Like("(n")).Count(ctx)), int64(0))
+	eq(t, "like", must(Docs.Query().On("mongo").Where(Docs.Title.Contains("ea")).Count(ctx)), int64(1))
+	eq(t, "like escapes regex syntax", must(Docs.Query().On("mongo").Where(Docs.Title.Contains("(n")).Count(ctx)), int64(0))
 	eq(t, "like with wildcards", must(orm.From("documents").On("mongo").Where("title", orm.Like, "n_ar").Count(ctx)), int64(1))
+	eq(t, "like escapes wildcards", must(orm.From("documents").On("mongo").Where("title", orm.Like, `n\_ar`).Count(ctx)), int64(0))
 
 	assertValuerErrors(t, ctx, "mongo")
 	_, err = orm.SelectOn(ctx, "mongo", "SELECT 1")
@@ -763,8 +794,8 @@ func TestMongo(t *testing.T) {
 	_, err = mongoDocs.Explain(ctx)
 	eq(t, "row explain refused", orm.IsNotTranslatable(err), true)
 	eq(t, "not equal", must(orm.From("documents").On("mongo").Where("title", "!=", "near").Count(ctx)), int64(3))
-	eq(t, "ilike", must(orm.From("documents").On("mongo").Where("title", orm.Ilike, "NEAR").Count(ctx)), int64(1))
-	eq(t, "not ilike", must(orm.From("documents").On("mongo").Where("title", orm.NotIlike, "%E%").Count(ctx)), int64(1))
+	eq(t, "ilike", must(orm.From("documents").On("mongo").Where("title", orm.ILike, "NEAR").Count(ctx)), int64(1))
+	eq(t, "not ilike", must(orm.From("documents").On("mongo").Where("title", orm.NotILike, "%E%").Count(ctx)), int64(1))
 	eq(t, "unsigned decrement", must(orm.From("documents").On("mongo").Where("title", orm.Eq, "near").Decrement(ctx, "views", uint8(1))), int64(1))
 
 	assertDocMigrations(t, ctx, "mongo")

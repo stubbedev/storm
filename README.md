@@ -282,8 +282,8 @@ err = orm.From("users").UpdateOrInsert(ctx,
 ```
 
 The operator is an `orm.Op` (`orm.Eq`, `orm.Neq`, `orm.Gt`, `orm.Gte`,
-`orm.Lt`, `orm.Lte`, `orm.Like`, `orm.NotLike`, `orm.Ilike`,
-`orm.NotIlike`) — typing `orm.` lists exactly the valid ones — and a plain
+`orm.Lt`, `orm.Lte`, `orm.Like`, `orm.NotLike`, `orm.ILike`,
+`orm.NotILike`) — typing `orm.` lists exactly the valid ones — and a plain
 string literal still converts, so `"="` keeps working.
 
 When a model does exist, its typed columns slot into the same builder:

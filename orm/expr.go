@@ -2,6 +2,7 @@ package orm
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -64,8 +65,8 @@ const (
 	Lte      Op = "<="
 	Like     Op = "LIKE"
 	NotLike  Op = "NOT LIKE"
-	Ilike    Op = "ILIKE"
-	NotIlike Op = "NOT ILIKE"
+	ILike    Op = "ILIKE"
+	NotILike Op = "NOT ILIKE"
 )
 
 // Selectable is a SelectCols item: a typed column of any model, or any
@@ -96,8 +97,13 @@ func (a Aliased) term() selectTerm { return a.t }
 // Cmp compares against another expression of the same type — a column of
 // this or another model (whereColumn), or a scalar subquery.
 func (s Scalar[M, V]) Cmp(op Op, other ValueExpr[V]) Cond[M] {
-	checkOp(string(op))
-	return s.against(string(op), other)
+	return Cond[M]{f: func(b *SQL) {
+		if knownOp(b, op) {
+			s.f(b)
+			b.Write(" ", string(op), " ")
+			other.build(b)
+		}
+	}}
 }
 
 func (s Scalar[M, V]) against(op string, other AnyExpr) Cond[M] {
@@ -111,8 +117,23 @@ func (s Scalar[M, V]) GteCol(o ValueExpr[V]) Cond[M] { return s.Cmp(Gte, o) }
 func (s Scalar[M, V]) LtCol(o ValueExpr[V]) Cond[M]  { return s.Cmp(Lt, o) }
 func (s Scalar[M, V]) LteCol(o ValueExpr[V]) Cond[M] { return s.Cmp(Lte, o) }
 
-func (s Scalar[M, V]) Like(pattern string) Cond[M]    { return s.cmpArg("LIKE", "%"+pattern+"%") }
-func (s Scalar[M, V]) NotLike(pattern string) Cond[M] { return s.cmpArg("NOT LIKE", "%"+pattern+"%") }
+// Like matches a SQL LIKE pattern: % any run, _ one character, \ escaping
+// either. It is case-sensitive on every engine; ILike ignores case.
+func (s Scalar[M, V]) Like(pattern string) Cond[M]     { return s.cmpArg(Like, pattern) }
+func (s Scalar[M, V]) NotLike(pattern string) Cond[M]  { return s.cmpArg(NotLike, pattern) }
+func (s Scalar[M, V]) ILike(pattern string) Cond[M]    { return s.cmpArg(ILike, pattern) }
+func (s Scalar[M, V]) NotILike(pattern string) Cond[M] { return s.cmpArg(NotILike, pattern) }
+
+// Contains, StartsWith and EndsWith match text literally, wildcards
+// included, case-sensitively.
+func (s Scalar[M, V]) Contains(text string) Cond[M]   { return s.Like("%" + EscapeLike(text) + "%") }
+func (s Scalar[M, V]) StartsWith(text string) Cond[M] { return s.Like(EscapeLike(text) + "%") }
+func (s Scalar[M, V]) EndsWith(text string) Cond[M]   { return s.Like("%" + EscapeLike(text)) }
+
+// EscapeLike makes text match itself inside a LIKE pattern.
+func EscapeLike(text string) string { return likeEscaper.Replace(text) }
+
+var likeEscaper = strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
 
 func (s Scalar[M, V]) In(vs ...V) Cond[M]    { return s.in("IN", vs) }
 func (s Scalar[M, V]) NotIn(vs ...V) Cond[M] { return s.in("NOT IN", vs) }
@@ -167,11 +188,44 @@ func (s Scalar[M, V]) JSONLength() Scalar[M, int64] {
 	return Scalar[M, int64]{f: func(b *SQL) { b.Dialect.JSONLength(b, s) }}
 }
 
-func (s Scalar[M, V]) cmpArg(op string, v any) Cond[M] {
+func (s Scalar[M, V]) cmpArg(op Op, v any) Cond[M] {
 	return Cond[M]{
-		f:  func(b *SQL) { s.f(b); b.Write(" ", op, " "); b.Arg(v) },
-		ir: s.field(op, v),
+		f:  func(b *SQL) { compare(b, s, op, v) },
+		ir: s.field(string(op), v),
 	}
+}
+
+// compare writes e op v; a LIKE operator goes through the dialect, which
+// gives it the same meaning everywhere.
+func compare(b *SQL, e AnyExpr, op Op, v any) {
+	if !knownOp(b, op) {
+		return
+	}
+	if like, ok := likeOps[op]; ok {
+		pattern, isText := v.(string)
+		if !isText {
+			b.fail(fmt.Errorf("orm: %s needs a string pattern, got %T", op, v))
+			return
+		}
+		b.Dialect.Like(b, e, pattern, like.caseless, like.not)
+		return
+	}
+	e.build(b)
+	b.Write(" ", string(op), " ")
+	b.Arg(v)
+}
+
+var likeOps = map[Op]struct{ caseless, not bool }{
+	Like: {false, false}, NotLike: {false, true}, ILike: {true, false}, NotILike: {true, true},
+}
+
+// knownOp fails the statement on an operator outside the Op constants.
+func knownOp(b *SQL, op Op) bool {
+	if _, ok := negations[op]; !ok {
+		b.fail(fmt.Errorf("orm: unknown comparison operator %q", op))
+		return false
+	}
+	return true
 }
 
 func (s Scalar[M, V]) field(op string, v any) Node {
@@ -444,24 +498,26 @@ func FullTextMatch[M any](term string, cols ...AnyColumn[M]) Cond[M] {
 
 // AnyOf is whereAny: the value matches at least one of the expressions.
 func AnyOf[M, V any](op Op, v V, exprs ...Expr[M, V]) Cond[M] {
-	checkOp(string(op))
 	conds := make([]Cond[M], len(exprs))
 	for i, e := range exprs {
-		conds[i] = Cond[M]{f: func(b *SQL) { e.build(b); b.Write(" ", string(op), " "); b.Arg(v) }}
+		conds[i] = Cond[M]{f: func(b *SQL) { compare(b, e, op, v) }}
 	}
 	return Or(conds...)
 }
 
 // AllOf is whereAll: the value matches every expression.
 func AllOf[M, V any](op Op, v V, exprs ...Expr[M, V]) Cond[M] {
-	checkOp(string(op))
-	return Not(AnyOf(negations[op], v, exprs...))
+	negated, ok := negations[op]
+	if !ok {
+		return Cond[M]{f: func(b *SQL) { knownOp(b, op) }}
+	}
+	return Not(AnyOf(negated, v, exprs...))
 }
 
 // negations pairs every comparison operator with its opposite.
 var negations = map[Op]Op{
 	Eq: Neq, Neq: Eq, "!=": Eq, Gt: Lte, Lte: Gt, Lt: Gte, Gte: Lt,
-	Like: NotLike, NotLike: Like, Ilike: NotIlike, NotIlike: Ilike,
+	Like: NotLike, NotLike: Like, ILike: NotILike, NotILike: ILike,
 }
 
 func join[M any](sep string, conds []Cond[M]) Cond[M] {
