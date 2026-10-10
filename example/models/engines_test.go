@@ -5,6 +5,7 @@ import (
 	sqldriver "database/sql/driver"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -222,6 +223,10 @@ func assertDocLogic(t *testing.T, ctx context.Context, conn string) {
 	utc := at.UTC()
 	eq(t, conn+" offset time equals its UTC form", must(notes.Where(Notes.Seen.Eq(&utc)).Count(ctx)), int64(1))
 	eq(t, conn+" offset time reads back as the same instant", must(notes.Where(Notes.Views.Eq(1)).First(ctx)).Seen.Equal(at), true)
+	const big = int64(1)<<53 + 1
+	eq(t, conn+" set a big integer", must(notes.Where(Notes.Views.Eq(2)).Update(ctx, Notes.Views.Set(big))), int64(1))
+	eq(t, conn+" big integers read back exactly", must(notes.Where(Notes.Views.Gt(big-1)).Pluck(ctx, Notes.Views)), []int64{big})
+	eq(t, conn+" big integers in row maps", fmt.Sprint(must(rows.Where("views", orm.Gt, big-1).Pluck(ctx, "views"))), fmt.Sprint([]int64{big}))
 	eq(t, conn+" logic cleanup", must(rows.Delete(ctx)), int64(4))
 }
 
@@ -295,6 +300,32 @@ func seedWidgets(t *testing.T) []Widget {
 		{Name: "alpha", Kind: "gear", Karma: 5},
 		{Name: "beta", Kind: "spring", Karma: 15},
 		{Name: "gamma", Kind: "gear", Karma: 25},
+	}
+}
+
+// assertBigNumbers checks integers past 2^53 (and, where the engine has
+// them, unsigned ones past 2^63) survive scanning and aggregates exactly.
+func assertBigNumbers(t *testing.T, ctx context.Context, conn string, unsigned bool) {
+	t.Helper()
+	tCheck(t, schema.On(conn).DropIfExists(ctx, "big_numbers"))
+	tCheck(t, schema.On(conn).Create(ctx, "big_numbers", func(t *schema.Blueprint) {
+		t.BigInteger("id").Primary()
+		t.BigInteger("n")
+		if unsigned {
+			t.UnsignedBigInteger("u").Default(0)
+		}
+	}))
+	defer func() { tCheck(t, schema.On(conn).DropIfExists(ctx, "big_numbers")) }()
+	const big = int64(1)<<53 + 1
+	rows := orm.From("big_numbers").On(conn)
+	ok(rows.Insert(ctx, map[string]any{"id": 1, "n": big}, map[string]any{"id": 2, "n": int64(2)}))
+	eq(t, conn+" big max", must(rows.Max[int64](ctx, "n")), big)
+	eq(t, conn+" big sum", must(rows.Sum[int64](ctx, "n")), big+2)
+	_, err := rows.Sum[int8](ctx, "n")
+	eq(t, conn+" overflow is an error", err != nil && strings.Contains(err.Error(), "overflows"), true)
+	if unsigned {
+		must(rows.Where("id", orm.Eq, 1).Update(ctx, map[string]any{"u": uint64(math.MaxUint64 - 1)}))
+		eq(t, conn+" big unsigned", must(rows.Max[uint64](ctx, "u")), uint64(math.MaxUint64-1))
 	}
 }
 
@@ -407,6 +438,7 @@ func TestDuckDB(t *testing.T) {
 
 	assertLimitedMutations(t, ctx, "duck")
 	assertTransactionModes(t, ctx, "duck", true)
+	assertBigNumbers(t, ctx, "duck", true)
 	createWidgetTable(ctx, t, "duck", func(t *schema.Blueprint) { t.ID() })
 	for i := range seedWidgets(t) {
 		w := seedWidgets(t)[i]
@@ -474,6 +506,7 @@ func TestClickHouse(t *testing.T) {
 
 	assertLimitedMutations(t, ctx, "ch")
 	assertTransactionModes(t, ctx, "ch", false)
+	assertBigNumbers(t, ctx, "ch", true)
 	createWidgetTable(ctx, t, "ch", func(t *schema.Blueprint) { t.BigInteger("id").Primary() })
 	for i, w := range seedWidgets(t) {
 		w.ID = int64(i + 1) // ClickHouse does not generate integer keys

@@ -3,6 +3,7 @@ package orm
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,17 @@ import (
 type duckdbDialect struct{ sqliteDialect }
 
 func (duckdbDialect) noSavepoints() {}
+
+// renderArg writes a uint64 above the int64 range as a UBIGINT literal:
+// database/sql cannot bind it, and the text comes from the number itself.
+func (duckdbDialect) renderArg(b *SQL, v any) bool {
+	u, ok := v.(uint64)
+	if !ok || u <= math.MaxInt64 {
+		return false
+	}
+	b.Write(strconv.FormatUint(u, 10), "::UBIGINT")
+	return true
+}
 
 var DuckDB Dialect = duckdbDialect{}
 

@@ -23,10 +23,12 @@ func (g grammar) duckdbType(c *Column) (string, error) {
 		return "char(" + n(c.Length) + ")", nil
 	case TypeTinyText, TypeText, TypeMediumText, TypeLongText:
 		return "text", nil
-	case TypeTinyInteger, TypeSmallInteger, TypeMediumInteger, TypeInteger:
-		return "integer", nil
-	case TypeBigInteger:
-		return "bigint", nil
+	case TypeTinyInteger, TypeSmallInteger, TypeMediumInteger, TypeInteger, TypeBigInteger:
+		unsigned := map[bool]string{true: "u", false: ""}[c.IsUnsigned]
+		return unsigned + map[string]string{
+			TypeTinyInteger: "tinyint", TypeSmallInteger: "smallint", TypeMediumInteger: "integer",
+			TypeInteger: "integer", TypeBigInteger: "bigint",
+		}[c.Type], nil
 	case TypeBoolean:
 		return "boolean", nil
 	case TypeDecimal:

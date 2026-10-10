@@ -288,10 +288,36 @@ func (s *QdrantStore) do(ctx context.Context, method, path string, body any, out
 		b, _ := io.ReadAll(res.Body)
 		return &qdrantHTTPError{method: method, path: path, status: res.StatusCode, body: string(b)}
 	}
-	if out != nil {
-		return json.NewDecoder(res.Body).Decode(out)
+	if out == nil {
+		return nil
 	}
-	return nil
+	dec := json.NewDecoder(res.Body)
+	dec.UseNumber()
+	return dec.Decode(out)
+}
+
+// jsonNumbers replaces the json.Numbers a UseNumber decode leaves with
+// int64 where the number is an integer that fits and float64 where it
+// does not, so integers beyond 2^53 keep every digit.
+func jsonNumbers(v any) any {
+	switch x := v.(type) {
+	case json.Number:
+		if n, err := x.Int64(); err == nil {
+			return n
+		}
+		if f, err := x.Float64(); err == nil {
+			return f
+		}
+	case map[string]any:
+		for k, e := range x {
+			x[k] = jsonNumbers(e)
+		}
+	case []any:
+		for i, e := range x {
+			x[i] = jsonNumbers(e)
+		}
+	}
+	return v
 }
 
 type qdrantResult[T any] struct {
@@ -365,8 +391,9 @@ func pointsToDocs(points []qdrantPoint, key string) []map[string]any {
 		if doc == nil {
 			doc = map[string]any{}
 		}
+		jsonNumbers(doc)
 		if _, ok := doc[key]; !ok {
-			doc[key] = pt.ID
+			doc[key] = jsonNumbers(pt.ID)
 		}
 		docs[i] = doc
 	}

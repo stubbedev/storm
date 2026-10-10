@@ -3,7 +3,10 @@ package orm
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"reflect"
 	"strconv"
 	"time"
@@ -70,21 +73,34 @@ func assign(dst reflect.Value, src any) error {
 			dst.SetBool(b)
 			return err
 		}
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64:
-		if s, ok := src.(string); ok {
-			f, err := strconv.ParseFloat(s, 64)
-			if err != nil {
-				return fmt.Errorf("orm: cannot convert %q to %s", s, dst.Type())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if n, ok, err := intOf(src); ok {
+			if err == nil && dst.OverflowInt(n) {
+				err = fmt.Errorf("%d overflows %s", n, dst.Type())
 			}
-			sv = reflect.ValueOf(f)
+			if err != nil {
+				return fmt.Errorf("orm: cannot scan %v into %s: %w", src, dst.Type(), err)
+			}
+			dst.SetInt(n)
+			return nil
 		}
-		if b, ok := src.(bool); ok {
-			sv = reflect.ValueOf(map[bool]int64{true: 1, false: 0}[b])
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if n, ok, err := uintOf(src); ok {
+			if err == nil && dst.OverflowUint(n) {
+				err = fmt.Errorf("%d overflows %s", n, dst.Type())
+			}
+			if err != nil {
+				return fmt.Errorf("orm: cannot scan %v into %s: %w", src, dst.Type(), err)
+			}
+			dst.SetUint(n)
+			return nil
 		}
-		if sv.CanConvert(dst.Type()) {
-			dst.Set(sv.Convert(dst.Type()))
+	case reflect.Float32, reflect.Float64:
+		if f, ok, err := floatOf(src); ok {
+			if err != nil {
+				return fmt.Errorf("orm: cannot scan %v into %s: %w", src, dst.Type(), err)
+			}
+			dst.SetFloat(f)
 			return nil
 		}
 	case reflect.Struct:
@@ -111,4 +127,120 @@ func assign(dst reflect.Value, src any) error {
 		}
 	}
 	return fmt.Errorf("orm: cannot scan %T into %s", src, dst.Type())
+}
+
+// intOf reads src as an exact integer; ok is false when src is not a
+// number. Decimal text (MySQL and Postgres aggregates) is parsed exactly,
+// never through a float, and a fraction or overflow is an error.
+func intOf(src any) (int64, bool, error) {
+	switch v := src.(type) {
+	case int:
+		return int64(v), true, nil
+	case int8:
+		return int64(v), true, nil
+	case int16:
+		return int64(v), true, nil
+	case int32:
+		return int64(v), true, nil
+	case int64:
+		return v, true, nil
+	case uint, uint8, uint16, uint32, uint64:
+		u, _, _ := uintOf(v)
+		if u > math.MaxInt64 {
+			return 0, true, errors.New("overflows int64")
+		}
+		return int64(u), true, nil
+	case float32:
+		return intOf(float64(v))
+	case float64:
+		if v != math.Trunc(v) || v < math.MinInt64 || v >= math.MaxInt64 {
+			return 0, true, errors.New("not an int64")
+		}
+		return int64(v), true, nil
+	case bool:
+		if v {
+			return 1, true, nil
+		}
+		return 0, true, nil
+	case *big.Int:
+		if !v.IsInt64() {
+			return 0, true, errors.New("overflows int64")
+		}
+		return v.Int64(), true, nil
+	case string, json.Number:
+		r, err := exactNumber(fmt.Sprint(v))
+		if err != nil {
+			return 0, true, err
+		}
+		if !r.IsInt() || !r.Num().IsInt64() {
+			return 0, true, errors.New("not an int64")
+		}
+		return r.Num().Int64(), true, nil
+	}
+	return 0, false, nil
+}
+
+// uintOf is intOf for unsigned destinations; negatives are errors.
+func uintOf(src any) (uint64, bool, error) {
+	switch v := src.(type) {
+	case uint:
+		return uint64(v), true, nil
+	case uint8:
+		return uint64(v), true, nil
+	case uint16:
+		return uint64(v), true, nil
+	case uint32:
+		return uint64(v), true, nil
+	case uint64:
+		return v, true, nil
+	case *big.Int:
+		if !v.IsUint64() {
+			return 0, true, errors.New("not a uint64")
+		}
+		return v.Uint64(), true, nil
+	case string, json.Number:
+		r, err := exactNumber(fmt.Sprint(v))
+		if err != nil {
+			return 0, true, err
+		}
+		if !r.IsInt() || !r.Num().IsUint64() {
+			return 0, true, errors.New("not a uint64")
+		}
+		return r.Num().Uint64(), true, nil
+	}
+	n, ok, err := intOf(src)
+	if !ok || err != nil {
+		return 0, ok, err
+	}
+	if n < 0 {
+		return 0, true, errors.New("negative")
+	}
+	return uint64(n), true, nil
+}
+
+func floatOf(src any) (float64, bool, error) {
+	switch v := src.(type) {
+	case float64:
+		return v, true, nil
+	case float32:
+		return float64(v), true, nil
+	case string, json.Number:
+		f, err := strconv.ParseFloat(fmt.Sprint(v), 64)
+		return f, true, err
+	}
+	if n, ok, err := intOf(src); ok && err == nil {
+		return float64(n), true, nil
+	}
+	if n, ok, err := uintOf(src); ok && err == nil {
+		return float64(n), true, nil
+	}
+	return 0, false, nil
+}
+
+func exactNumber(s string) (*big.Rat, error) {
+	r, ok := new(big.Rat).SetString(s)
+	if !ok {
+		return nil, fmt.Errorf("%q is not a number", s)
+	}
+	return r, nil
 }
