@@ -214,17 +214,18 @@ func (q Query[M]) countDocs(ctx context.Context) (int64, bool, error) {
 }
 
 func aggregateDocs[V any](ctx context.Context, ds DocStore, conn string, p Plan, fn Aggregate, column string) (V, error) {
-	var v V
+	var zero V
 	start := time.Now()
 	raw, err := ds.AggregateDocs(ctx, p, fn, column)
 	emitDoc(conn, strings.ToLower(fn.String())+" "+column+" of", p, time.Since(start), err)
 	if err != nil {
-		return v, fmt.Errorf("orm: %s of %s on %s: %w", fn, column, p.Table, err)
+		return zero, fmt.Errorf("orm: %s of %s on %s: %w", fn, column, p.Table, err)
 	}
+	var v *V
 	if err := (nullable{&v}).Scan(raw); err != nil {
-		return v, fmt.Errorf("orm: %s of %s on %s: %w", fn, column, p.Table, err)
+		return zero, fmt.Errorf("orm: %s of %s on %s: %w", fn, column, p.Table, err)
 	}
-	return v, nil
+	return aggregated(fn, v, p.Table)
 }
 
 func (q Query[M]) docMaps(method string, models []*M) ([]map[string]any, error) {

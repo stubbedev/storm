@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -593,18 +594,42 @@ func execOn(ctx context.Context, name string, f frag) (sql.Result, error) {
 
 // scalarOn reads the first column of the first row; no row is V's zero.
 func scalarOn[V any](ctx context.Context, name string, f frag) (V, error) {
-	var v V
+	v, err := optionalOn[V](ctx, name, f)
+	if err != nil || v == nil {
+		var zero V
+		return zero, err
+	}
+	return *v, nil
+}
+
+// optionalOn reads the first column of the first row; NULL or no row is nil.
+func optionalOn[V any](ctx context.Context, name string, f frag) (*V, error) {
 	rows, err := readRows(ctx, name, f)
 	if err != nil {
-		return v, err
+		return nil, err
 	}
 	defer closeRows(rows)
+	var v *V
 	if rows.Next() {
 		if err := rows.Scan(nullable{&v}); err != nil {
-			return v, err
+			return nil, err
 		}
 	}
 	return v, rows.Err()
+}
+
+// aggregated is an aggregate's value: SUM of nothing is zero, but MIN,
+// MAX and AVG of nothing have no value, which is ErrNotFound rather than
+// a zero indistinguishable from a real one.
+func aggregated[V any](agg Aggregate, v *V, table string) (V, error) {
+	var zero V
+	switch {
+	case v != nil:
+		return *v, nil
+	case agg == AggregateSum:
+		return zero, nil
+	}
+	return zero, fmt.Errorf("orm: %s on %s: no value to aggregate: %w", strings.ToLower(agg.String()), table, ErrNotFound)
 }
 
 // QueryError wraps a database error with the SQL that caused it.

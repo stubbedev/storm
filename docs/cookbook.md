@@ -219,6 +219,10 @@ perUser, err := Posts.Query().GroupBy(Posts.UserID).PluckMap(ctx, Posts.UserID, 
 name, err := Users.Query().OrderBy(Users.Karma.Desc()).Value(ctx, Users.Name)
 ```
 
+`Sum` of no rows is zero; `Min`, `Max` and `Avg` of no rows (or only
+NULLs) have no value and return `orm.ErrNotFound`, never a zero that
+could be real.
+
 ## Chunking, iterators, pagination
 
 ```go

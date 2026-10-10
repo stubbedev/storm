@@ -354,7 +354,12 @@ func aggregate[V, M any](ctx context.Context, q Query[M], agg Aggregate, e AnyEx
 		return zero, err
 	}
 	if !ok {
-		return selectScalar[V](ctx, q, func(b *SQL) { fn(b, agg.String(), e) })
+		v, err := optionalOn[V](ctx, q.connName(), func(b *SQL) { q.renderSelect(b, func(b *SQL) { fn(b, agg.String(), e) }) })
+		if err != nil {
+			var zero V
+			return zero, err
+		}
+		return aggregated(agg, v, q.table.Name)
 	}
 	method := strings.ToLower(agg.String())
 	f, ok := e.(interface{ docColumn() string })

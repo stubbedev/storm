@@ -864,8 +864,9 @@ func assertDocAggregates(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" min of strings", must(docs.Where(Docs.Title.In("far", "near")).Min(ctx, Docs.Title)), "far")
 	eq(t, conn+" filtered sum ignores order and limit", must(docs.Where(Docs.Views.Gt(high-1)).OrderBy(Docs.Views.Desc()).Limit(1).Offset(5).Sum(ctx, Docs.Views)), high)
 	eq(t, conn+" sum of nothing", must(docs.Where(Docs.Views.Gt(high)).Sum(ctx, Docs.Views)), int64(0))
-	eq(t, conn+" avg of nothing", must(docs.Where(Docs.Views.Gt(high)).Avg(ctx, Docs.Views)), float64(0))
-	_, err := docs.Sum(ctx, orm.Plus(Docs.Views, 1))
+	_, err := docs.Where(Docs.Views.Gt(high)).Avg(ctx, Docs.Views)
+	eq(t, conn+" avg of nothing is not found", errors.Is(err, orm.ErrNotFound), true)
+	_, err = docs.Sum(ctx, orm.Plus(Docs.Views, 1))
 	eq(t, conn+" aggregate of an expression refused", orm.IsNotTranslatable(err), true)
 
 	rows := orm.From("documents").On(conn)

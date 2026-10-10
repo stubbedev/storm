@@ -930,7 +930,11 @@ func rowAggregate[V any](ctx context.Context, r RowQuery, agg Aggregate, c Quali
 	if len(r.unions) > 0 {
 		return zero, fmt.Errorf("orm: %s on %s: aggregate the union in SQL (SelectRaw over a subquery) or Get its rows", method, r.name)
 	}
-	return rowScalar[V](ctx, r, func(b *SQL) { fn(b, agg.String(), c) })
+	v, err := optionalOn[V](ctx, r.connName(), func(b *SQL) { r.render(b, func(b *SQL) { fn(b, agg.String(), c) }) })
+	if err != nil {
+		return zero, err
+	}
+	return aggregated(agg, v, r.name)
 }
 
 func rowScalar[V any](ctx context.Context, r RowQuery, list frag) (V, error) {

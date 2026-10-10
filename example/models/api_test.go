@@ -44,6 +44,11 @@ func TestScalarExpressions(t *testing.T) {
 
 	eq(t, "countDistinct", must(Posts.Query().Value(ctx, orm.CountDistinct(Posts.UserID))), int64(5))
 	eq(t, "min", must(Users.Query().Min(ctx, Users.Karma)), 3)
+	_, err = Users.Where(Users.Karma.Gt(1000)).Max(ctx, Users.Karma)
+	eq(t, "max of nothing is not found", errors.Is(err, orm.ErrNotFound), true)
+	eq(t, "sum of nothing is zero", must(Users.Where(Users.Karma.Gt(1000)).Sum(ctx, Users.Karma)), 0)
+	_, err = orm.From("users").Where("karma", orm.Gt, 1000).Min[int64](ctx, "karma")
+	eq(t, "row min of nothing is not found", errors.Is(err, orm.ErrNotFound), true)
 	eq(t, "lower", must(Users.Where(Users.ID.Eq(1)).Value(ctx, orm.Lower(Users.Name))), "alice")
 	eq(t, "coalesce", must(Users.Where(Users.ID.Eq(4)).Value(ctx, orm.Coalesce(Users.Name, "nobody"))), "Dave")
 	eq(t, "minus", get(Users.Where(orm.Minus(Users.Karma, 2).Eq(1))), []string{"Dave"})
