@@ -368,12 +368,18 @@ func (q Query[M]) UpdateOrCreate(ctx context.Context, attrs []Assignment[M], val
 
 // CreateOrFirst inserts a model with attrs and values, or — when that
 // violates a unique constraint — returns the existing row matching attrs.
-// The insert runs in a (nested) transaction so a failure doesn't poison an
-// outer Postgres transaction.
+// Inside a transaction the insert runs in a nested one, so its failure
+// doesn't poison the outer Postgres transaction.
 func (q Query[M]) CreateOrFirst(ctx context.Context, attrs []Assignment[M], values ...Assignment[M]) (M, error) {
 	var m M
 	fill(&m, attrs, values)
-	err := TransactionOn(ctx, q.connName(), func(ctx context.Context) error { return q.Create(ctx, &m) })
+	create := func(ctx context.Context) error { return q.Create(ctx, &m) }
+	var err error
+	if InTransactionOn(ctx, q.connName()) {
+		err = TransactionOn(ctx, q.connName(), create)
+	} else {
+		err = create(ctx)
+	}
 	if IsUniqueViolation(err) {
 		return q.Where(matching(attrs)...).First(ctx)
 	}
@@ -617,7 +623,7 @@ func (q Query[M]) Truncate(ctx context.Context) error {
 		return err
 	} else if ok {
 		start := time.Now()
-		_, err := ds.DeleteDocs(ctx, t.Name, Plan{Table: t.Name})
+		_, err := ds.DeleteDocs(ctx, Plan{Table: t.Name, Key: t.PrimaryKey})
 		emitDocRaw(q.connName(), "truncate "+t.Name, time.Since(start), err)
 		return err
 	}

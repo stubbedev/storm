@@ -11,6 +11,7 @@ import (
 // fragments) make a plan untranslatable, and the store reports which part.
 type Plan struct {
 	Table   string
+	Key     string       // the column identifying a document
 	Columns []string     // empty: all columns
 	Where   Node         // nil: no filter
 	Orders  []PlanOrder  // column orders

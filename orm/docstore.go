@@ -16,25 +16,39 @@ type DocStore interface {
 	// FindDocs returns documents (column name to value) matching the plan.
 	// Plan.Vector makes it a similarity search; a store without vectors
 	// returns ErrNotTranslatable for it.
-	FindDocs(ctx context.Context, table string, p Plan) ([]map[string]any, error)
-	// InsertDocs stores documents; the primary key column must be present
-	// when the model's key is not client-generated.
-	InsertDocs(ctx context.Context, table string, docs []map[string]any) error
-	// UpsertDocs stores documents, replacing any existing document that
-	// matches on all of keys (upsert).
-	UpsertDocs(ctx context.Context, table string, docs []map[string]any, keys []string) error
+	FindDocs(ctx context.Context, p Plan) ([]map[string]any, error)
+	// InsertDocs stores new documents, each identified by its key column;
+	// a key that is already taken fails with a DuplicateKeyError.
+	InsertDocs(ctx context.Context, table, key string, docs []map[string]any) error
+	// UpsertDocs inserts documents, or, where one matching on all of
+	// uniqueBy exists, overwrites only its update columns.
+	UpsertDocs(ctx context.Context, table, key string, docs []map[string]any, uniqueBy, update []string) error
 	// UpdateDocs applies u to matching documents and reports how many
 	// matched.
-	UpdateDocs(ctx context.Context, table string, p Plan, u DocUpdate) (int64, error)
+	UpdateDocs(ctx context.Context, p Plan, u DocUpdate) (int64, error)
 	// DeleteDocs removes matching documents and reports how many.
-	DeleteDocs(ctx context.Context, table string, p Plan) (int64, error)
+	DeleteDocs(ctx context.Context, p Plan) (int64, error)
 	// CountDocs counts matching documents.
-	CountDocs(ctx context.Context, table string, p Plan) (int64, error)
+	CountDocs(ctx context.Context, p Plan) (int64, error)
 	// AggregateDocs computes fn over column across matching documents,
 	// returning nil when none has a value. A store that cannot aggregate
 	// server-side returns ErrNotTranslatable.
-	AggregateDocs(ctx context.Context, table string, p Plan, fn Aggregate, column string) (any, error)
+	AggregateDocs(ctx context.Context, p Plan, fn Aggregate, column string) (any, error)
 }
+
+// DuplicateKeyError reports an insert whose document key is already
+// taken; IsUniqueViolation recognises it.
+type DuplicateKeyError struct {
+	Table string
+	Key   string
+	Err   error
+}
+
+func (e *DuplicateKeyError) Error() string {
+	return fmt.Sprintf("orm: duplicate %s in %s: %v", e.Key, e.Table, e.Err)
+}
+
+func (e *DuplicateKeyError) Unwrap() error { return e.Err }
 
 // Aggregate is a column aggregate: Sum, Avg, Min or Max.
 type Aggregate int
@@ -97,7 +111,7 @@ func docStoreFor(ctx context.Context, conn string) (DocStore, bool, error) {
 // plan compiles the query for a document store, refusing the parts that
 // only exist in SQL.
 func (q Query[M]) plan() (Plan, error) {
-	p := Plan{Table: q.table.Name, Limit: q.limit, Offset: q.offset}
+	p := Plan{Table: q.table.Name, Key: q.table.PrimaryKey, Limit: q.limit, Offset: q.offset}
 	notSupported := func(what string) (Plan, error) {
 		return Plan{}, &ErrNotTranslatable{Reason: what}
 	}
@@ -164,7 +178,7 @@ func (q Query[M]) findDocs(ctx context.Context) ([]M, error) {
 		return nil, err
 	}
 	start := time.Now()
-	docs, err := ds.FindDocs(ctx, q.table.Name, p)
+	docs, err := ds.FindDocs(ctx, p)
 	emitDoc(q.connName(), "find", p, time.Since(start), err)
 	if err != nil {
 		return nil, err
@@ -194,7 +208,7 @@ func (q Query[M]) countDocs(ctx context.Context) (int64, bool, error) {
 		return 0, true, err
 	}
 	start := time.Now()
-	n, err := ds.CountDocs(ctx, q.table.Name, p)
+	n, err := ds.CountDocs(ctx, p)
 	emitDoc(q.connName(), "count", p, time.Since(start), err)
 	return n, true, err
 }
@@ -202,7 +216,7 @@ func (q Query[M]) countDocs(ctx context.Context) (int64, bool, error) {
 func aggregateDocs[V any](ctx context.Context, ds DocStore, conn string, p Plan, fn Aggregate, column string) (V, error) {
 	var v V
 	start := time.Now()
-	raw, err := ds.AggregateDocs(ctx, p.Table, p, fn, column)
+	raw, err := ds.AggregateDocs(ctx, p, fn, column)
 	emitDoc(conn, strings.ToLower(fn.String())+" "+column+" of", p, time.Since(start), err)
 	if err != nil {
 		return v, fmt.Errorf("orm: %s of %s on %s: %w", fn, column, p.Table, err)
@@ -241,7 +255,7 @@ func (q Query[M]) writeDocs(ctx context.Context, method string, models []*M) err
 		return err
 	}
 	start := time.Now()
-	err = ds.InsertDocs(ctx, q.table.Name, docs)
+	err = ds.InsertDocs(ctx, q.table.Name, q.table.PrimaryKey, docs)
 	emitDocRaw(q.connName(), fmt.Sprintf("insert %s (%d documents)", q.table.Name, len(docs)), time.Since(start), err)
 	return err
 }
@@ -251,7 +265,7 @@ func (q Query[M]) writeDocs(ctx context.Context, method string, models []*M) err
 // document missing a key column never collides. The read-then-write gap
 // means a concurrent writer can still insert the same key; a unique index
 // on keys makes that safe.
-func insertOrIgnoreDocs(ctx context.Context, ds DocStore, table string, docs []map[string]any, keys []string) error {
+func insertOrIgnoreDocs(ctx context.Context, ds DocStore, table, docKeyCol string, docs []map[string]any, keys []string) error {
 	key := func(d map[string]any) (string, bool) {
 		for _, k := range keys {
 			if _, ok := d[k]; !ok {
@@ -276,7 +290,7 @@ func insertOrIgnoreDocs(ctx context.Context, ds DocStore, table string, docs []m
 			}
 			parts[i] = List{Table: table, Column: k, Values: vals}
 		}
-		existing, err := ds.FindDocs(ctx, table, Plan{Table: table, Where: Composite{Parts: parts}})
+		existing, err := ds.FindDocs(ctx, Plan{Table: table, Key: docKeyCol, Columns: keys, Where: Composite{Parts: parts}})
 		if err != nil {
 			return err
 		}
@@ -285,7 +299,7 @@ func insertOrIgnoreDocs(ctx context.Context, ds DocStore, table string, docs []m
 		}
 	}
 	fresh, _ := splitByKey(docs, key, taken)
-	return ds.InsertDocs(ctx, table, fresh)
+	return ds.InsertDocs(ctx, table, docKeyCol, fresh)
 }
 
 func docKey(keys []string, doc map[string]any) string {
@@ -305,48 +319,49 @@ func (q Query[M]) updateDocs(ctx context.Context, sets []colSet) (int64, bool, e
 	if err != nil {
 		return 0, true, err
 	}
-	n, err := updateDocs(ctx, ds, q.connName(), q.table.PrimaryKey, p, sets)
+	n, err := updateDocs(ctx, ds, q.connName(), p, sets)
 	return n, true, err
 }
 
-func updateDocs(ctx context.Context, ds DocStore, conn, key string, p Plan, sets []colSet) (int64, error) {
+func updateDocs(ctx context.Context, ds DocStore, conn string, p Plan, sets []colSet) (int64, error) {
 	u, err := docUpdate(sets)
 	if err != nil {
 		return 0, fmt.Errorf("orm: update on %s: %w", p.Table, err)
 	}
-	if p, err = mutationPlan(ctx, ds, conn, key, p); err != nil {
+	if p, err = mutationPlan(ctx, ds, conn, p); err != nil {
 		return 0, fmt.Errorf("orm: update on %s: %w", p.Table, err)
 	}
 	start := time.Now()
-	n, err := ds.UpdateDocs(ctx, p.Table, p, u)
+	n, err := ds.UpdateDocs(ctx, p, u)
 	emitDoc(conn, "update", p, time.Since(start), err)
 	return n, err
 }
 
-func deleteDocs(ctx context.Context, ds DocStore, conn, key string, p Plan) (int64, error) {
-	p, err := mutationPlan(ctx, ds, conn, key, p)
+func deleteDocs(ctx context.Context, ds DocStore, conn string, p Plan) (int64, error) {
+	p, err := mutationPlan(ctx, ds, conn, p)
 	if err != nil {
 		return 0, fmt.Errorf("orm: delete on %s: %w", p.Table, err)
 	}
 	start := time.Now()
-	n, err := ds.DeleteDocs(ctx, p.Table, p)
+	n, err := ds.DeleteDocs(ctx, p)
 	emitDoc(conn, "delete", p, time.Since(start), err)
 	return n, err
 }
 
 // mutationPlan resolves a limited or offset mutation to the keys of the
 // documents it selects, since stores update and delete every match.
-func mutationPlan(ctx context.Context, ds DocStore, conn, key string, p Plan) (Plan, error) {
+func mutationPlan(ctx context.Context, ds DocStore, conn string, p Plan) (Plan, error) {
 	if p.Limit == 0 && p.Offset == 0 {
 		p.Orders = nil
 		return p, nil
 	}
+	key := p.Key
 	if key == "" {
 		return p, errors.New("a limited update or delete needs a key column")
 	}
 	p.Columns = []string{key}
 	start := time.Now()
-	docs, err := ds.FindDocs(ctx, p.Table, p)
+	docs, err := ds.FindDocs(ctx, p)
 	emitDoc(conn, "find keys", p, time.Since(start), err)
 	if err != nil {
 		return p, err
@@ -355,7 +370,7 @@ func mutationPlan(ctx context.Context, ds DocStore, conn, key string, p Plan) (P
 	for i, d := range docs {
 		keys[i] = d[key]
 	}
-	return Plan{Table: p.Table, Where: List{Column: key, Values: keys}}, nil
+	return Plan{Table: p.Table, Key: key, Where: List{Column: key, Values: keys}}, nil
 }
 
 // docUpdate is sets as a document update: literals are set, increments
@@ -397,7 +412,7 @@ func (q Query[M]) deleteDocs(ctx context.Context) (int64, bool, error) {
 	if err != nil {
 		return 0, true, err
 	}
-	n, err := deleteDocs(ctx, ds, q.connName(), q.table.PrimaryKey, p)
+	n, err := deleteDocs(ctx, ds, q.connName(), p)
 	return n, true, err
 }
 

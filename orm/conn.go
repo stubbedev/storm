@@ -380,8 +380,12 @@ func AfterCommitOn(ctx context.Context, conn string, fn func(ctx context.Context
 }
 
 // InTransaction reports whether ctx carries a transaction on the default connection.
-func InTransaction(ctx context.Context) bool {
-	_, ok := ctx.Value(txKey{DefaultConnection}).(*txState)
+func InTransaction(ctx context.Context) bool { return InTransactionOn(ctx, DefaultConnection) }
+
+// InTransactionOn reports whether ctx carries a transaction on the named
+// connection.
+func InTransactionOn(ctx context.Context, name string) bool {
+	_, ok := ctx.Value(txKey{name}).(*txState)
 	return ok
 }
 
@@ -489,10 +493,14 @@ func IsDeadlock(err error) bool {
 }
 
 // IsUniqueViolation reports whether err is a unique constraint violation
-// on SQLite, Postgres or MySQL/MariaDB.
+// on SQLite, Postgres or MySQL/MariaDB, or a document store's
+// DuplicateKeyError.
 func IsUniqueViolation(err error) bool {
 	if err == nil {
 		return false
+	}
+	if _, ok := errors.AsType[*DuplicateKeyError](err); ok {
+		return true
 	}
 	msg := err.Error()
 	for _, s := range []string{"UNIQUE constraint failed", "SQLSTATE 23505", "Error 1062", "Duplicate entry"} {

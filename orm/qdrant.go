@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -32,28 +33,20 @@ import (
 //	}
 //	docs, err := Docs.Query().OrderBy(Docs.Vec.Nearest(q, orm.Cosine)).Limit(10).Get(ctx)
 type QdrantStore struct {
-	base  string
-	http  *http.Client
-	keyOf func(table string) string
+	base string
+	http *http.Client
 }
 
 // OpenQdrant connects to a Qdrant REST endpoint and registers the
-// connection. Keys are UUID strings by default; use WithKey to map another
-// column.
+// connection. A document's key column (the model's primary key, or a row
+// query's WithKey) is its point id: a UUID or an unsigned integer.
 func OpenQdrant(name, baseURL string) (*QdrantStore, error) {
 	s := &QdrantStore{
-		base:  strings.TrimSuffix(baseURL, "/"),
-		http:  &http.Client{Timeout: 30 * time.Second},
-		keyOf: func(string) string { return "id" },
+		base: strings.TrimSuffix(baseURL, "/"),
+		http: &http.Client{Timeout: 30 * time.Second},
 	}
 	AddDocStore(name, s)
 	return s, nil
-}
-
-// WithKey names the column whose value is the point id (default "id").
-func (s *QdrantStore) WithKey(col string) *QdrantStore {
-	s.keyOf = func(string) string { return col }
-	return s
 }
 
 // qdrantHTTPError is a non-2xx REST response, kept typed so callers match
@@ -223,10 +216,10 @@ func (s *QdrantStore) RenameField(context.Context, string, string, string) error
 // or multi-field indexes.
 func (s *QdrantStore) CreateIndex(ctx context.Context, collection string, idx DocIndex) error {
 	switch {
-	case idx.Primary && len(idx.Fields) == 1 && idx.Fields[0].Name == s.key(collection):
+	case idx.Primary && len(idx.Fields) == 1:
 		return nil
 	case idx.Primary:
-		return &ErrNotTranslatable{Reason: fmt.Sprintf("a primary key other than the point id %q on Qdrant", s.key(collection))}
+		return &ErrNotTranslatable{Reason: "a multi-column primary key on Qdrant (the point id is one column)"}
 	case idx.Unique:
 		return &ErrNotTranslatable{Reason: "unique indexes on Qdrant"}
 	case len(idx.Fields) != 1:
@@ -324,13 +317,15 @@ type qdrantResult[T any] struct {
 	Result T `json:"result"`
 }
 
-func (s *QdrantStore) key(table string) string { return s.keyOf(table) }
-
-func (s *QdrantStore) FindDocs(ctx context.Context, table string, p Plan) ([]map[string]any, error) {
+func (s *QdrantStore) FindDocs(ctx context.Context, p Plan) ([]map[string]any, error) {
+	table, key := p.Table, p.Key
+	if key == "" {
+		return nil, fmt.Errorf("orm: qdrant find on %s: the plan names no key column", table)
+	}
 	var after any
-	if p.Vector == nil && keyOrdered(p, s.key(table)) {
+	if p.Vector == nil && keyOrdered(p, key) {
 		p.Orders = nil
-		p.Where, after = liftKeyset(p.Where, s.key(table))
+		p.Where, after = liftKeyset(p.Where, key)
 	}
 	filter, err := qdrantFilter(p.Where)
 	if err != nil {
@@ -354,12 +349,12 @@ func (s *QdrantStore) FindDocs(ctx context.Context, table string, p Plan) ([]map
 		if err := s.do(ctx, http.MethodPost, collectionPath(table, "/points/search"), body, &res); err != nil {
 			return nil, err
 		}
-		return pointsToDocs(res.Result, s.key(table)), nil
+		return pointsToDocs(res.Result, key), nil
 	}
 	if len(p.Orders) > 1 {
 		return nil, &ErrNotTranslatable{Reason: "more than one order (Qdrant orders by payload field or by vector)"}
 	}
-	docs, err := s.scroll(ctx, table, p, filter, after)
+	docs, err := s.scroll(ctx, p, filter, after)
 	if err != nil {
 		return nil, err
 	}
@@ -438,7 +433,8 @@ const scrollBatch = 256
 // Qdrant's scroll offset is a point id to resume from (inclusive), not a
 // count, so the skip happens here; with order_by Qdrant returns no resume
 // point, so the read is sized by a count instead.
-func (s *QdrantStore) scroll(ctx context.Context, table string, p Plan, filter map[string]any, after any) ([]map[string]any, error) {
+func (s *QdrantStore) scroll(ctx context.Context, p Plan, filter map[string]any, after any) ([]map[string]any, error) {
+	table, key := p.Table, p.Key
 	want := 0
 	if p.Limit > 0 {
 		want = p.Offset + p.Limit
@@ -450,7 +446,7 @@ func (s *QdrantStore) scroll(ctx context.Context, table string, p Plan, filter m
 		}
 		body["order_by"] = p.Orders[0].Column
 		if want == 0 {
-			n, err := s.CountDocs(ctx, table, p)
+			n, err := s.CountDocs(ctx, p)
 			if err != nil || n == 0 {
 				return nil, err
 			}
@@ -481,13 +477,13 @@ func (s *QdrantStore) scroll(ctx context.Context, table string, p Plan, filter m
 		if err := s.do(ctx, http.MethodPost, collectionPath(table, "/points/scroll"), body, &res); err != nil {
 			return nil, err
 		}
-		docs = append(docs, pointsToDocs(res.Result.Points, s.key(table))...)
+		docs = append(docs, pointsToDocs(res.Result.Points, key)...)
 		if res.Result.Next == nil || len(p.Orders) == 1 || len(res.Result.Points) == 0 {
 			break
 		}
 		body["offset"] = res.Result.Next
 	}
-	if skipAfter && len(docs) > 0 && fmt.Sprint(docs[0][s.key(table)]) == fmt.Sprint(after) {
+	if skipAfter && len(docs) > 0 && fmt.Sprint(docs[0][key]) == fmt.Sprint(after) {
 		docs = docs[1:]
 	}
 	docs = docs[min(p.Offset, len(docs)):]
@@ -497,14 +493,82 @@ func (s *QdrantStore) scroll(ctx context.Context, table string, p Plan, filter m
 	return docs, nil
 }
 
-func (s *QdrantStore) InsertDocs(ctx context.Context, table string, docs []map[string]any) error {
-	key := s.key(table)
+// InsertDocs stores new points, refusing ids already taken: Qdrant's PUT
+// would silently overwrite them. The check and the write are two requests,
+// so a concurrent insert of the same id can still win.
+func (s *QdrantStore) InsertDocs(ctx context.Context, table, key string, docs []map[string]any) error {
+	points, ids, err := qdrantPoints(table, key, docs)
+	if err != nil || len(points) == 0 {
+		return err
+	}
+	taken, err := s.existingIDs(ctx, table, ids)
+	if err != nil {
+		return err
+	}
+	if len(taken) > 0 {
+		return &DuplicateKeyError{Table: table, Key: key, Err: fmt.Errorf("point ids %v exist", slices.Sorted(maps.Keys(taken)))}
+	}
+	return s.do(ctx, http.MethodPut, collectionPath(table, "/points?wait=true"), map[string]any{"points": points}, nil)
+}
+
+// UpsertDocs inserts new points whole and, for points whose id exists,
+// sets only the update columns (and the vector, when it is one of them),
+// all in one batch request. Qdrant can only match on the point id.
+func (s *QdrantStore) UpsertDocs(ctx context.Context, table, key string, docs []map[string]any, uniqueBy, update []string) error {
+	if len(uniqueBy) != 1 || uniqueBy[0] != key {
+		return &ErrNotTranslatable{Reason: fmt.Sprintf("upserting on Qdrant by %v (Qdrant matches only the point id %q)", uniqueBy, key)}
+	}
+	points, ids, err := qdrantPoints(table, key, docs)
+	if err != nil || len(points) == 0 {
+		return err
+	}
+	taken, err := s.existingIDs(ctx, table, ids)
+	if err != nil {
+		return err
+	}
+	var fresh []map[string]any
+	var ops []map[string]any
+	for i, pt := range points {
+		if !taken[fmt.Sprint(ids[i])] {
+			fresh = append(fresh, pt)
+			continue
+		}
+		set := map[string]any{}
+		for _, c := range update {
+			if v, ok := docs[i][c]; ok && c != key {
+				set[c] = v
+			}
+		}
+		changes, err := qdrantChanges(set, map[string]any{"points": []any{ids[i]}})
+		if err != nil {
+			return fmt.Errorf("orm: qdrant upsert into %s: %w", table, err)
+		}
+		ops = append(ops, changes...)
+		if vec, ok := pt["vector"].([]float64); ok && slices.ContainsFunc(update, func(c string) bool { _, isVec := vectorOf(docs[i][c]); return isVec }) {
+			ops = append(ops, map[string]any{"update_vectors": map[string]any{"points": []any{map[string]any{"id": ids[i], "vector": vec}}}})
+		}
+	}
+	if len(fresh) > 0 {
+		ops = append([]map[string]any{{"upsert": map[string]any{"points": fresh}}}, ops...)
+	}
+	return s.batch(ctx, table, ops)
+}
+
+// qdrantPoints converts documents to points, keyed by their key column,
+// rejecting a missing or repeated key.
+func qdrantPoints(table, key string, docs []map[string]any) ([]map[string]any, []any, error) {
 	points := make([]map[string]any, 0, len(docs))
+	ids := make([]any, 0, len(docs))
+	seen := make(map[string]bool, len(docs))
 	for _, doc := range docs {
 		id, ok := doc[key]
 		if !ok || isZero(id) {
-			return fmt.Errorf("orm: qdrant insert into %s: every point needs a key in %q", table, key)
+			return nil, nil, fmt.Errorf("orm: qdrant insert into %s: every point needs a key in %q", table, key)
 		}
+		if seen[fmt.Sprint(id)] {
+			return nil, nil, &DuplicateKeyError{Table: table, Key: key, Err: fmt.Errorf("point id %v repeats in one write", id)}
+		}
+		seen[fmt.Sprint(id)] = true
 		payload := make(map[string]any, len(doc))
 		var vector []float64
 		for k, v := range doc {
@@ -513,7 +577,7 @@ func (s *QdrantStore) InsertDocs(ctx context.Context, table string, docs []map[s
 			// documents must be self-contained to be queryable after a read.
 			jv, err := jsonValue(v)
 			if err != nil {
-				return fmt.Errorf("orm: qdrant insert into %s: field %s: %w", table, k, err)
+				return nil, nil, fmt.Errorf("orm: qdrant insert into %s: field %s: %w", table, k, err)
 			}
 			payload[k] = jv
 			if f, ok := vectorOf(v); ok {
@@ -525,21 +589,67 @@ func (s *QdrantStore) InsertDocs(ctx context.Context, table string, docs []map[s
 			pt["vector"] = vector
 		}
 		points = append(points, pt)
+		ids = append(ids, id)
 	}
-	if len(points) == 0 {
+	return points, ids, nil
+}
+
+// existingIDs reports which of ids are taken, as fmt.Sprint keys.
+func (s *QdrantStore) existingIDs(ctx context.Context, table string, ids []any) (map[string]bool, error) {
+	var res qdrantResult[[]qdrantPoint]
+	body := map[string]any{"ids": ids, "with_payload": false, "with_vector": false}
+	if err := s.do(ctx, http.MethodPost, collectionPath(table, "/points"), body, &res); err != nil {
+		return nil, err
+	}
+	taken := make(map[string]bool, len(res.Result))
+	for _, pt := range res.Result {
+		taken[fmt.Sprint(jsonNumbers(pt.ID))] = true
+	}
+	return taken, nil
+}
+
+// qdrantChanges are the batch operations setting the non-nil values of set
+// and deleting the keys set clears, on the points selector picks.
+func qdrantChanges(set map[string]any, selector map[string]any) ([]map[string]any, error) {
+	payload := map[string]any{}
+	var cleared []string
+	for _, k := range sortedKeys(set) {
+		jv, err := jsonValue(set[k])
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", k, err)
+		}
+		if jv == nil {
+			cleared = append(cleared, k)
+		} else {
+			payload[k] = jv
+		}
+	}
+	var ops []map[string]any
+	if len(payload) > 0 {
+		op := maps.Clone(selector)
+		op["payload"] = payload
+		ops = append(ops, map[string]any{"set_payload": op})
+	}
+	if len(cleared) > 0 {
+		op := maps.Clone(selector)
+		op["keys"] = cleared
+		ops = append(ops, map[string]any{"delete_payload": op})
+	}
+	return ops, nil
+}
+
+func (s *QdrantStore) batch(ctx context.Context, table string, ops []map[string]any) error {
+	if len(ops) == 0 {
 		return nil
 	}
-	return s.do(ctx, http.MethodPut, collectionPath(table, "/points?wait=true"),
-		map[string]any{"points": points}, nil)
+	return s.do(ctx, http.MethodPost, collectionPath(table, "/points/batch?wait=true"), map[string]any{"operations": ops}, nil)
 }
 
-// UpsertDocs overwrites the matching points: the PUT points endpoint is
-// idempotent on the point id, which is the document key.
-func (s *QdrantStore) UpsertDocs(ctx context.Context, table string, docs []map[string]any, keys []string) error {
-	return s.InsertDocs(ctx, table, docs)
-}
-
-func (s *QdrantStore) UpdateDocs(ctx context.Context, table string, p Plan, u DocUpdate) (int64, error) {
+// UpdateDocs sets payload fields on the matching points; a vector value
+// also replaces those points' vector, which search reads instead of the
+// payload copy.
+func (s *QdrantStore) UpdateDocs(ctx context.Context, p Plan, u DocUpdate) (int64, error) {
+	table := p.Table
 	if p.Vector != nil {
 		return 0, &ErrNotTranslatable{Reason: "updating by vector search"}
 	}
@@ -550,37 +660,38 @@ func (s *QdrantStore) UpdateDocs(ctx context.Context, table string, p Plan, u Do
 	if err != nil {
 		return 0, err
 	}
-	n, err := s.CountDocs(ctx, table, p)
+	n, err := s.CountDocs(ctx, p)
 	if err != nil {
 		return 0, err
 	}
-	payload := map[string]any{}
-	var nils []string
+	ops, err := qdrantChanges(u.Set, map[string]any{"filter": filter})
+	if err != nil {
+		return 0, fmt.Errorf("orm: qdrant update on %s: %w", table, err)
+	}
 	for _, k := range sortedKeys(u.Set) {
-		jv, err := jsonValue(u.Set[k])
+		vec, ok := vectorOf(u.Set[k])
+		if !ok {
+			continue
+		}
+		docs, err := s.FindDocs(ctx, Plan{Table: table, Key: p.Key, Columns: []string{p.Key}, Where: p.Where})
 		if err != nil {
-			return 0, fmt.Errorf("orm: qdrant update on %s: field %s: %w", table, k, err)
-		}
-		if jv == nil {
-			nils = append(nils, k)
-		} else {
-			payload[k] = jv
-		}
-	}
-	body := map[string]any{"payload": payload, "filter": filter}
-	if err := s.do(ctx, http.MethodPost, collectionPath(table, "/points/payload?wait=true"), body, nil); err != nil {
-		return 0, err
-	}
-	for _, k := range nils {
-		body := map[string]any{"keys": []string{k}, "filter": filter}
-		if err := s.do(ctx, http.MethodPost, collectionPath(table, "/points/payload/delete?wait=true"), body, nil); err != nil {
 			return 0, err
 		}
+		points := make([]any, len(docs))
+		for i, d := range docs {
+			points[i] = map[string]any{"id": d[p.Key], "vector": vec}
+		}
+		if len(points) > 0 {
+			ops = append([]map[string]any{{"update_vectors": map[string]any{"points": points}}}, ops...)
+		}
+	}
+	if err := s.batch(ctx, table, ops); err != nil {
+		return 0, err
 	}
 	return n, nil
 }
 
-func (s *QdrantStore) DeleteDocs(ctx context.Context, table string, p Plan) (int64, error) {
+func (s *QdrantStore) DeleteDocs(ctx context.Context, p Plan) (int64, error) {
 	if p.Vector != nil {
 		return 0, &ErrNotTranslatable{Reason: "deleting by vector search"}
 	}
@@ -588,12 +699,12 @@ func (s *QdrantStore) DeleteDocs(ctx context.Context, table string, p Plan) (int
 	if err != nil {
 		return 0, err
 	}
-	n, err := s.CountDocs(ctx, table, p)
+	n, err := s.CountDocs(ctx, p)
 	if err != nil {
 		return 0, err
 	}
 	body := map[string]any{"filter": filter}
-	if err := s.do(ctx, http.MethodPost, collectionPath(table, "/points/delete?wait=true"), body, nil); err != nil {
+	if err := s.do(ctx, http.MethodPost, collectionPath(p.Table, "/points/delete?wait=true"), body, nil); err != nil {
 		return 0, err
 	}
 	return n, nil
@@ -601,11 +712,11 @@ func (s *QdrantStore) DeleteDocs(ctx context.Context, table string, p Plan) (int
 
 // AggregateDocs is refused: Qdrant has no server-side aggregation, and
 // summing by scrolling every point would hide an unbounded scan.
-func (s *QdrantStore) AggregateDocs(context.Context, string, Plan, Aggregate, string) (any, error) {
+func (s *QdrantStore) AggregateDocs(context.Context, Plan, Aggregate, string) (any, error) {
 	return nil, &ErrNotTranslatable{Reason: "aggregates on Qdrant (it has no server-side aggregation)"}
 }
 
-func (s *QdrantStore) CountDocs(ctx context.Context, table string, p Plan) (int64, error) {
+func (s *QdrantStore) CountDocs(ctx context.Context, p Plan) (int64, error) {
 	filter, err := qdrantFilter(p.Where)
 	if err != nil {
 		return 0, err
@@ -614,7 +725,7 @@ func (s *QdrantStore) CountDocs(ctx context.Context, table string, p Plan) (int6
 	var res qdrantResult[struct {
 		Count int64 `json:"count"`
 	}]
-	if err := s.do(ctx, http.MethodPost, collectionPath(table, "/points/count"), body, &res); err != nil {
+	if err := s.do(ctx, http.MethodPost, collectionPath(p.Table, "/points/count"), body, &res); err != nil {
 		return 0, err
 	}
 	return res.Result.Count, nil

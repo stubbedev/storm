@@ -230,6 +230,42 @@ func assertDocLogic(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" logic cleanup", must(rows.Delete(ctx)), int64(4))
 }
 
+// assertDocKeys checks a document store keeps keys unique, as a primary
+// key does in SQL, and that Upsert overwrites only its update columns.
+func assertDocKeys(t *testing.T, ctx context.Context, conn string, upsertByOtherColumns bool) {
+	t.Helper()
+	notes := Notes.Query().On(conn).WithoutGlobalScopes()
+	first := Note{ID: "00000000-0000-4000-8000-0000000000a1", Title: "first", Views: 1}
+	ok(notes.Create(ctx, &first))
+	again := Note{ID: first.ID, Title: "second", Views: 2}
+	err := notes.Create(ctx, &again)
+	eq(t, conn+" a taken key is a unique violation", orm.IsUniqueViolation(err), true)
+	eq(t, conn+" a taken key keeps the first", must(notes.Find(ctx, first.ID)).Title, "first")
+	found := must(notes.CreateOrFirst(ctx, orm.Attrs(Notes.ID.Set(first.ID)), Notes.Title.Set("third")))
+	eq(t, conn+" createOrFirst finds the taken key", found.Title, "first")
+
+	fresh := Note{ID: "00000000-0000-4000-8000-0000000000a2", Title: "fresh", Views: 5}
+	changed := Note{ID: first.ID, Title: "upserted", Views: 99}
+	ok(notes.Upsert(ctx, []Note{changed, fresh}, []orm.AnyColumn[Note]{Notes.ID}, Notes.Title))
+	kept := must(notes.Find(ctx, first.ID))
+	eq(t, conn+" upsert sets only the update columns", fmt.Sprintf("%s %d", kept.Title, kept.Views), "upserted 1")
+	eq(t, conn+" upsert inserts the new key", must(notes.Find(ctx, fresh.ID)).Views, int64(5))
+
+	rows := orm.From("notes").On(conn)
+	err = rows.Upsert(ctx, []map[string]any{{"id": "00000000-0000-4000-8000-0000000000a3", "title": "fresh", "views": 7}}, []string{"title"}, "views")
+	if upsertByOtherColumns {
+		ok(err)
+		eq(t, conn+" upsert by another column keeps the key", must(notes.Find(ctx, fresh.ID)).Views, int64(7))
+		eq(t, conn+" upsert by another column inserts nothing", must(notes.Count(ctx)), int64(2))
+	} else {
+		eq(t, conn+" upsert by another column refused", orm.IsNotTranslatable(err), true)
+	}
+	row := must(rows.Find(ctx, first.ID))
+	_, hasID := row["_id"]
+	eq(t, conn+" rows carry no store id", hasID, false)
+	eq(t, conn+" keys cleanup", must(rows.Delete(ctx)), int64(2))
+}
+
 // assertDocModelQueries runs the model builder's implicit conditions (soft
 // deletes, global scopes, key lookups) and its key walks against a
 // document store.
@@ -718,6 +754,7 @@ func TestMongo(t *testing.T) {
 
 	assertDocMigrations(t, ctx, "mongo")
 	assertDocLogic(t, ctx, "mongo")
+	assertDocKeys(t, ctx, "mongo", true)
 	assertDocModelQueries(t, ctx, "mongo")
 
 	txDocs := orm.From("tx_docs").On("mongo")
@@ -905,18 +942,25 @@ func TestQdrant(t *testing.T) {
 
 	_, err = orm.From("missing_collection").On("qdrant").Get(ctx)
 	eq(t, "http errors name the request", err != nil && strings.Contains(err.Error(), "/collections/missing_collection/points/scroll: 404"), true)
-	keyed, err := orm.OpenQdrant("qdrant_keyed", os.Getenv("STORM_TEST_QDRANT"))
-	ok(err)
-	keyed.WithKey("code")
-	ok(keyed.EnsureCollection(ctx, "keyed", 3, orm.L2))
-	ok(orm.From("keyed").On("qdrant_keyed").Insert(ctx, map[string]any{"code": 7, "name": "seven", "vec": orm.NewVector3(1, 2, 3)}))
-	point := must(orm.From("keyed").On("qdrant_keyed").Where("code", orm.Eq, 7).First(ctx))
+	ok(store.DropCollection(ctx, "keyed"))
+	ok(store.EnsureCollection(ctx, "keyed", 3, orm.L2))
+	keyed := orm.From("keyed").On("qdrant").WithKey("code")
+	ok(keyed.Insert(ctx, map[string]any{"code": 7, "name": "seven", "vec": orm.NewVector3(1, 2, 3)}))
+	point := must(keyed.Where("code", orm.Eq, 7).First(ctx))
 	eq(t, "withKey names the point id column", fmt.Sprintf("%v %v", point["code"], point["name"]), "7 seven")
-	ok(keyed.DropCollection(ctx, "keyed"))
+	eq(t, "withKey finds by point id", must(keyed.Find(ctx, 7))["name"], any("seven"))
+	ok(store.DropCollection(ctx, "keyed"))
+
+	moved := must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("far")).First(ctx))
+	moved.Vec = orm.NewVector3(0, 0, 1)
+	ok(Docs.Query().On("qdrant").Save(ctx, &moved))
+	nearest := must(Docs.Query().On("qdrant").OrderBy(Docs.Vec.Nearest(orm.NewVector3(0, 0, 1), orm.Cosine)).Limit(1).Get(ctx))
+	eq(t, "saving a vector moves the point", nearest[0].ID, moved.ID)
 	assertDocMigrations(t, ctx, "qdrant")
 	ok(store.DropCollection(ctx, "notes"))
 	ok(store.CreateCollection(ctx, orm.Collection{Name: "notes", Indexes: []orm.DocIndex{{Name: "notes_views", Fields: []orm.DocField{{Name: "views", Kind: orm.KindInt}}}}}))
 	assertDocLogic(t, ctx, "qdrant")
+	assertDocKeys(t, ctx, "qdrant", false)
 	assertDocModelQueries(t, ctx, "qdrant")
 	ok(store.DropCollection(ctx, "notes"))
 	_, err = Docs.Query().On("qdrant").Sum(ctx, Docs.Views)

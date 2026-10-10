@@ -699,7 +699,7 @@ func (r RowQuery) planOf() (Plan, error) {
 	if r.badNode {
 		return Plan{}, &ErrNotTranslatable{Reason: "a raw or SQL-specific condition (whereRaw)"}
 	}
-	p := Plan{Table: r.name, Limit: r.limit, Offset: r.offset}
+	p := Plan{Table: r.name, Key: r.key, Limit: r.limit, Offset: r.offset}
 	for _, o := range r.orders {
 		if o.col == "" {
 			return Plan{}, &ErrNotTranslatable{Reason: "random order"}
@@ -734,7 +734,7 @@ func (r RowQuery) Get(ctx context.Context) ([]map[string]any, error) {
 			return nil, err
 		}
 		start := time.Now()
-		docs, err := ds.FindDocs(ctx, r.name, p)
+		docs, err := ds.FindDocs(ctx, p)
 		emitDoc(r.connName(), "find", p, time.Since(start), err)
 		return docs, err
 	}
@@ -835,7 +835,7 @@ func (r RowQuery) Count(ctx context.Context) (int64, error) {
 			return 0, err
 		}
 		start := time.Now()
-		n, err := ds.CountDocs(ctx, r.name, p)
+		n, err := ds.CountDocs(ctx, p)
 		emitDoc(r.connName(), "count", p, time.Since(start), err)
 		return n, err
 	}
@@ -1083,7 +1083,7 @@ func (r RowQuery) update(ctx context.Context, sets []colSet) (int64, error) {
 		if err != nil {
 			return 0, err
 		}
-		return updateDocs(ctx, ds, r.connName(), r.key, p, sets)
+		return updateDocs(ctx, ds, r.connName(), p, sets)
 	}
 	where := r.mutationWhere()
 	return mutate(ctx, r.connName(), r.name, where, func(b *SQL) { writeUpdate(b, r.name, sets, where) })
@@ -1123,7 +1123,7 @@ func (r RowQuery) Delete(ctx context.Context) (int64, error) {
 		if err != nil {
 			return 0, err
 		}
-		return deleteDocs(ctx, ds, r.connName(), r.key, p)
+		return deleteDocs(ctx, ds, r.connName(), p)
 	}
 	where := r.mutationWhere()
 	return mutate(ctx, r.connName(), r.name, where, func(b *SQL) { writeDelete(b, r.name, where) })

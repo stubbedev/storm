@@ -285,7 +285,7 @@ func (q Query[M]) pluckDocs(ctx context.Context, exprs ...AnyExpr) ([]map[string
 	}
 	p.Columns = cols
 	start := time.Now()
-	docs, err := ds.FindDocs(ctx, q.table.Name, p)
+	docs, err := ds.FindDocs(ctx, p)
 	emitDoc(q.connName(), "pluck", p, time.Since(start), err)
 	return docs, cols, true, err
 }

@@ -356,11 +356,11 @@ func mongoFields(opts bson.Raw) ([]DocField, error) {
 	return fields, nil
 }
 
-func (s *MongoStore) FindDocs(ctx context.Context, table string, p Plan) ([]map[string]any, error) {
+func (s *MongoStore) FindDocs(ctx context.Context, p Plan) ([]map[string]any, error) {
 	if p.Vector != nil {
 		return nil, &ErrNotTranslatable{Reason: "vector search (MongoDB Atlas Vector Search is not wired up; use Qdrant or pgvector)"}
 	}
-	filter, err := mongoFilter(p.Where)
+	filter, err := mongoFilter(p)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +378,7 @@ func (s *MongoStore) FindDocs(ctx context.Context, table string, p Plan) ([]map[
 			if o.Desc {
 				dir = -1
 			}
-			sort = append(sort, bson.E{Key: o.Column, Value: dir})
+			sort = append(sort, bson.E{Key: mongoField(o.Column, p.Key), Value: dir})
 		}
 		opts.SetSort(sort)
 	}
@@ -389,60 +389,118 @@ func (s *MongoStore) FindDocs(ctx context.Context, table string, p Plan) ([]map[
 		}
 		opts.SetProjection(proj)
 	}
-	cursor, err := s.coll(table).Find(ctx, filter, opts)
+	cursor, err := s.coll(p.Table).Find(ctx, filter, opts)
 	if err != nil {
-		return nil, fmt.Errorf("orm: mongo find on %s: %w", table, err)
+		return nil, fmt.Errorf("orm: mongo find on %s: %w", p.Table, err)
 	}
 	var docs []map[string]any
 	if err := cursor.All(ctx, &docs); err != nil {
-		return nil, fmt.Errorf("orm: mongo find on %s: %w", table, err)
+		return nil, fmt.Errorf("orm: mongo find on %s: %w", p.Table, err)
+	}
+	for _, doc := range docs {
+		delete(doc, "_id")
 	}
 	return docs, nil
 }
 
-func (s *MongoStore) InsertDocs(ctx context.Context, table string, docs []map[string]any) error {
+// InsertDocs stores each document under _id = its key, so MongoDB's own
+// unique _id index rejects a taken key.
+func (s *MongoStore) InsertDocs(ctx context.Context, table, key string, docs []map[string]any) error {
 	if len(docs) == 0 {
 		return nil
 	}
 	elems := make([]any, len(docs))
 	for i, doc := range docs {
-		d, err := mongoDoc(doc)
+		d, err := mongoKeyed(doc, key)
 		if err != nil {
 			return fmt.Errorf("orm: mongo insert into %s: %w", table, err)
 		}
 		elems[i] = d
 	}
 	if _, err := s.coll(table).InsertMany(ctx, elems); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return &DuplicateKeyError{Table: table, Key: key, Err: err}
+		}
 		return fmt.Errorf("orm: mongo insert into %s: %w", table, err)
 	}
 	return nil
 }
 
-// UpsertDocs replaces each document wholesale: models carry complete
-// documents, so matching the keys and replacing equals updating every
-// column, which is what Upsert's default update list asks for.
-func (s *MongoStore) UpsertDocs(ctx context.Context, table string, docs []map[string]any, keys []string) error {
-	for _, doc := range docs {
-		filter, err := mongoDoc(pick(doc, keys))
+// UpsertDocs writes every document in one bulk write: a document matching
+// on uniqueBy gets only its update columns set, a new one is inserted
+// whole under _id = its key.
+func (s *MongoStore) UpsertDocs(ctx context.Context, table, key string, docs []map[string]any, uniqueBy, update []string) error {
+	if len(docs) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, len(docs))
+	for i, doc := range docs {
+		filter := bson.D{}
+		for _, c := range uniqueBy {
+			v, err := bsonValue(doc[c])
+			if err != nil {
+				return fmt.Errorf("orm: mongo upsert into %s: %w", table, err)
+			}
+			filter = append(filter, bson.E{Key: mongoField(c, key), Value: v})
+		}
+		set := map[string]any{}
+		onInsert := map[string]any{}
+		for c, v := range doc {
+			if c != key && slices.Contains(update, c) {
+				set[c] = v
+			} else {
+				onInsert[c] = v
+			}
+		}
+		insert, err := mongoKeyed(onInsert, key)
 		if err != nil {
 			return fmt.Errorf("orm: mongo upsert into %s: %w", table, err)
 		}
-		replacement, err := mongoDoc(doc)
-		if err != nil {
-			return fmt.Errorf("orm: mongo upsert into %s: %w", table, err)
+		changes := bson.D{{Key: "$setOnInsert", Value: insert}}
+		if len(set) > 0 {
+			fields, err := mongoDoc(set)
+			if err != nil {
+				return fmt.Errorf("orm: mongo upsert into %s: %w", table, err)
+			}
+			changes = append(bson.D{{Key: "$set", Value: fields}}, changes...)
 		}
-		_, err = s.coll(table).UpdateOne(ctx, filter,
-			mongo.Pipeline{bson.D{{Key: "$replaceWith", Value: replacement}}},
-			options.UpdateOne().SetUpsert(true))
-		if err != nil {
-			return fmt.Errorf("orm: mongo upsert into %s: %w", table, err)
-		}
+		models[i] = mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(changes).SetUpsert(true)
+	}
+	if _, err := s.coll(table).BulkWrite(ctx, models); err != nil {
+		return fmt.Errorf("orm: mongo upsert into %s: %w", table, err)
 	}
 	return nil
 }
 
-func (s *MongoStore) UpdateDocs(ctx context.Context, table string, p Plan, u DocUpdate) (int64, error) {
-	filter, err := mongoFilter(p.Where)
+// mongoKeyed is doc as BSON with its key mirrored into _id.
+func mongoKeyed(doc map[string]any, key string) (bson.D, error) {
+	id, ok := doc[key]
+	if !ok || isZero(id) {
+		return nil, fmt.Errorf("every document needs a key in %q", key)
+	}
+	d, err := mongoDoc(doc)
+	if err != nil {
+		return nil, err
+	}
+	v, err := bsonValue(id)
+	if err != nil {
+		return nil, fmt.Errorf("field %s: %w", key, err)
+	}
+	return append(bson.D{{Key: "_id", Value: v}}, d...), nil
+}
+
+// mongoField is the BSON field a column filters and sorts on: the key
+// column is mirrored into _id, which MongoDB always indexes.
+func mongoField(column, key string) string {
+	if column == key {
+		return "_id"
+	}
+	return column
+}
+
+func (s *MongoStore) UpdateDocs(ctx context.Context, p Plan, u DocUpdate) (int64, error) {
+	table := p.Table
+	filter, err := mongoFilter(p)
 	if err != nil {
 		return 0, err
 	}
@@ -467,8 +525,9 @@ func (s *MongoStore) UpdateDocs(ctx context.Context, table string, p Plan, u Doc
 	return res.MatchedCount, nil
 }
 
-func (s *MongoStore) DeleteDocs(ctx context.Context, table string, p Plan) (int64, error) {
-	filter, err := mongoFilter(p.Where)
+func (s *MongoStore) DeleteDocs(ctx context.Context, p Plan) (int64, error) {
+	table := p.Table
+	filter, err := mongoFilter(p)
 	if err != nil {
 		return 0, err
 	}
@@ -479,8 +538,9 @@ func (s *MongoStore) DeleteDocs(ctx context.Context, table string, p Plan) (int6
 	return res.DeletedCount, nil
 }
 
-func (s *MongoStore) CountDocs(ctx context.Context, table string, p Plan) (int64, error) {
-	filter, err := mongoFilter(p.Where)
+func (s *MongoStore) CountDocs(ctx context.Context, p Plan) (int64, error) {
+	table := p.Table
+	filter, err := mongoFilter(p)
 	if err != nil {
 		return 0, err
 	}
@@ -495,7 +555,8 @@ func (s *MongoStore) CountDocs(ctx context.Context, table string, p Plan) (int64
 }
 
 // AggregateDocs runs fn over column as a $match + $group pipeline.
-func (s *MongoStore) AggregateDocs(ctx context.Context, table string, p Plan, fn Aggregate, column string) (any, error) {
+func (s *MongoStore) AggregateDocs(ctx context.Context, p Plan, fn Aggregate, column string) (any, error) {
+	table := p.Table
 	if p.Vector != nil {
 		return nil, &ErrNotTranslatable{Reason: "vector search on MongoDB"}
 	}
@@ -503,7 +564,7 @@ func (s *MongoStore) AggregateDocs(ctx context.Context, table string, p Plan, fn
 	if !ok {
 		return nil, fmt.Errorf("orm: mongo aggregate on %s: unknown %s", table, fn)
 	}
-	filter, err := mongoFilter(p.Where)
+	filter, err := mongoFilter(p)
 	if err != nil {
 		return nil, err
 	}
@@ -571,11 +632,11 @@ func bsonValue(v any) (any, error) {
 }
 
 // mongoFilter compiles a plan condition to a BSON filter.
-func mongoFilter(n Node) (bson.D, error) {
-	if n == nil {
+func mongoFilter(p Plan) (bson.D, error) {
+	if p.Where == nil {
 		return bson.D{}, nil
 	}
-	return mongoCond(lowerNegations(n, false))
+	return mongoCond(lowerNegations(p.Where, false), p.Key)
 }
 
 // mongoNever matches no document.
@@ -584,7 +645,7 @@ var mongoNever = bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: bson.A{}}
 // mongoCond compiles a negation-lowered condition. Negative leaves also
 // exclude null and missing fields, which SQL's NULL never satisfies, and a
 // comparison with nil matches nothing, as col = NULL does in SQL.
-func mongoCond(n Node) (bson.D, error) {
+func mongoCond(n Node, key string) (bson.D, error) {
 	switch c := n.(type) {
 	case Field:
 		v, err := bsonValue(c.Value)
@@ -596,11 +657,11 @@ func mongoCond(n Node) (bson.D, error) {
 		}
 		switch c.Op {
 		case "=":
-			return bson.D{{Key: c.Column, Value: v}}, nil
+			return bson.D{{Key: mongoField(c.Column, key), Value: v}}, nil
 		case "<>", "!=":
-			return bson.D{{Key: c.Column, Value: bson.D{{Key: "$nin", Value: bson.A{v, nil}}}}}, nil
+			return bson.D{{Key: mongoField(c.Column, key), Value: bson.D{{Key: "$nin", Value: bson.A{v, nil}}}}}, nil
 		case ">", ">=", "<", "<=":
-			return bson.D{{Key: c.Column, Value: bson.D{{Key: "$" + mongoOp(c.Op), Value: v}}}}, nil
+			return bson.D{{Key: mongoField(c.Column, key), Value: bson.D{{Key: "$" + mongoOp(c.Op), Value: v}}}}, nil
 		case "LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE":
 			re, err := likeRegex(c.Value)
 			if err != nil {
@@ -611,9 +672,9 @@ func mongoCond(n Node) (bson.D, error) {
 				match = append(match, bson.E{Key: "$options", Value: "i"})
 			}
 			if strings.HasPrefix(c.Op, "NOT") {
-				return bson.D{{Key: c.Column, Value: bson.D{{Key: "$not", Value: match}, {Key: "$ne", Value: nil}}}}, nil
+				return bson.D{{Key: mongoField(c.Column, key), Value: bson.D{{Key: "$not", Value: match}, {Key: "$ne", Value: nil}}}}, nil
 			}
-			return bson.D{{Key: c.Column, Value: match}}, nil
+			return bson.D{{Key: mongoField(c.Column, key), Value: match}}, nil
 		}
 		return nil, &ErrNotTranslatable{Reason: "operator " + c.Op}
 	case List:
@@ -631,9 +692,9 @@ func mongoCond(n Node) (bson.D, error) {
 			}
 		}
 		if c.Not {
-			return bson.D{{Key: c.Column, Value: bson.D{{Key: "$nin", Value: append(vals, nil)}}}}, nil
+			return bson.D{{Key: mongoField(c.Column, key), Value: bson.D{{Key: "$nin", Value: append(vals, nil)}}}}, nil
 		}
-		return bson.D{{Key: c.Column, Value: bson.D{{Key: "$in", Value: vals}}}}, nil
+		return bson.D{{Key: mongoField(c.Column, key), Value: bson.D{{Key: "$in", Value: vals}}}}, nil
 	case Range:
 		lo, err := bsonValue(c.Lo)
 		if err != nil {
@@ -645,20 +706,20 @@ func mongoCond(n Node) (bson.D, error) {
 		}
 		if c.Not {
 			return bson.D{{Key: "$or", Value: bson.A{
-				bson.D{{Key: c.Column, Value: bson.D{{Key: "$lt", Value: lo}}}},
-				bson.D{{Key: c.Column, Value: bson.D{{Key: "$gt", Value: hi}}}},
+				bson.D{{Key: mongoField(c.Column, key), Value: bson.D{{Key: "$lt", Value: lo}}}},
+				bson.D{{Key: mongoField(c.Column, key), Value: bson.D{{Key: "$gt", Value: hi}}}},
 			}}}, nil
 		}
-		return bson.D{{Key: c.Column, Value: bson.D{{Key: "$gte", Value: lo}, {Key: "$lte", Value: hi}}}}, nil
+		return bson.D{{Key: mongoField(c.Column, key), Value: bson.D{{Key: "$gte", Value: lo}, {Key: "$lte", Value: hi}}}}, nil
 	case NullTest:
 		if c.Not {
-			return bson.D{{Key: c.Column, Value: bson.D{{Key: "$ne", Value: nil}}}}, nil
+			return bson.D{{Key: mongoField(c.Column, key), Value: bson.D{{Key: "$ne", Value: nil}}}}, nil
 		}
-		return bson.D{{Key: c.Column, Value: nil}}, nil
+		return bson.D{{Key: mongoField(c.Column, key), Value: nil}}, nil
 	case Composite:
 		parts := make(bson.A, 0, len(c.Parts))
 		for _, p := range c.Parts {
-			sub, err := mongoCond(p)
+			sub, err := mongoCond(p, key)
 			if err != nil {
 				return nil, err
 			}

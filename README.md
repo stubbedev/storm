@@ -439,7 +439,11 @@ MongoDB), and the model lifecycle — `Create`, `Save` (dirty columns only),
 `Pluck` / `PluckMap` / `Value` of columns, `Sum` / `Avg` / `Min` / `Max`
 (an aggregation pipeline on MongoDB), length-aware and simple pagination,
 chunking (`ChunkByID` and `Lazy` included), transactions (MongoDB replica
-sets), and `orm.From(...)` table queries. Conditions follow SQL's
+sets), and `orm.From(...)` table queries. The key column (the model's
+primary key, or a row query's `WithKey`) is unique as in SQL: MongoDB
+stores it as `_id` too, and Qdrant uses it as the point id, so inserting a
+taken key fails with an error `orm.IsUniqueViolation` recognises. `Upsert`
+sets only its update columns on a matching document. Conditions follow SQL's
 three-valued logic, so `Ne`, `NotIn` and `Not(...)` never match a document
 missing the field, and a comparison with `nil` matches nothing. Keys must be
 UUID, ULID or manual (assigned automatically when missing). Every

@@ -87,11 +87,11 @@ func (c conflict) storeDocs(ctx context.Context, ds DocStore, conn, table string
 	var err error
 	switch c.kind {
 	case conflictIgnore:
-		err = insertOrIgnoreDocs(ctx, ds, table, docs, c.keys(key))
+		err = insertOrIgnoreDocs(ctx, ds, table, key, docs, c.keys(key))
 	case conflictUpdate:
-		err = ds.UpsertDocs(ctx, table, docs, c.keys(key))
+		err = ds.UpsertDocs(ctx, table, key, docs, c.keys(key), c.update)
 	default:
-		err = ds.InsertDocs(ctx, table, docs)
+		err = ds.InsertDocs(ctx, table, key, docs)
 	}
 	verb := map[conflictKind]string{conflictFail: "insert", conflictIgnore: "insert or ignore", conflictUpdate: "upsert"}[c.kind]
 	emitDocRaw(conn, fmt.Sprintf("%s %s (%d documents)", verb, table, len(docs)), time.Since(start), err)
