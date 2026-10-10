@@ -12,7 +12,7 @@ import (
 // ---------------------------------------------------------------------------
 // DuckDB: embedded analytical engine, Postgres-flavoured SQL with ?
 // placeholders. Reads CSV/Parquet/JSON files straight from the builder, so
-// it doubles as the flat-file backend (orm.From("read_csv('data.csv')")).
+// it doubles as the flat-file backend (orm.FromRaw("read_csv(?)", "data.csv")).
 // ---------------------------------------------------------------------------
 
 type duckdbDialect struct{ sqliteDialect }

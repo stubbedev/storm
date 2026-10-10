@@ -30,6 +30,7 @@ import (
 type RowQuery struct {
 	conn     string
 	name     string
+	source   frag   // a raw table source (FromRaw), rendered instead of name
 	key      string // auto-increment key column for InsertGetID; default "id"
 	distinct bool
 	selects  []selectTerm
@@ -53,6 +54,21 @@ type rowUnion struct {
 
 // From starts a row query on a table by name.
 func From(name string) RowQuery { return RowQuery{name: name, key: "id"} }
+
+// FromRaw starts a read-only row query on a raw table source, binding
+// args to its ? placeholders — a table function such as DuckDB's
+// orm.FromRaw("read_csv(?)", "events.csv").
+func FromRaw(source string, args ...any) RowQuery {
+	return RowQuery{name: source, key: "id", source: func(b *SQL) { b.Raw(source, args...) }}
+}
+
+// writable refuses writes through a raw table source.
+func (r RowQuery) writable(method string) error {
+	if r.source != nil {
+		return fmt.Errorf("orm: %s on %s: a raw table source (FromRaw) is read-only", method, r.name)
+	}
+	return nil
+}
 
 // FromTable starts a row query on a model's table and connection, with its
 // primary key as the InsertGetID column: orm.FromTable(Users).
@@ -646,8 +662,8 @@ func (r RowQuery) render(b *SQL, list frag) {
 }
 
 func (r RowQuery) writeTable(b *SQL) {
-	if strings.ContainsAny(r.name, "()'") {
-		b.Write(r.name) // a table function like read_csv('f.csv')
+	if r.source != nil {
+		r.source(b)
 		return
 	}
 	b.Ident(r.name)
@@ -693,6 +709,9 @@ func (r RowQuery) planOf() (Plan, error) {
 	}
 	if r.badNode {
 		return Plan{}, &ErrNotTranslatable{Reason: "a raw or SQL-specific condition (whereRaw)"}
+	}
+	if r.source != nil {
+		return Plan{}, &ErrNotTranslatable{Reason: "a raw table source (FromRaw)"}
 	}
 	p := Plan{Table: r.name, Key: r.key, Limit: r.limit, Offset: r.offset}
 	for _, o := range r.orders {
@@ -772,6 +791,9 @@ func (r RowQuery) ValueCol[M, V any](ctx context.Context, c Column[M, V]) (V, er
 
 // InsertUsing inserts the rows sub selects into cols (insertUsing).
 func (r RowQuery) InsertUsing(ctx context.Context, cols []string, sub RowQuery) (int64, error) {
+	if err := r.writable("insert"); err != nil {
+		return 0, err
+	}
 	return insertUsing(ctx, r.connName(), r.name, cols, func(b *SQL) { sub.render(b, nil) })
 }
 
@@ -968,6 +990,9 @@ func (r RowQuery) insertRows(ctx context.Context, method string, rows [][]colSet
 	if len(rows) == 0 {
 		return nil
 	}
+	if err := r.writable(method); err != nil {
+		return err
+	}
 	if ds, ok, err := r.docConn(ctx); err != nil {
 		return err
 	} else if ok {
@@ -987,6 +1012,9 @@ func (r RowQuery) insertRows(ctx context.Context, method string, rows [][]colSet
 // from the key column ("id" unless changed with WithKey). Document stores
 // generate no keys, so it has no document-store form.
 func (r RowQuery) InsertGetID(ctx context.Context, m map[string]any) (int64, error) {
+	if err := r.writable("insert"); err != nil {
+		return 0, err
+	}
 	row := [][]colSet{mapSets(m)}
 	cols := rowColumns(row)
 	return insertGetID(ctx, r.connName(), r.name, r.key, func(b *SQL) { writeInsert(b, "INSERT", r.name, cols, row) })
@@ -1071,6 +1099,9 @@ func (r RowQuery) update(ctx context.Context, sets []colSet) (int64, error) {
 	if len(sets) == 0 {
 		return 0, fmt.Errorf("orm: update on %s: no columns to set", r.name)
 	}
+	if err := r.writable("update"); err != nil {
+		return 0, err
+	}
 	if ds, ok, err := r.docConn(ctx); err != nil {
 		return 0, err
 	} else if ok {
@@ -1111,6 +1142,9 @@ func (r RowQuery) UpdateOrInsert(ctx context.Context, attrs, values map[string]a
 
 // Delete removes every matching row and reports how many went.
 func (r RowQuery) Delete(ctx context.Context) (int64, error) {
+	if err := r.writable("delete"); err != nil {
+		return 0, err
+	}
 	if ds, ok, err := r.docConn(ctx); err != nil {
 		return 0, err
 	} else if ok {

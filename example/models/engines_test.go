@@ -540,7 +540,11 @@ func TestDuckDB(t *testing.T) {
 	// Flat files: DuckDB reads CSV straight from the builder.
 	csv := t.TempDir() + "/flat.csv"
 	ok(os.WriteFile(csv, []byte("id,name,kind,karma\n1,alpha,gear,5\n2,beta,spring,15\n3,gamma,gear,25\n"), 0o644))
-	rows := must(orm.From(fmt.Sprintf("read_csv('%s')", csv)).On("duck").Where("kind", "=", "gear").Count(ctx))
+	rows := must(orm.FromRaw("read_csv(?)", csv).On("duck").Where("kind", "=", "gear").Count(ctx))
+	_, err = orm.FromRaw("read_csv(?)", csv).On("duck").Delete(ctx)
+	eq(t, "raw table sources are read-only", err != nil && strings.Contains(err.Error(), "read-only"), true)
+	_, err = orm.From("x'); DROP TABLE widgets; --").On("duck").Count(ctx)
+	eq(t, "from quotes its name", err != nil && must(Widgets.Query().On("duck").Count(ctx)) > 0, true)
 	eq(t, "csv query", rows, int64(2))
 
 	// Vectors: FLOAT[3] columns and array_distance ordering.

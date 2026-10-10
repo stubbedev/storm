@@ -350,12 +350,13 @@ comparisons, subqueries, aggregates, expression updates), which return
 
 **DuckDB** (`github.com/marcboeker/go-duckdb/v2`, CGo) is an embedded OLAP
 engine: open a file and query it. CSV, Parquet and JSON are tables through
-table functions, so `orm.From` doubles as the flat-file reader.
+table functions, so `orm.FromRaw` (a raw table source with bound
+arguments; `orm.From` always quotes its table name) is the flat-file reader.
 
 ```go
 orm.Open("lake", "duckdb", "analytics.duckdb")
 
-n, err := orm.From("read_csv('events.csv')").On("lake").
+n, err := orm.FromRaw("read_csv(?)", "events.csv").On("lake").
 	Where("kind", "=", "click").
 	Count(ctx)
 ```
@@ -635,7 +636,7 @@ legitimately differs.
 | Postgres (pgvector) | full parity plus `orm.Vector` columns with HNSW indexes (`t.HnswIndex`) |
 | MySQL 8 / 9 | `DISTANCE()` vector ordering (HeatWave); fulltext and spatial indexes |
 | MariaDB | its own dialect: `INSERT ... RETURNING`, `LOCK IN SHARE MODE`; 11.7+ `VECTOR` columns with `VECTOR INDEX` (`t.HnswIndex`, euclidean or cosine) and `VEC_DISTANCE_*` ordering |
-| DuckDB | embedded OLAP; `orm.From("read_csv('f.csv')")` queries flat files; auto-increment via sequences |
+| DuckDB | embedded OLAP; `orm.FromRaw("read_csv(?)", "f.csv")` queries flat files; auto-increment via sequences |
 | ClickHouse | `Update`/`Delete` are synchronous mutations, counted before they run; upserts read the taken keys first; no transactions or generated integer keys |
 | MongoDB | document store: the typed builder translates; joins, unions, subqueries and raw SQL refuse with `orm.ErrNotTranslatable`; keys are uuid/ulid/manual; migrations declare a validator |
 | Qdrant | vector store: collections are tables, `Nearest` ordering runs a similarity search; same refusals as MongoDB; migrations create collections and payload indexes |
