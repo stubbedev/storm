@@ -366,7 +366,9 @@ func TestRelationQueries(t *testing.T) {
 	eq(t, "whereDoesntHave", get(Users.Query().WhereDoesntHave(UserPosts)), []string{"Dave"})
 	eq(t, "orWhereHas", get(Users.Where(Users.Name.Eq("Dave")).OrWhereHas(UserRoles)), []string{"Alice", "Bob", "Dave"})
 	eq(t, "whereRelation", get(Users.Query().WhereRelation(UserRoles, Roles.Name.Eq("admin"))), []string{"Alice"})
-	eq(t, "hasCount", get(Users.Query().HasCount(UserPosts, ">=", 2)), []string{"Alice"})
+	eq(t, "hasCount", get(Users.Query().HasCount(UserPosts, orm.Gte, 2)), []string{"Alice"})
+	_, err := Users.Query().HasCount(UserPosts, "= 0 OR 1 = 1 --", 2).Get(ctx)
+	eq(t, "hasCount refuses an operator outside the constants", err != nil && strings.Contains(err.Error(), "unknown comparison operator"), true)
 	eq(t, "whereHas through", len(must(Countries.Query().WhereHas(CountryPosts, Popular(500)).Get(ctx))), 1)
 
 	editor := must(Roles.Where(Roles.Name.Eq("editor")).First(ctx))

@@ -118,9 +118,9 @@ func (q Query[M]) WhereRelation[R any](rel Relation[M, R], conds ...Cond[R]) Que
 }
 
 // HasCount is has('posts', '>=', 3): compares the related row count.
-func (q Query[M]) HasCount[R any](rel Relation[M, R], op string, n int64, scopes ...func(Query[R]) Query[R]) Query[M] {
+func (q Query[M]) HasCount[R any](rel Relation[M, R], op Op, n int64, scopes ...func(Query[R]) Query[R]) Query[M] {
 	sub := relAggregate[int64](rel, scopes, func(b *SQL) { b.Write("COUNT(*)") })
-	return q.Where(Cond[M]{f: func(b *SQL) { sub.build(b); b.Write(" ", op, " "); b.Arg(n) }})
+	return q.Where(Cond[M]{f: func(b *SQL) { compare(b, sub, op, n) }})
 }
 
 // ---------------------------------------------------------------------------

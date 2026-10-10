@@ -388,7 +388,7 @@ Users.Query().WhereHas(UserPosts, Published, Popular(100))
 Users.Query().WhereDoesntHave(UserPosts)
 Users.Where(Users.Name.Eq("Dave")).OrWhereHas(UserRoles)
 Users.Query().WhereRelation(UserRoles, Roles.Name.Eq("admin"))
-Users.Query().HasCount(UserPosts, ">=", 2)
+Users.Query().HasCount(UserPosts, orm.Gte, 2)
 Users.Where(orm.Or(orm.Has(UserPosts), Users.Karma.Gt(90)))          // compose freely
 Posts.Where(PostAuthor.Is(&alice))                                    // whereBelongsTo
 Users.Where(UserRoles.AttachedTo(&editor))                            // whereAttachedTo
