@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"go.mongodb.org/mongo-driver/v2/mongo"
+
 	. "github.com/stubbedev/storm/example/models"
 	"github.com/stubbedev/storm/orm"
 )
@@ -46,6 +48,8 @@ func TestScalarExpressions(t *testing.T) {
 	eq(t, "min", must(Users.Query().Min(ctx, Users.Karma)), 3)
 	_, err = Users.Where(Users.Karma.Gt(1000)).Max(ctx, Users.Karma)
 	eq(t, "max of nothing is not found", errors.Is(err, orm.ErrNotFound), true)
+	eq(t, "duckdb write conflicts are retried", orm.IsDeadlock(errors.New("TransactionContext Error: Catalog write-write conflict on create with \"users\"")), true)
+	eq(t, "mongo transient errors are retried", orm.IsDeadlock(mongo.CommandError{Code: 112, Labels: []string{"TransientTransactionError"}}), true)
 	eq(t, "sum of nothing is zero", must(Users.Where(Users.Karma.Gt(1000)).Sum(ctx, Users.Karma)), 0)
 	_, err = Users.Query().Limit(0).Get(ctx)
 	eq(t, "a zero limit is refused, not unlimited", err != nil && strings.Contains(err.Error(), "Limit(0)"), true)

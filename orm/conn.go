@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 // DefaultConnection is the connection used by tables that don't name one.
@@ -495,17 +497,21 @@ func FlushQueryLog() {
 	logMu.Unlock()
 }
 
-// IsDeadlock reports whether err is a deadlock or lock timeout on SQLite,
-// Postgres or MySQL/MariaDB — the conditions DB::transaction retries on.
+// IsDeadlock reports whether err is a deadlock, lock timeout or write
+// conflict on SQLite, Postgres, MySQL/MariaDB or DuckDB, or a MongoDB
+// transient transaction error — the conditions DB::transaction retries on.
 func IsDeadlock(err error) bool {
 	if err == nil {
 		return false
+	}
+	if labeled, ok := errors.AsType[mongo.LabeledError](err); ok && labeled.HasErrorLabel("TransientTransactionError") {
+		return true
 	}
 	msg := err.Error()
 	for _, s := range []string{
 		"SQLSTATE 40P01", "SQLSTATE 40001", "Error 1213",
 		"Deadlock found when trying to get lock", "Lock wait timeout exceeded",
-		"database is locked",
+		"database is locked", "write-write conflict", "TransactionContext Error: Conflict",
 	} {
 		if strings.Contains(msg, s) {
 			return true
