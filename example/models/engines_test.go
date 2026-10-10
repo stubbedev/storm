@@ -1118,6 +1118,8 @@ func TestQdrant(t *testing.T) {
 	assertDocKeys(t, ctx, "qdrant", false)
 	err = orm.From("documents").On("qdrant").Insert(ctx, map[string]any{"id": "00000000-0000-4000-8000-0000000000b1", "blob": []byte{1}})
 	eq(t, "binary payloads refused", orm.IsNotTranslatable(err), true)
+	err = orm.From("documents").On("qdrant").Insert(ctx, map[string]any{"id": "01J9ZV8Q5XQ1Y2Z3A4B5C6D7E8", "title": "ulid"})
+	eq(t, "non-UUID point ids refused", err != nil && strings.Contains(err.Error(), "not a Qdrant point id"), true)
 	assertDocModelQueries(t, ctx, "qdrant")
 	ok(store.DropCollection(ctx, "notes"))
 	_, err = Docs.Query().On("qdrant").Sum(ctx, Docs.Views)

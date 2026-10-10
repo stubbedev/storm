@@ -11,6 +11,8 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -594,6 +596,9 @@ func qdrantPoints(table, key string, docs []map[string]any) ([]map[string]any, [
 		if !ok || isZero(id) {
 			return nil, nil, fmt.Errorf("orm: qdrant insert into %s: every point needs a key in %q", table, key)
 		}
+		if err := qdrantPointID(id); err != nil {
+			return nil, nil, fmt.Errorf("orm: qdrant insert into %s: key %s: %w", table, key, err)
+		}
 		if seen[fmt.Sprint(id)] {
 			return nil, nil, &DuplicateKeyError{Table: table, Key: key, Err: fmt.Errorf("point id %v repeats in one write", id)}
 		}
@@ -621,6 +626,26 @@ func qdrantPoints(table, key string, docs []map[string]any) ([]map[string]any, [
 		ids = append(ids, id)
 	}
 	return points, ids, nil
+}
+
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// qdrantPointID refuses a key Qdrant cannot use as a point id: those are
+// UUIDs or unsigned integers, so a ULID or other text key cannot be one.
+func qdrantPointID(id any) error {
+	switch v := id.(type) {
+	case string:
+		if uuidPattern.MatchString(v) {
+			return nil
+		}
+	case int, int8, int16, int32, int64:
+		if reflect.ValueOf(v).Int() >= 0 {
+			return nil
+		}
+	case uint, uint8, uint16, uint32, uint64:
+		return nil
+	}
+	return fmt.Errorf("%v is not a Qdrant point id (a UUID or an unsigned integer); use key_type=uuid", id)
 }
 
 // existingIDs reports which of ids are taken, as fmt.Sprint keys.

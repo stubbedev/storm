@@ -448,7 +448,8 @@ taken key fails with an error `orm.IsUniqueViolation` recognises. `Upsert`
 sets only its update columns on a matching document. Conditions follow SQL's
 three-valued logic, so `Ne`, `NotIn` and `Not(...)` never match a document
 missing the field, and a comparison with `nil` matches nothing. Keys must be
-UUID, ULID or manual (assigned automatically when missing). Every
+UUID, ULID or manual (assigned automatically when missing); a Qdrant key
+is its point id, so it must be a UUID or an unsigned integer. Every
 operation reaches `orm.Listen` and the query log with a readable rendering
 of the plan. What refuses, with a precise error naming the part
 (`orm.IsNotTranslatable`): joins, unions, `groupBy`, raw fragments,
