@@ -279,7 +279,7 @@ func TestMigrator(t *testing.T) {
 	check(t, err)
 	want(t, "step batches", st[1].Batch != st[2].Batch, true)
 
-	_, err = m.Refresh(ctx)
+	_, err = m.Refresh(ctx, 0)
 	check(t, err)
 	want(t, "refresh", tables(), "a,b,c,d")
 	_, err = m.Fresh(ctx)
@@ -289,6 +289,46 @@ func TestMigrator(t *testing.T) {
 	check(t, err)
 	want(t, "reset", len(back), 4)
 	want(t, "after reset", tables(), "")
+
+	check(t, m.Install(ctx))
+	ok, err := s.HasTable(ctx, "migrations")
+	check(t, err)
+	want(t, "install", ok, true)
+	_, err = m.Migrate(ctx, true)
+	check(t, err)
+	back, err = m.RollbackBatch(ctx, 2)
+	check(t, err)
+	want(t, "rollback one batch", back, []string{"2026_01_01_000002_create_b_table"})
+	want(t, "batch removed", tables(), "a,c,d")
+	_, err = m.Migrate(ctx, false)
+	check(t, err)
+	refreshed, err := m.Refresh(ctx, 2)
+	check(t, err)
+	want(t, "refresh steps", len(refreshed), 2)
+	want(t, "refresh steps kept the rest", tables(), "a,b,c,d")
+
+	inside := false
+	check(t, m.Isolated(ctx, func(ctx context.Context) error {
+		inside = true
+		err := m.Isolated(ctx, func(context.Context) error { return errors.New("must not run") })
+		want(t, "lock held", errors.Is(err, ErrMigrationLocked), true)
+		var out bytes.Buffer
+		check(t, Run(ctx, m, []string{"migrate", "-isolated"}, &out))
+		want(t, "cli skips while locked", strings.Contains(out.String(), "holds the lock"), true)
+		return nil
+	}))
+	want(t, "isolated ran", inside, true)
+	check(t, m.Isolated(ctx, func(context.Context) error { return nil }))
+	stale := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	check(t, orm.From("migrations_lock").Insert(ctx, map[string]any{"id": "migrate", "acquired_at": stale}))
+	check(t, m.Isolated(ctx, func(context.Context) error { return nil }))
+	held, err := orm.From("migrations_lock").Count(ctx)
+	check(t, err)
+	want(t, "stale lock taken over and released", held, int64(0))
+	check(t, s.Drop(ctx, "migrations_lock"))
+	back, err = m.Reset(ctx)
+	check(t, err)
+	want(t, "reset again", len(back), 4)
 
 	// A failing migration is rolled back where DDL is transactional, and is
 	// never recorded as run.

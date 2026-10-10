@@ -757,10 +757,11 @@ func init() {
 Add a `cmd/migrate` (see [`example/migrate`](../example/migrate/main.go)):
 
 ```sh
-go run ./cmd/migrate                       # migrate (also: migrate -step, migrate -pretend)
+go run ./cmd/migrate                       # migrate (also: -step, -pretend, -isolated)
+go run ./cmd/migrate install               # create the migrations table
 go run ./cmd/migrate status
-go run ./cmd/migrate rollback [-steps N]
-go run ./cmd/migrate reset | refresh [-seed] | fresh [-seed] | wipe
+go run ./cmd/migrate rollback [-steps N | -batch B]
+go run ./cmd/migrate reset | refresh [-steps N] [-seed] | fresh [-seed] | wipe
 go run ./cmd/migrate make create_flights_table -dir migrations
 go run ./cmd/migrate make:seeder Users -dir seeders
 go run ./cmd/migrate make:model LineItem -dir models
@@ -773,6 +774,13 @@ on that connection — a MongoDB or Qdrant one included (see the README's
 "Migrating document stores"); a migrator whose own connection is a document
 store keeps its log there. `Migrator` exposes the same operations
 programmatically, for example to migrate in tests.
+
+`migrate -isolated` (`Migrator.Isolated`) holds a lock row in
+`migrations_lock` while it runs, so several instances deploying at once
+migrate exactly once; the others report the lock and exit cleanly. A lock
+older than `Migrator.LockTimeout` (an hour by default) is taken over, since
+a crashed run never releases it. ClickHouse and Qdrant have no unique keys
+to lock with and refuse.
 
 Within one `Table` call, index, foreign key and primary key drops run before
 column changes, so a column can be dropped or changed in the same call that

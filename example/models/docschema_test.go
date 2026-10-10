@@ -169,5 +169,17 @@ func assertDocMigrations(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" rollback", must(migrator.Rollback(ctx, 0)), []string{"2026_01_01_000002_index_toys", "2026_01_01_000001_create_toys"})
 	eq(t, conn+" rolled back", must(s.HasTable(ctx, "toys")), false)
 	eq(t, conn+" log emptied", len(must(migrator.Status(ctx))) == 2 && !must(migrator.Status(ctx))[0].Ran, true)
+	isolated := migrator.Isolated(ctx, func(ctx context.Context) error {
+		_, err := migrator.Migrate(ctx, false)
+		return err
+	})
+	if mongo {
+		ok(isolated)
+		eq(t, "isolated migrate", must(s.HasTable(ctx, "toys")), true)
+		ok(s.Drop(ctx, "toys"))
+		ok(s.Drop(ctx, "schema_log_lock"))
+	} else {
+		refused("migration lock", isolated, "unique keys")
+	}
 	ok(s.Drop(ctx, "schema_log"))
 }

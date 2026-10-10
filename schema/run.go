@@ -3,6 +3,7 @@ package schema
 import (
 	"cmp"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -26,10 +27,14 @@ import (
 //
 // Commands:
 //
-//	migrate [-step] [-pretend]   run pending migrations
-//	rollback [-steps N]           revert the last batch (or N migrations)
+//	migrate [-step] [-pretend] [-isolated]
+//	                              run pending migrations; -isolated holds a
+//	                              lock so concurrent deploys run them once
+//	install                       create the migrations table
+//	rollback [-steps N] [-batch B]
+//	                              revert the last batch, N migrations or batch B
 //	reset                         revert all migrations
-//	refresh [-seed]               reset, then migrate (and seed)
+//	refresh [-steps N] [-seed]    revert all (or N) migrations, migrate again
 //	fresh [-seed]                 drop all tables, migrate (and seed)
 //	wipe                          drop all tables (db:wipe)
 //	status                        list migrations and whether they ran
@@ -48,7 +53,9 @@ func Run(ctx context.Context, m *Migrator, args []string, out io.Writer) error {
 	fs.SetOutput(out)
 	step := fs.Bool("step", false, "run each migration in its own batch")
 	pretend := fs.Bool("pretend", false, "print the SQL instead of running it")
-	steps := fs.Int("steps", 0, "number of migrations to roll back")
+	steps := fs.Int("steps", 0, "number of migrations to roll back or refresh")
+	batch := fs.Int("batch", 0, "roll back this batch only")
+	isolated := fs.Bool("isolated", false, "hold the migration lock; skip when another run holds it")
 	seed := fs.Bool("seed", false, "run seeders after migrating")
 	class := fs.String("class", "", "run only this seeder")
 	dir := fs.String("dir", "migrations", "directory for new migrations")
@@ -98,19 +105,40 @@ func Run(ctx context.Context, m *Migrator, args []string, out io.Writer) error {
 			}
 			return err
 		}
-		ran, err := m.Migrate(ctx, *step)
-		if err := report("Migrated", ran, err); err != nil || !*seed {
+		migrate := func(ctx context.Context) error {
+			ran, err := m.Migrate(ctx, *step)
+			if err := report("Migrated", ran, err); err != nil || !*seed {
+				return err
+			}
+			return SeedReportOn(ctx, out, seedConn, names...)
+		}
+		if !*isolated {
+			return migrate(ctx)
+		}
+		err := m.Isolated(ctx, migrate)
+		if errors.Is(err, ErrMigrationLocked) {
+			fmt.Fprintln(out, "Another migration run holds the lock; nothing to do.")
+			return nil
+		}
+		return err
+	case "install":
+		if err := m.Install(ctx); err != nil {
 			return err
 		}
-		return SeedReportOn(ctx, out, seedConn, names...)
+		fmt.Fprintln(out, "Migration table created.")
+		return nil
 	case "rollback":
+		if *batch > 0 {
+			ran, err := m.RollbackBatch(ctx, *batch)
+			return report("Rolled back", ran, err)
+		}
 		ran, err := m.Rollback(ctx, *steps)
 		return report("Rolled back", ran, err)
 	case "reset":
 		ran, err := m.Reset(ctx)
 		return report("Rolled back", ran, err)
 	case "refresh":
-		ran, err := m.Refresh(ctx)
+		ran, err := m.Refresh(ctx, *steps)
 		_ = report("Migrated", ran, err)
 		if err != nil || !*seed {
 			return err

@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/stubbedev/storm/orm"
 )
@@ -51,6 +53,9 @@ type Migrator struct {
 	Connection string // where the migrations table lives; default connection if empty
 	Table      string // default "migrations"
 	Migrations []Migration
+	// LockTimeout is how old an Isolated lock must be before another run
+	// may take it over (a crashed run never releases it); default one hour.
+	LockTimeout time.Duration
 }
 
 // NewMigrator returns a migrator for ms, or for the registered migrations
@@ -166,12 +171,99 @@ func (m *Migrator) revert(ctx context.Context, pick func(newest []string, ran ma
 	return m.down(ctx, pick(newest, ran))
 }
 
-// Refresh resets and re-runs every migration.
-func (m *Migrator) Refresh(ctx context.Context) ([]string, error) {
-	if _, err := m.Reset(ctx); err != nil {
+// RollbackBatch reverts exactly the migrations of one batch
+// (migrate:rollback --batch).
+func (m *Migrator) RollbackBatch(ctx context.Context, batch int) ([]string, error) {
+	return m.revert(ctx, func(newest []string, ran map[string]int) []string {
+		return slices.DeleteFunc(slices.Clone(newest), func(n string) bool { return ran[n] != batch })
+	})
+}
+
+// Refresh rolls back the last steps migrations — every one when steps is
+// 0 — and migrates again (migrate:refresh --step).
+func (m *Migrator) Refresh(ctx context.Context, steps int) ([]string, error) {
+	revert := m.Reset
+	if steps > 0 {
+		revert = func(ctx context.Context) ([]string, error) { return m.Rollback(ctx, steps) }
+	}
+	if _, err := revert(ctx); err != nil {
 		return nil, err
 	}
 	return m.Migrate(ctx, false)
+}
+
+// Install creates the migrations table (migrate:install); Migrate does
+// it on first use too.
+func (m *Migrator) Install(ctx context.Context) error { return m.ensureTable(ctx) }
+
+// ErrMigrationLocked reports that another Isolated run holds the lock.
+var ErrMigrationLocked = errors.New("schema: another migration run holds the lock")
+
+// Isolated runs fn holding the migrations lock (migrate --isolated), so
+// concurrent deploys never migrate at once: the lock is a row keyed
+// "migrate" in the <table>_lock table, whose unique key makes taking it
+// atomic. While another run holds a lock younger than LockTimeout it
+// returns ErrMigrationLocked without running fn. Engines without unique
+// keys (ClickHouse, Qdrant) cannot hold the lock and refuse.
+func (m *Migrator) Isolated(ctx context.Context, fn func(context.Context) error) error {
+	b := On(m.conn())
+	engine, err := b.DriverName(ctx)
+	if err != nil {
+		return err
+	}
+	if engine == "clickhouse" || engine == "qdrant" {
+		return &UnsupportedError{Engine: engine, Table: m.lockTable(), Operation: "hold the migration lock", Reason: "it has no unique keys to take a lock atomically"}
+	}
+	if err := b.CreateIfNotExists(ctx, m.lockTable(), func(t *Blueprint) {
+		t.String("id").Primary()
+		t.DateTime("acquired_at")
+	}); err != nil {
+		return err
+	}
+	if err := m.takeLock(ctx); err != nil {
+		return err
+	}
+	return errors.Join(fn(ctx), m.releaseLock(ctx))
+}
+
+const lockID = "migrate"
+
+func (m *Migrator) lockTable() string { return m.table() + "_lock" }
+
+// takeLock inserts the lock row. When the row exists, a single
+// conditional update takes it over if it is older than LockTimeout, so of
+// several waiting runs exactly one wins.
+func (m *Migrator) takeLock(ctx context.Context) error {
+	locks := orm.From(m.lockTable()).On(m.conn())
+	now := time.Now().UTC().Truncate(time.Second)
+	insertErr := locks.Insert(ctx, map[string]any{"id": lockID, "acquired_at": now})
+	if insertErr == nil {
+		return nil
+	}
+	held := locks.Where("id", orm.Eq, lockID)
+	taken, err := held.Where("acquired_at", orm.Lt, now.Add(-cmp.Or(m.LockTimeout, time.Hour))).
+		Update(ctx, map[string]any{"acquired_at": now})
+	if err != nil {
+		return fmt.Errorf("schema: taking over a stale migration lock: %w", errors.Join(insertErr, err))
+	}
+	if taken > 0 {
+		return nil
+	}
+	exists, err := held.Exists(ctx)
+	switch {
+	case err != nil:
+		return fmt.Errorf("schema: reading the migration lock: %w", errors.Join(insertErr, err))
+	case exists:
+		return ErrMigrationLocked
+	}
+	return fmt.Errorf("schema: taking the migration lock: %w", insertErr)
+}
+
+func (m *Migrator) releaseLock(ctx context.Context) error {
+	if _, err := orm.From(m.lockTable()).On(m.conn()).Where("id", orm.Eq, lockID).Delete(ctx); err != nil {
+		return fmt.Errorf("schema: releasing the migration lock: %w", err)
+	}
+	return nil
 }
 
 // Fresh drops every table (without running Down) on every connection the
