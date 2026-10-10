@@ -2,6 +2,7 @@ package orm
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -33,7 +34,8 @@ type Dialect interface {
 	Random() string
 	// DatePart extracts "date", "time", "year", "month" or "day" from e.
 	DatePart(b *SQL, part string, e AnyExpr)
-	JSONExtract(b *SQL, e AnyExpr, path []string)
+	// JSONExtract reads path from the JSON in e as kind.
+	JSONExtract(b *SQL, e AnyExpr, path []string, kind JSONKind)
 	JSONContains(b *SQL, e AnyExpr, v any)
 	// JSONOverlaps writes a test that the JSON array in e and v share an
 	// element (whereJsonOverlaps).
@@ -126,7 +128,7 @@ func (sqliteDialect) DatePart(b *SQL, part string, e AnyExpr) {
 	}
 }
 
-func (sqliteDialect) JSONExtract(b *SQL, e AnyExpr, path []string) {
+func (sqliteDialect) JSONExtract(b *SQL, e AnyExpr, path []string, _ JSONKind) {
 	b.Write("json_extract(")
 	e.build(b)
 	b.Write(", ")
@@ -135,11 +137,13 @@ func (sqliteDialect) JSONExtract(b *SQL, e AnyExpr, path []string) {
 }
 
 func (sqliteDialect) JSONHasKey(b *SQL, e AnyExpr, path []string) {
-	b.Write("json_type(")
-	e.build(b)
-	b.Write(", ")
-	b.Arg(jsonPath(path))
-	b.Write(") IS NOT NULL")
+	nullForNull(b, e, func(b *SQL) {
+		b.Write("json_type(")
+		e.build(b)
+		b.Write(", ")
+		b.Arg(jsonPath(path))
+		b.Write(") IS NOT NULL")
+	})
 }
 
 // FullText on SQLite falls back to case-insensitive LIKE on each column;
@@ -252,21 +256,17 @@ func (sqliteDialect) VectorDistance(b *SQL, e AnyExpr, arg any, m VectorMetric) 
 // JSONContains propagates NULL for a NULL document, like Postgres and MySQL,
 // so negating it doesn't match rows without JSON.
 func (sqliteDialect) JSONContains(b *SQL, e AnyExpr, v any) {
-	b.Write("CASE WHEN ")
-	e.build(b)
-	b.Write(" IS NULL THEN NULL ELSE EXISTS (SELECT 1 FROM json_each(")
-	e.build(b)
-	b.Write(") WHERE value = ")
-	b.Arg(v)
-	b.Write(") END")
+	sqliteDialect{}.JSONOverlaps(b, e, []any{v})
 }
 
 func (sqliteDialect) JSONOverlaps(b *SQL, e AnyExpr, v any) {
-	b.Write("EXISTS (SELECT 1 FROM json_each(")
-	e.build(b)
-	b.Write(") WHERE value IN (")
-	writeList(b, v)
-	b.Write("))")
+	nullForNull(b, e, func(b *SQL) {
+		b.Write("EXISTS (SELECT 1 FROM json_each(")
+		e.build(b)
+		b.Write(") WHERE value IN (")
+		writeList(b, v)
+		b.Write("))")
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -310,36 +310,44 @@ func (postgresDialect) DatePart(b *SQL, part string, e AnyExpr) {
 	}
 }
 
-func (postgresDialect) JSONExtract(b *SQL, e AnyExpr, path []string) {
-	b.Write("(")
-	e.build(b)
-	b.Write(")::jsonb #>> ")
-	b.Arg("{" + strings.Join(path, ",") + "}")
+func (postgresDialect) JSONExtract(b *SQL, e AnyExpr, path []string, kind JSONKind) {
+	castText(b, func(b *SQL) {
+		b.Write("((")
+		e.build(b)
+		b.Write(")::jsonb #>> ")
+		b.Arg("{" + strings.Join(path, ",") + "}")
+		b.Write(")")
+	}, kind, "bigint", "double precision")
 }
 
 func (postgresDialect) JSONContains(b *SQL, e AnyExpr, v any) {
-	enc, _ := json.Marshal([]any{v})
-	b.Write("(")
-	e.build(b)
-	b.Write(")::jsonb @> ")
-	b.Arg(string(enc))
-	b.Write("::jsonb")
+	postgresDialect{}.JSONOverlaps(b, e, []any{v})
 }
 
+// JSONOverlaps tests containment of each value as a one-element array, so
+// strings, numbers and booleans all match by JSON equality.
 func (postgresDialect) JSONOverlaps(b *SQL, e AnyExpr, v any) {
 	b.Write("(")
 	e.build(b)
-	b.Write(")::jsonb ?| ARRAY[")
-	writeList(b, v)
-	b.Write("]::text[]")
+	b.Write(")::jsonb @> ANY (ARRAY[")
+	for i, x := range sliceOf(v) {
+		if i > 0 {
+			b.Write(", ")
+		}
+		jsonArg(b, []any{x})
+		b.Write("::jsonb")
+	}
+	b.Write("])")
 }
 
 func (postgresDialect) JSONHasKey(b *SQL, e AnyExpr, path []string) {
-	b.Write("(")
-	e.build(b)
-	b.Write(")::jsonb #> ")
-	b.Arg("{" + strings.Join(path, ",") + "}")
-	b.Write(" IS NOT NULL")
+	nullForNull(b, e, func(b *SQL) {
+		b.Write("(")
+		e.build(b)
+		b.Write(")::jsonb #> ")
+		b.Arg("{" + strings.Join(path, ",") + "}")
+		b.Write(" IS NOT NULL")
+	})
 }
 
 // FullText matches the expression index the schema grammar creates for
@@ -462,29 +470,29 @@ func (mysqlDialect) OnConflict(b *SQL, ignore bool, _, update []string) {
 
 func (mysqlDialect) DatePart(b *SQL, part string, e AnyExpr) { fn(b, strings.ToUpper(part), e) }
 
-func (mysqlDialect) JSONExtract(b *SQL, e AnyExpr, path []string) {
-	b.Write("JSON_UNQUOTE(JSON_EXTRACT(")
-	e.build(b)
-	b.Write(", ")
-	b.Arg(jsonPath(path))
-	b.Write("))")
+func (mysqlDialect) JSONExtract(b *SQL, e AnyExpr, path []string, kind JSONKind) {
+	castText(b, func(b *SQL) {
+		b.Write("JSON_UNQUOTE(JSON_EXTRACT(")
+		e.build(b)
+		b.Write(", ")
+		b.Arg(jsonPath(path))
+		b.Write("))")
+	}, kind, "SIGNED", "DOUBLE")
 }
 
 func (mysqlDialect) JSONContains(b *SQL, e AnyExpr, v any) {
-	enc, _ := json.Marshal(v)
 	b.Write("JSON_CONTAINS(")
 	e.build(b)
 	b.Write(", ")
-	b.Arg(string(enc))
+	jsonArg(b, v)
 	b.Write(")")
 }
 
 func (mysqlDialect) JSONOverlaps(b *SQL, e AnyExpr, v any) {
-	enc, _ := json.Marshal(v)
 	b.Write("JSON_OVERLAPS(")
 	e.build(b)
 	b.Write(", ")
-	b.Arg(string(enc))
+	jsonArg(b, sliceOf(v))
 	b.Write(")")
 }
 
@@ -622,6 +630,72 @@ func jsonPath(path []string) string { return "$." + strings.Join(path, ".") }
 
 // writeList writes v (a slice or a single value) as a comma-separated list
 // of bound arguments.
+// JSONKind is the SQL type a JSON value is read as.
+type JSONKind int
+
+const (
+	JSONText JSONKind = iota
+	JSONInt
+	JSONFloat
+	JSONBool
+)
+
+// jsonKindOf is the JSONKind a Go type reads as.
+func jsonKindOf[T any]() JSONKind {
+	switch reflect.TypeFor[T]().Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return JSONInt
+	case reflect.Float32, reflect.Float64:
+		return JSONFloat
+	case reflect.Bool:
+		return JSONBool
+	}
+	return JSONText
+}
+
+// jsonArg binds v encoded as JSON, failing the statement when it cannot
+// be encoded.
+func jsonArg(b *SQL, v any) {
+	enc, err := json.Marshal(v)
+	if err != nil {
+		b.fail(fmt.Errorf("orm: %T in a JSON condition cannot be encoded: %w", v, err))
+		return
+	}
+	b.Arg(string(enc))
+}
+
+// nullForNull writes f, or NULL when the document e is NULL, so a negated
+// JSON test excludes rows without JSON as SQL's NULL logic does.
+func nullForNull(b *SQL, e AnyExpr, f frag) {
+	b.Write("CASE WHEN ")
+	e.build(b)
+	b.Write(" IS NULL THEN NULL ELSE ")
+	f(b)
+	b.Write(" END")
+}
+
+// castText writes text as kind with an SQL CAST; bools read their JSON
+// spelling.
+func castText(b *SQL, text frag, kind JSONKind, intType, floatType string) {
+	switch kind {
+	case JSONInt:
+		b.Write("CAST(")
+		text(b)
+		b.Write(" AS ", intType, ")")
+	case JSONFloat:
+		b.Write("CAST(")
+		text(b)
+		b.Write(" AS ", floatType, ")")
+	case JSONBool:
+		b.Write("CASE ")
+		text(b)
+		b.Write(" WHEN 'true' THEN TRUE WHEN 'false' THEN FALSE END")
+	default:
+		text(b)
+	}
+}
+
 func writeList(b *SQL, v any) {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {

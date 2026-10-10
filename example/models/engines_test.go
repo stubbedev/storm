@@ -531,6 +531,7 @@ func TestDuckDB(t *testing.T) {
 	}
 	assertWidgets(t, ctx, "duck")
 	assertEvents(t, ctx, "duck")
+	assertJSON(t, ctx, "duck")
 	assertBlueprintSurface(t, ctx, "duck")
 	assertForeignKeys(t, ctx, "duck")
 	assertDropHelpers(t, ctx, "duck")
@@ -643,6 +644,7 @@ func TestClickHouse(t *testing.T) {
 	err = Widgets.Query().On("ch").Create(ctx, &Widget{Name: "keyless"})
 	eq(t, "create needs a key", err != nil && strings.Contains(err.Error(), "does not generate integer keys"), true)
 	assertEvents(t, ctx, "ch")
+	assertJSON(t, ctx, "ch")
 	assertBlueprintSurface(t, ctx, "ch")
 	assertForeignKeys(t, ctx, "ch")
 	assertDropHelpers(t, ctx, "ch")

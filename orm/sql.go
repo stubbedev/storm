@@ -2,6 +2,7 @@ package orm
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -63,17 +64,19 @@ type argRenderer interface{ renderArg(b *SQL, v any) bool }
 
 // Arg appends a bound argument using the dialect's placeholder syntax.
 func (b *SQL) Arg(v any) {
-	v = inUTC(v)
+	v = boundValue(v)
 	if r, ok := b.Dialect.(argRenderer); ok && r.renderArg(b, v) {
 		return
 	}
 	b.bind(v)
 }
 
-// inUTC moves times to UTC before they are bound: engines that store
-// wall-clock timestamps (Postgres timestamp, SQLite text) would otherwise
-// keep the caller's offset or drop it, shifting or misordering instants.
-func inUTC(v any) any {
+// boundValue is v as it is bound: a nil pointer is NULL (some drivers,
+// ClickHouse's, would call a value method on it), and times move to UTC:
+// engines that store wall-clock timestamps (Postgres timestamp, SQLite
+// text) would otherwise keep the caller's offset or drop it, shifting or
+// misordering instants.
+func boundValue(v any) any {
 	switch t := v.(type) {
 	case time.Time:
 		return t.UTC()
@@ -81,6 +84,10 @@ func inUTC(v any) any {
 		if t != nil {
 			return t.UTC()
 		}
+		return nil
+	}
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && rv.IsNil() {
+		return nil
 	}
 	return v
 }

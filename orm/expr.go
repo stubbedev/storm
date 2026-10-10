@@ -161,7 +161,8 @@ func (s Scalar[M, V]) Desc() Order[M] { return Order[M]{f: s.order(" DESC"), des
 // JSON extracts a value from a JSON column: Users.Settings.JSON[string]("theme").
 // The result type is chosen explicitly at the call site.
 func (s Scalar[M, V]) JSON[T any](path ...string) Scalar[M, T] {
-	return Scalar[M, T]{f: func(b *SQL) { b.Dialect.JSONExtract(b, s, path) }}
+	kind := jsonKindOf[T]()
+	return Scalar[M, T]{f: func(b *SQL) { b.Dialect.JSONExtract(b, s, path, kind) }}
 }
 
 // JSONContains is whereJsonContains for a JSON array column.

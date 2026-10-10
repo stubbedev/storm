@@ -1,8 +1,6 @@
 package orm
 
 import (
-	"encoding/json"
-	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -53,19 +51,21 @@ func (duckdbDialect) DatePart(b *SQL, part string, e AnyExpr) {
 	}
 }
 
-func (duckdbDialect) JSONExtract(b *SQL, e AnyExpr, path []string) {
-	b.Write("(")
-	e.build(b)
-	b.Write(" ->> ")
-	b.Arg(jsonPath(path))
-	b.Write(")")
+func (duckdbDialect) JSONExtract(b *SQL, e AnyExpr, path []string, kind JSONKind) {
+	castText(b, func(b *SQL) {
+		b.Write("(")
+		e.build(b)
+		b.Write(" ->> ")
+		b.Arg(jsonPath(path))
+		b.Write(")")
+	}, kind, "BIGINT", "DOUBLE")
 }
 
 func (duckdbDialect) JSONContains(b *SQL, e AnyExpr, v any) {
 	b.Write("json_contains(")
 	e.build(b)
 	b.Write(", CAST(")
-	b.Arg(jsonOf(v))
+	jsonArg(b, v)
 	b.Write(" AS JSON))")
 }
 
@@ -87,11 +87,13 @@ func (duckdbDialect) JSONLength(b *SQL, e AnyExpr) {
 }
 
 func (duckdbDialect) JSONHasKey(b *SQL, e AnyExpr, path []string) {
-	b.Write("(")
-	e.build(b)
-	b.Write(" -> ")
-	b.Arg(jsonPath(path))
-	b.Write(") IS NOT NULL")
+	nullForNull(b, e, func(b *SQL) {
+		b.Write("(")
+		e.build(b)
+		b.Write(" -> ")
+		b.Arg(jsonPath(path))
+		b.Write(") IS NOT NULL")
+	})
 }
 
 // FullText matches term anywhere in any of exprs, ignoring case like the
@@ -211,12 +213,43 @@ func (clickhouseDialect) DatePart(b *SQL, part string, e AnyExpr) {
 	}
 }
 
-func (clickhouseDialect) JSONExtract(b *SQL, e AnyExpr, path []string) {
-	b.Write("JSON_VALUE(")
+// JSONExtract reads through JSON_VALUE, which yields text; ClickHouse's
+// *OrNull conversions turn it into the kind, NULL where it does not parse.
+func (clickhouseDialect) JSONExtract(b *SQL, e AnyExpr, path []string, kind JSONKind) {
+	text := func(b *SQL) {
+		b.Write("JSON_VALUE(")
+		clickhouseDocument(b, e)
+		b.Write(", ")
+		b.Arg(jsonPath(path))
+		b.Write(")")
+	}
+	switch kind {
+	case JSONInt:
+		b.Write("toInt64OrNull(")
+		text(b)
+		b.Write(")")
+	case JSONFloat:
+		b.Write("toFloat64OrNull(")
+		text(b)
+		b.Write(")")
+	case JSONBool:
+		b.Write("multiIf(")
+		text(b)
+		b.Write(" = 'true', true, ")
+		text(b)
+		b.Write(" = 'false', false, NULL)")
+	default:
+		text(b)
+	}
+}
+
+// clickhouseDocument is e as a non-Nullable string: ClickHouse's JSON
+// functions refuse Nullable arguments, so NULL reads as an empty document
+// here and callers propagate the NULL themselves.
+func clickhouseDocument(b *SQL, e AnyExpr) {
+	b.Write("ifNull(")
 	e.build(b)
-	b.Write(", ")
-	b.Arg(jsonPath(path))
-	b.Write(")")
+	b.Write(", '')")
 }
 
 // JSONContains and JSONOverlaps compare array elements in their raw JSON
@@ -226,33 +259,47 @@ func (clickhouseDialect) JSONContains(b *SQL, e AnyExpr, v any) {
 }
 
 func (clickhouseDialect) JSONOverlaps(b *SQL, e AnyExpr, v any) {
-	b.Write("hasAny(JSONExtractArrayRaw(")
-	e.build(b)
-	b.Write("), [")
-	for i, x := range sliceOf(v) {
-		if i > 0 {
-			b.Write(", ")
+	clickhouseNullForNull(b, e, func(b *SQL) {
+		b.Write("hasAny(JSONExtractArrayRaw(")
+		clickhouseDocument(b, e)
+		b.Write("), [")
+		for i, x := range sliceOf(v) {
+			if i > 0 {
+				b.Write(", ")
+			}
+			jsonArg(b, x)
 		}
-		b.Write("toJSONString(")
-		b.Arg(x)
-		b.Write(")")
-	}
-	b.Write("])")
+		b.Write("])")
+	})
 }
 
 func (clickhouseDialect) JSONLength(b *SQL, e AnyExpr) {
-	b.Write("JSONLength(")
-	e.build(b)
-	b.Write(")")
+	clickhouseNullForNull(b, e, func(b *SQL) {
+		b.Write("JSONLength(")
+		clickhouseDocument(b, e)
+		b.Write(")")
+	})
 }
 
 func (clickhouseDialect) JSONHasKey(b *SQL, e AnyExpr, path []string) {
-	b.Write("JSONHas(")
+	clickhouseNullForNull(b, e, func(b *SQL) {
+		b.Write("JSONHas(")
+		clickhouseDocument(b, e)
+		for _, p := range path {
+			b.Write(", ")
+			b.Arg(p)
+		}
+		b.Write(")")
+	})
+}
+
+// clickhouseNullForNull is nullForNull in ClickHouse's if(), whose result
+// type is Nullable where CASE could not mix NULL with the test's type.
+func clickhouseNullForNull(b *SQL, e AnyExpr, f frag) {
+	b.Write("if(isNull(")
 	e.build(b)
-	for _, p := range path {
-		b.Write(", ")
-		b.Arg(p)
-	}
+	b.Write("), NULL, ")
+	f(b)
 	b.Write(")")
 }
 
@@ -351,14 +398,6 @@ func (clickhouseDialect) VectorDistance(b *SQL, e AnyExpr, arg any, m VectorMetr
 }
 
 func intText(n int) string { return strconv.Itoa(n) }
-
-func jsonOf(v any) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		panic(fmt.Sprintf("orm: %T in a JSON condition cannot be encoded: %v", v, err))
-	}
-	return string(b)
-}
 
 func sliceOf(v any) []any {
 	if vs, ok := v.([]any); ok {

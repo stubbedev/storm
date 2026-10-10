@@ -98,6 +98,78 @@ func TestSQLiteVectors(t *testing.T) {
 	eq(t, "mysql (HeatWave) distance converts the bound vector", strings.Contains(stmt, "DISTANCE(`events`.`vec`, STRING_TO_VECTOR(?), 'COSINE')"), true)
 }
 
+// JDoc holds nullable JSON documents for checking the JSON helpers read
+// typed values and propagate NULL the same on every engine.
+type JDoc struct {
+	orm.Model
+	ID   int64                     `db:"id"`
+	Doc  *orm.JSON[map[string]any] `db:"doc"`
+	Tags *orm.JSON[[]any]          `db:"tags"`
+}
+
+var jdocTable = &orm.Table[JDoc]{
+	Name:       "jdocs",
+	PrimaryKey: "id",
+	KeyType:    orm.KeyManual,
+	Columns:    []string{"id", "doc", "tags"},
+	Ptr: func(m *JDoc, column string) any {
+		switch column {
+		case "id":
+			return &m.ID
+		case "doc":
+			return &m.Doc
+		case "tags":
+			return &m.Tags
+		}
+		return nil
+	},
+	State: func(m *JDoc) *orm.Model { return &m.Model },
+}
+
+var JDocs = struct {
+	*orm.Table[JDoc]
+	ID   orm.Column[JDoc, int64]
+	Doc  orm.Column[JDoc, *orm.JSON[map[string]any]]
+	Tags orm.Column[JDoc, *orm.JSON[[]any]]
+}{
+	Table: jdocTable,
+	ID:    orm.NewColumn(jdocTable, "id", func(m *JDoc) *int64 { return &m.ID }),
+	Doc:   orm.NewColumn(jdocTable, "doc", func(m *JDoc) **orm.JSON[map[string]any] { return &m.Doc }),
+	Tags:  orm.NewColumn(jdocTable, "tags", func(m *JDoc) **orm.JSON[[]any] { return &m.Tags }),
+}
+
+// assertJSON checks typed JSON paths compare as their Go type, arrays
+// overlap by JSON equality, and a NULL document makes every JSON test
+// NULL, so negations exclude it.
+func assertJSON(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	tCheck(t, schema.On(conn).DropIfExists(ctx, "jdocs"))
+	tCheck(t, schema.On(conn).Create(ctx, "jdocs", func(t *schema.Blueprint) {
+		t.BigInteger("id").Primary()
+		t.JSON("doc").Nullable()
+		t.JSON("tags").Nullable()
+	}))
+	t.Cleanup(func() { tCheck(t, schema.On(conn).DropIfExists(context.Background(), "jdocs")) })
+	ok(JDocs.Query().On(conn).Insert(ctx,
+		JDoc{ID: 1, Doc: &orm.JSON[map[string]any]{V: map[string]any{"n": 7, "f": 1.5, "on": true}}, Tags: &orm.JSON[[]any]{V: []any{"a", 1}}},
+		JDoc{ID: 2, Doc: &orm.JSON[map[string]any]{V: map[string]any{"n": 2, "on": false}}, Tags: &orm.JSON[[]any]{V: []any{2}}},
+		JDoc{ID: 3}))
+	ids := func(c orm.Cond[JDoc]) []int64 {
+		return must(JDocs.Query().On(conn).Where(c).OrderBy(JDocs.ID.Asc()).Pluck(ctx, JDocs.ID))
+	}
+	eq(t, conn+" json int", ids(JDocs.Doc.JSON[int64]("n").Gt(5)), []int64{1})
+	eq(t, conn+" json float", ids(JDocs.Doc.JSON[float64]("f").Gt(1.0)), []int64{1})
+	eq(t, conn+" json bool", ids(JDocs.Doc.JSON[bool]("on").Eq(true)), []int64{1})
+	eq(t, conn+" json overlaps a number", ids(JDocs.Tags.JSONOverlaps(1)), []int64{1})
+	eq(t, conn+" json overlaps mixed", ids(JDocs.Tags.JSONOverlaps("a", 2)), []int64{1, 2})
+	eq(t, conn+" json contains a number", ids(JDocs.Tags.JSONContains(2)), []int64{2})
+	eq(t, conn+" not overlaps skips NULL", ids(orm.Not(JDocs.Tags.JSONOverlaps("a"))), []int64{2})
+	eq(t, conn+" not contains skips NULL", ids(JDocs.Tags.JSONDoesntContain(2)), []int64{1})
+	eq(t, conn+" not has key skips NULL", ids(orm.Not(JDocs.Doc.JSONHasKey("f"))), []int64{2})
+	_, err := JDocs.Query().On(conn).Where(JDocs.Tags.JSONContains(func() {})).Get(ctx)
+	eq(t, conn+" unencodable JSON refused", err != nil, true)
+}
+
 // assertEvents runs the dialect-specific expressions against a real
 // engine: every helper must select exactly the expected events.
 func assertEvents(t *testing.T, ctx context.Context, conn string) {
