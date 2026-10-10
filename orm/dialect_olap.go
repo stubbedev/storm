@@ -2,6 +2,7 @@ package orm
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -23,17 +24,24 @@ func (duckdbDialect) Bool(v bool) string {
 }
 
 func (duckdbDialect) DatePart(b *SQL, part string, e AnyExpr) {
-	b.Write("date_part(")
-	b.Arg(part)
-	b.Write(", ")
-	e.build(b)
-	b.Write(")")
+	switch part {
+	case "date", "time":
+		b.Write("strftime(")
+		e.build(b)
+		b.Write(map[string]string{"date": ", '%Y-%m-%d')", "time": ", '%H:%M:%S')"}[part])
+	default:
+		b.Write("CAST(date_part('", part, "', ")
+		e.build(b)
+		b.Write(") AS INTEGER)")
+	}
 }
 
 func (duckdbDialect) JSONExtract(b *SQL, e AnyExpr, path []string) {
+	b.Write("(")
 	e.build(b)
 	b.Write(" ->> ")
 	b.Arg(jsonPath(path))
+	b.Write(")")
 }
 
 func (duckdbDialect) JSONContains(b *SQL, e AnyExpr, v any) {
@@ -45,11 +53,14 @@ func (duckdbDialect) JSONContains(b *SQL, e AnyExpr, v any) {
 }
 
 func (duckdbDialect) JSONOverlaps(b *SQL, e AnyExpr, v any) {
-	b.Write("json_contains(")
-	e.build(b)
-	b.Write(", CAST(")
-	b.Arg(jsonOf(v))
-	b.Write(" AS JSON))")
+	b.Write("(")
+	for i, x := range sliceOf(v) {
+		if i > 0 {
+			b.Write(" OR ")
+		}
+		duckdbDialect{}.JSONContains(b, e, x)
+	}
+	b.Write(")")
 }
 
 func (duckdbDialect) JSONLength(b *SQL, e AnyExpr) {
@@ -59,14 +70,26 @@ func (duckdbDialect) JSONLength(b *SQL, e AnyExpr) {
 }
 
 func (duckdbDialect) JSONHasKey(b *SQL, e AnyExpr, path []string) {
+	b.Write("(")
 	e.build(b)
 	b.Write(" -> ")
 	b.Arg(jsonPath(path))
-	b.Write(" IS NOT NULL")
+	b.Write(") IS NOT NULL")
 }
 
+// FullText matches term anywhere in any of exprs, ignoring case like the
+// other engines' natural-language search.
 func (duckdbDialect) FullText(b *SQL, exprs []AnyExpr, term string) {
-	likeAll(b, exprs, term)
+	b.Write("(")
+	for i, e := range exprs {
+		if i > 0 {
+			b.Write(" OR ")
+		}
+		e.build(b)
+		b.Write(" ILIKE ")
+		b.Arg("%" + term + "%")
+	}
+	b.Write(")")
 }
 
 func (duckdbDialect) Truncate(table string) []string {
@@ -177,29 +200,32 @@ func (clickhouseDialect) DatePart(b *SQL, part string, e AnyExpr) {
 }
 
 func (clickhouseDialect) JSONExtract(b *SQL, e AnyExpr, path []string) {
-	b.Write("JSONExtractRaw(")
+	b.Write("JSON_VALUE(")
 	e.build(b)
-	for _, p := range path {
-		b.Write(", ")
-		b.Arg(p)
-	}
+	b.Write(", ")
+	b.Arg(jsonPath(path))
 	b.Write(")")
 }
 
+// JSONContains and JSONOverlaps compare array elements in their raw JSON
+// form, so strings and numbers both match exactly.
 func (clickhouseDialect) JSONContains(b *SQL, e AnyExpr, v any) {
-	b.Write("has(CAST(")
-	e.build(b)
-	b.Write(" AS Array(String)), toJSONString(")
-	b.Arg(v)
-	b.Write("))")
+	clickhouseDialect{}.JSONOverlaps(b, e, []any{v})
 }
 
 func (clickhouseDialect) JSONOverlaps(b *SQL, e AnyExpr, v any) {
-	b.Write("length(arrayIntersect(CAST(")
+	b.Write("hasAny(JSONExtractArrayRaw(")
 	e.build(b)
-	b.Write(" AS Array(String)), CAST(")
-	b.Arg(jsonOf(sliceOf(v)))
-	b.Write(" AS Array(String)))) > 0")
+	b.Write("), [")
+	for i, x := range sliceOf(v) {
+		if i > 0 {
+			b.Write(", ")
+		}
+		b.Write("toJSONString(")
+		b.Arg(x)
+		b.Write(")")
+	}
+	b.Write("])")
 }
 
 func (clickhouseDialect) JSONLength(b *SQL, e AnyExpr) {
@@ -219,16 +245,18 @@ func (clickhouseDialect) JSONHasKey(b *SQL, e AnyExpr, path []string) {
 }
 
 func (clickhouseDialect) FullText(b *SQL, exprs []AnyExpr, term string) {
-	b.Write("multiSearchAnyCaseInsensitive(array(")
+	b.Write("(")
 	for i, e := range exprs {
 		if i > 0 {
-			b.Write(", ")
+			b.Write(" OR ")
 		}
+		b.Write("positionCaseInsensitiveUTF8(")
 		e.build(b)
+		b.Write(", ")
+		b.Arg(term)
+		b.Write(") > 0")
 	}
-	b.Write("), array(")
-	b.Arg(term)
-	b.Write(")) > 0")
+	b.Write(")")
 }
 
 func (clickhouseDialect) Truncate(table string) []string {
@@ -248,26 +276,30 @@ func (clickhouseDialect) DeletePrefix(b *SQL, table string) {
 	b.Ident(table)
 }
 
-// mutationSuffix makes ClickHouse mutations synchronous and row-counted.
+// ClickHouse has no unique constraints, so upserts and insertOrIgnore
+// resolve collisions by reading keys first, and its driver reports no
+// affected rows for mutations.
+func (clickhouseDialect) emulatesConflicts()  {}
+func (clickhouseDialect) uncountedMutations() {}
+
+// mutationSuffix makes ClickHouse mutations synchronous.
 func (clickhouseDialect) mutationSuffix(b *SQL) {
 	b.Write(" SETTINGS mutations_sync = 2")
 }
 
+// VectorDistance binds the query vector as an array, which the driver
+// sends as an Array(Float64) literal; inner product is negated so smaller
+// still means nearer, as pgvector's <#> does.
 func (clickhouseDialect) VectorDistance(b *SQL, e AnyExpr, arg any, m VectorMetric) {
-	b.Write("sqrt(")
-	b.Write(metricName(m))
-	b.Write("(")
+	b.Write(map[VectorMetric]string{L2: "L2Distance(", Cosine: "cosineDistance(", InnerProduct: "-dotProduct("}[m])
 	e.build(b)
 	b.Write(", ")
-	b.Arg(arg)
-	b.Write("))")
-}
-
-func metricName(m VectorMetric) string {
-	if m == Cosine {
-		return "cosineDistance"
+	if fs := floatsOf(arg); fs != nil {
+		b.Arg(fs)
+	} else {
+		b.Arg(arg)
 	}
-	return "L2Distance"
+	b.Write(")")
 }
 
 func intText(n int) string { return strconv.Itoa(n) }
@@ -275,7 +307,7 @@ func intText(n int) string { return strconv.Itoa(n) }
 func jsonOf(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return "null"
+		panic(fmt.Sprintf("orm: %T in a JSON condition cannot be encoded: %v", v, err))
 	}
 	return string(b)
 }
@@ -285,15 +317,4 @@ func sliceOf(v any) []any {
 		return vs
 	}
 	return []any{v}
-}
-
-func likeAll(b *SQL, exprs []AnyExpr, term string) {
-	for i, e := range exprs {
-		if i > 0 {
-			b.Write(" OR ")
-		}
-		e.build(b)
-		b.Write(" LIKE ")
-		b.Arg("%" + term + "%")
-	}
 }

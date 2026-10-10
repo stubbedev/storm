@@ -430,6 +430,8 @@ var usersTable = &orm.Table[User]{
 			return &m.HasAvatar
 		case "latest_post_title":
 			return &m.LatestPostTitle
+		case "avg_post_views":
+			return &m.AvgPostViews
 		}
 		return nil
 	},
@@ -467,6 +469,8 @@ type UsersSchema struct {
 	HasAvatar orm.Column[User, bool]
 	// LatestPostTitle is virtual, not stored: selected extras only of User (string).
 	LatestPostTitle orm.Column[User, string]
+	// AvgPostViews is virtual, not stored: selected extras only of User (float64).
+	AvgPostViews orm.Column[User, float64]
 }
 
 // Users is the entry point for the users table (User):
@@ -487,6 +491,7 @@ var Users = UsersSchema{
 	PostViews:       orm.NewVirtualColumn(usersTable, "post_views", func(m *User) *int64 { return &m.PostViews }),
 	HasAvatar:       orm.NewVirtualColumn(usersTable, "has_avatar", func(m *User) *bool { return &m.HasAvatar }),
 	LatestPostTitle: orm.NewVirtualColumn(usersTable, "latest_post_title", func(m *User) *string { return &m.LatestPostTitle }),
+	AvgPostViews:    orm.NewVirtualColumn(usersTable, "avg_post_views", func(m *User) *float64 { return &m.AvgPostViews }),
 }
 
 var videosTable = &orm.Table[Video]{

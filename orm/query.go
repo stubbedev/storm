@@ -153,26 +153,37 @@ func (q Query[M]) AddSelectAs[V any](into Column[M, V], e ValueExpr[V]) Query[M]
 
 func (q Query[M]) Distinct() Query[M] { q.distinct = true; return q }
 
-func (q Query[M]) Join[O any](t *Table[O], on ...Cond[O]) Query[M] { return q.join("JOIN", t, on) }
-func (q Query[M]) LeftJoin[O any](t *Table[O], on ...Cond[O]) Query[M] {
-	return q.join("LEFT JOIN", t, on)
+func (q Query[M]) Join[O any](t TableRef[O], on ...Cond[O]) Query[M] {
+	q.joins = append(slices.Clip(q.joins), joinOn("JOIN", t, on))
+	return q
 }
 
-func (q Query[M]) RightJoin[O any](t *Table[O], on ...Cond[O]) Query[M] {
-	return q.join("RIGHT JOIN", t, on)
+func (q Query[M]) LeftJoin[O any](t TableRef[O], on ...Cond[O]) Query[M] {
+	q.joins = append(slices.Clip(q.joins), joinOn("LEFT JOIN", t, on))
+	return q
 }
-func (q Query[M]) CrossJoin[O any](t *Table[O]) Query[M] { return q.join("CROSS JOIN", t, nil) }
 
-func (q Query[M]) join[O any](kind string, t *Table[O], on []Cond[O]) Query[M] {
-	q.joins = append(slices.Clip(q.joins), func(b *SQL) {
+func (q Query[M]) RightJoin[O any](t TableRef[O], on ...Cond[O]) Query[M] {
+	q.joins = append(slices.Clip(q.joins), joinOn("RIGHT JOIN", t, on))
+	return q
+}
+
+func (q Query[M]) CrossJoin[O any](t TableRef[O]) Query[M] {
+	q.joins = append(slices.Clip(q.joins), joinOn[O]("CROSS JOIN", t, nil))
+	return q
+}
+
+// joinOn renders a join of t on the ANDed conditions over its columns.
+func joinOn[O any](kind string, t TableRef[O], on []Cond[O]) frag {
+	name := t.tableRef().Name
+	return func(b *SQL) {
 		b.Write(" ", kind, " ")
-		b.Ident(t.Name)
+		b.Ident(name)
 		if len(on) > 0 {
 			b.Write(" ON ")
 			And(on...).f(b)
 		}
-	})
-	return q
+	}
 }
 
 // JoinSub joins a subquery under alias; on conditions use the subquery's
@@ -484,55 +495,86 @@ func (q Query[M]) renderFrom(b *SQL) {
 // Execution
 // ---------------------------------------------------------------------------
 
-func (q Query[M]) conn(ctx context.Context) (Conn, error) { return lookup(ctx, q.connName()) }
+func (q Query[M]) conn(ctx context.Context) (Conn, error) { return sqlConn(ctx, q.connName()) }
 
 func (q Query[M]) query(ctx context.Context, f frag) (*sql.Rows, error) {
-	c, err := q.conn(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return q.run(ctx, c, stickyDB(ctx, q.connName(), c), f)
+	return readRows(ctx, q.connName(), f)
 }
 
-// queryWrite is query for statements that read rows back but are writes,
-// like INSERT ... RETURNING: they must run on the write pool.
 func (q Query[M]) queryWrite(ctx context.Context, f frag) (*sql.Rows, error) {
-	c, err := q.conn(ctx)
+	return writeRows(ctx, q.connName(), f)
+}
+
+func (q Query[M]) exec(ctx context.Context, f frag) (sql.Result, error) {
+	return execOn(ctx, q.connName(), f)
+}
+
+// readRows runs a query on the named connection's read pool — or its write
+// pool once a Sticky scope has written to it.
+func readRows(ctx context.Context, name string, f frag) (*sql.Rows, error) {
+	c, err := sqlConn(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.run(ctx, c, c.DB, f)
+	return runRows(ctx, name, c.Dialect, stickyDB(ctx, name, c), f)
+}
+
+// writeRows runs a statement that reads rows back but is a write, like
+// INSERT ... RETURNING, on the write pool.
+func writeRows(ctx context.Context, name string, f frag) (*sql.Rows, error) {
+	c, err := sqlConn(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := runRows(ctx, name, c.Dialect, c.DB, f)
 	if err == nil {
-		markWritten(ctx, q.connName())
+		markWritten(ctx, name)
 	}
 	return rows, err
 }
 
-func (q Query[M]) run(ctx context.Context, c Conn, db DB, f frag) (*sql.Rows, error) {
-	stmt, args := render(c.Dialect, f)
+func runRows(ctx context.Context, name string, d Dialect, db DB, f frag) (*sql.Rows, error) {
+	stmt, args := render(d, f)
 	start := time.Now()
 	rows, err := db.QueryContext(ctx, stmt, args...)
-	Emit(QueryEvent{Connection: q.connName(), SQL: stmt, Args: args, Duration: time.Since(start), Err: err})
+	Emit(QueryEvent{Connection: name, SQL: stmt, Args: args, Duration: time.Since(start), Err: err})
 	if err != nil {
 		return nil, &QueryError{Err: err, SQL: stmt}
 	}
 	return rows, nil
 }
 
-func (q Query[M]) exec(ctx context.Context, f frag) (sql.Result, error) {
-	c, err := q.conn(ctx)
+// execOn runs a statement that returns no rows on the write pool.
+func execOn(ctx context.Context, name string, f frag) (sql.Result, error) {
+	c, err := sqlConn(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 	stmt, args := render(c.Dialect, f)
 	start := time.Now()
 	res, err := c.DB.ExecContext(ctx, stmt, args...)
-	Emit(QueryEvent{Connection: q.connName(), SQL: stmt, Args: args, Duration: time.Since(start), Err: err})
+	Emit(QueryEvent{Connection: name, SQL: stmt, Args: args, Duration: time.Since(start), Err: err})
 	if err != nil {
 		return nil, &QueryError{Err: err, SQL: stmt}
 	}
-	markWritten(ctx, q.connName())
+	markWritten(ctx, name)
 	return res, nil
+}
+
+// scalarOn reads the first column of the first row; no row is V's zero.
+func scalarOn[V any](ctx context.Context, name string, f frag) (V, error) {
+	var v V
+	rows, err := readRows(ctx, name, f)
+	if err != nil {
+		return v, err
+	}
+	defer closeRows(rows)
+	if rows.Next() {
+		if err := rows.Scan(nullable{&v}); err != nil {
+			return v, err
+		}
+	}
+	return v, rows.Err()
 }
 
 // QueryError wraps a database error with the SQL that caused it.
@@ -552,7 +594,6 @@ type tableColumn[M any] struct {
 
 func (c tableColumn[M]) build(b *SQL)      { b.Col(c.t.Name, c.name) }
 func (c tableColumn[M]) Name() string      { return c.name }
-func (c tableColumn[M]) isVirtual() bool   { return false }
 func (c tableColumn[M]) anyPtr(m *M) any   { return c.t.Ptr(m, c.name) }
 func (c tableColumn[M]) anyValue(m *M) any { return c.t.value(m, c.name) }
 func (c tableColumn[M]) decode(raw json.RawMessage) (any, error) {

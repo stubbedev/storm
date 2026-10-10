@@ -32,7 +32,7 @@ func setup(t *testing.T) (context.Context, *Builder) {
 	t.Helper()
 	ctx := context.Background()
 	if driver == "" || driver == "sqlite" {
-		db, err := sql.Open("sqlite", "file::memory:?_time_format=sqlite")
+		db, err := sql.Open("sqlite", "file::memory:?_time_format=sqlite&_pragma=foreign_keys(1)")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -84,6 +84,15 @@ func TestGrammarGolden(t *testing.T) {
 		}
 	}
 
+	orm.AddConnection("golden-mysql-after", nil, orm.MySQL)
+	after, afterLog := On("golden-mysql-after").Pretend()
+	check(t, after.Table(ctx, "flights", func(t *Blueprint) { t.String("gate", 10).Nullable().After("code") }))
+	want(t, "mysql positions an added column", afterLog(), []string{"ALTER TABLE `flights` ADD COLUMN `gate` varchar(10) NULL AFTER `code`"})
+	orm.AddConnection("golden-pg-after", nil, orm.Postgres)
+	pgAfter, _ := On("golden-pg-after").Pretend()
+	err := pgAfter.Table(ctx, "flights", func(t *Blueprint) { t.String("gate").After("code") })
+	want(t, "postgres refuses positioning", err != nil && strings.Contains(err.Error(), "First or After"), true)
+
 	orm.AddConnection("golden-sqlite", nil, orm.SQLite)
 	b, log := On("golden-sqlite").Pretend()
 	check(t, b.Create(ctx, "t", func(t *Blueprint) {
@@ -93,7 +102,7 @@ func TestGrammarGolden(t *testing.T) {
 		t.Morphs("owner")
 	}))
 	_ = log
-	err := b.Create(ctx, "t", func(t *Blueprint) { t.Text("body").FullText() })
+	err = b.Create(ctx, "t", func(t *Blueprint) { t.Text("body").FullText() })
 	want(t, "sqlite full text unsupported", err != nil && strings.Contains(err.Error(), "full text"), true)
 
 	orm.AddConnection("golden-pg", nil, orm.Postgres)
@@ -194,7 +203,7 @@ func TestLiveSchema(t *testing.T) {
 	ok, err = s.HasIndex(ctx, "pairs", []string{"c"})
 	check(t, err)
 	want(t, "conditional alter", ok, true)
-	check(t, s.Table(ctx, "pairs", func(t *Blueprint) { t.DropIndex("c") }))
+	check(t, s.Table(ctx, "pairs", func(t *Blueprint) { t.DropIndexOn("c") }))
 	check(t, s.DropColumns(ctx, "pairs", "c"))
 	ok, err = s.HasColumn(ctx, "pairs", "c")
 	check(t, err)
@@ -241,7 +250,7 @@ func TestMigrator(t *testing.T) {
 
 	pending, err := m.Pretend(ctx)
 	check(t, err)
-	want(t, "pretend", len(pending) == 3 && strings.Contains(pending["2026_01_01_000001_create_a_table"][0], "CREATE TABLE"), true)
+	want(t, "pretend", len(pending) == 3 && pending[0].Name == "2026_01_01_000001_create_a_table" && strings.Contains(pending[0].Statements[0], "CREATE TABLE"), true)
 	want(t, "pretend ran nothing", tables(), "")
 
 	ran, err := m.Migrate(ctx, false)
@@ -406,6 +415,31 @@ func TestSeeders(t *testing.T) {
 	want(t, "db:seed output", strings.Contains(out.String(), "Seeded"), true)
 	want(t, "db:seed class filter", strings.Contains(out.String(), "Widgets"), true)
 	want(t, "db:seed class only", strings.Contains(out.String(), "Broken"), false)
+
+	registered := RegisteredSeeders()
+	want(t, "registered seeders in order", []string{registered[len(registered)-2].Name, registered[len(registered)-1].Name}, []string{"Widgets", "Broken"})
+	out.Reset()
+	check(t, SeedReport(ctx, &out, "Widgets"))
+	want(t, "seed report", strings.TrimSpace(out.String()), "Seeded       Widgets")
+	out.Reset()
+	err = SeedReport(ctx, &out, "Broken")
+	want(t, "seed report error", err != nil && strings.Contains(err.Error(), "boom"), true)
+}
+
+func TestConnectionWithoutDialect(t *testing.T) {
+	ctx := context.Background()
+	orm.AddConnection("schema-nodialect", nil, nil)
+	err := On("schema-nodialect").Create(ctx, "t", func(t *Blueprint) { t.UUIDPrimary() })
+	failed(t, "no dialect", err, `connection "schema-nodialect" has no SQL dialect`)
+}
+
+func TestUnknownColumnType(t *testing.T) {
+	ctx, b := setup(t)
+	err := b.Create(ctx, "t", func(t *Blueprint) {
+		t.UUIDPrimary()
+		t.String("odd").Type = "hologram"
+	})
+	failed(t, "unknown type", err, `unknown column type "hologram" for t.odd`)
 }
 
 func TestMakeScaffolds(t *testing.T) {

@@ -92,9 +92,9 @@ func Run(ctx context.Context, m *Migrator, args []string, out io.Writer) error {
 	switch head {
 	case "migrate":
 		if *pretend {
-			sqls, err := m.Pretend(ctx)
-			for name, stmts := range sqls {
-				fmt.Fprintf(out, "-- %s\n%s;\n", name, strings.Join(stmts, ";\n"))
+			pending, err := m.Pretend(ctx)
+			for _, p := range pending {
+				fmt.Fprintf(out, "-- %s\n%s;\n", p.Name, strings.Join(p.Statements, ";\n"))
 			}
 			return err
 		}
@@ -154,7 +154,7 @@ func Run(ctx context.Context, m *Migrator, args []string, out io.Writer) error {
 		)
 		switch sub {
 		case "", "migration":
-			path, err = MakeMigration(*dir, *pkg, positional[0], time.Now())
+			path, err = MakeMigration(*dir, *pkg, positional[0], time.Now().UTC())
 		case "seeder":
 			path, err = MakeSeeder(*dir, *pkg, positional[0])
 		case "model":
@@ -216,7 +216,7 @@ func init() {
 // table from names like create_flights_table or add_votes_to_users_table.
 func MakeMigration(dir, pkg, name string, at time.Time) (string, error) {
 	name = strings.ToLower(strings.ReplaceAll(name, "-", "_"))
-	full := at.Format("2006_01_02_150405") + "_" + name
+	full := at.UTC().Format("2006_01_02_150405") + "_" + name
 	data := map[string]any{"Package": pkg, "Name": full}
 	if m := createRe.FindStringSubmatch(name); m != nil {
 		data["Create"], data["Table"] = true, m[1]

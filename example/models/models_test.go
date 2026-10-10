@@ -276,14 +276,14 @@ func TestSelectsJoinsUnions(t *testing.T) {
 	eq(t, "select", [2]string{partial.Name, partial.Email}, [2]string{"Alice", ""})
 
 	prolific := must(Users.Query().
-		Join(Posts.Table, Posts.UserID.EqCol(Users.ID)).
+		Join(Posts, Posts.UserID.EqCol(Users.ID)).
 		WhereOf(Posts.Published.Eq(true)).
 		GroupBy(Users.ID).
 		Having(orm.Count[User]().Gte(2)).
 		Pluck(ctx, Users.Name))
 	eq(t, "join/groupBy/having", prolific, []string{"Alice"})
 
-	leftJoined := must(Users.Query().LeftJoin(Posts.Table, Posts.UserID.EqCol(Users.ID)).Distinct().Count(ctx))
+	leftJoined := must(Users.Query().LeftJoin(Posts, Posts.UserID.EqCol(Users.ID)).Distinct().Count(ctx))
 	eq(t, "leftJoin distinct count", leftJoined, int64(4))
 
 	union := must(Users.Where(Users.Karma.Gt(90)).Union(Users.Where(Users.Name.Eq("Bob"))).Get(ctx))
@@ -393,7 +393,7 @@ func TestRelationQueries(t *testing.T) {
 
 	// A relation from a table to itself: users sharing a country with a
 	// high-karma user. The inner users table is aliased automatically.
-	compatriots := orm.HasMany(Users.Table, Users.CountryID, Users.CountryID, func(*User, []User) {})
+	compatriots := orm.HasMany(Users.CountryID, Users.CountryID, func(*User, []User) {})
 	eq(t, "self-referencing whereHas", get(Users.Query().WhereHas(compatriots, func(q orm.Query[User]) orm.Query[User] {
 		return q.Where(Users.Karma.Gt(90))
 	})), []string{"Carol", "Dave"})

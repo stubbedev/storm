@@ -1,5 +1,13 @@
 // Package migrations holds the example schema. Each migration registers
 // itself; `go run ./example/migrate make <name>` scaffolds new ones here.
+//
+// The schema targets the transactional engines (SQLite, Postgres, MySQL,
+// MariaDB) the example models run on, and is not meant for the analytical
+// ones, which refuse it with a *schema.UnsupportedError: DuckDB enforces
+// only NO ACTION and RESTRICT foreign keys, so users' NullOnDelete and
+// role_user's CascadeOnDelete cannot be expressed; ClickHouse generates no
+// integer keys (every ID() here), and has no foreign keys or unique
+// indexes. The models' auto-increment keys need generated keys too.
 package migrations
 
 import (
@@ -55,7 +63,7 @@ func init() {
 				if driver, err := s.DriverName(ctx); err != nil || driver == "sqlite" {
 					return err
 				}
-				return s.Table(ctx, "posts", func(t *B) { t.DropFullText("title") })
+				return s.Table(ctx, "posts", func(t *B) { t.DropFullTextOn("title") })
 			},
 		},
 		create("2026_01_01_000003_create_videos_table", "videos", func(t *B) {

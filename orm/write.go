@@ -85,8 +85,10 @@ func (q Query[M]) performInsert(ctx context.Context, m *M) error {
 	if err != nil {
 		return err
 	}
-	if autoKey && !c.Dialect.AutoKeys() {
-		return fmt.Errorf("orm: %s does not generate integer keys; give %s a uuid, ulid or manual key", c.Dialect.Name(), t.Name)
+	if autoKey {
+		if err := needAutoKeys(c.Dialect, t.Name); err != nil {
+			return err
+		}
 	}
 	stmt := func(b *SQL) {
 		q.renderInsert(b, "INSERT", cols, []*M{m})
@@ -163,8 +165,7 @@ func (q Query[M]) performUpdate(ctx context.Context, m *M) error {
 	dirty := t.Dirty(m)
 	sets := make([]Assignment[M], len(dirty))
 	for i, c := range dirty {
-		v := t.dbValue(m, c)
-		sets[i] = Assignment[M]{col: c, val: func(b *SQL) { b.Arg(v) }, raw: v}
+		sets[i] = setLiteral[M](c, t.dbValue(m, c))
 	}
 	if _, err := q.instance(m).update(ctx, sets); err != nil {
 		return err
@@ -198,10 +199,10 @@ func (q Query[M]) DeleteModel(ctx context.Context, m *M) error {
 	if t.softDeletes() {
 		ts := now()
 		t.setValue(m, t.DeletedAt, ts)
-		sets := []Assignment[M]{{col: t.DeletedAt, val: func(b *SQL) { b.Arg(ts) }, raw: ts}}
+		sets := []Assignment[M]{setLiteral[M](t.DeletedAt, ts)}
 		if t.UpdatedAt != "" && timestamps(ctx) {
 			t.setValue(m, t.UpdatedAt, ts)
-			sets = append(sets, Assignment[M]{col: t.UpdatedAt, val: func(b *SQL) { b.Arg(ts) }, raw: ts})
+			sets = append(sets, setLiteral[M](t.UpdatedAt, ts))
 		}
 		if _, err := q.instance(m).update(ctx, sets); err != nil {
 			return err
@@ -397,53 +398,36 @@ func Fill[M any](m *M, sets ...Assignment[M]) { fill(m, sets) }
 func (q Query[M]) Update(ctx context.Context, sets ...Assignment[M]) (int64, error) {
 	t := q.table
 	if t.UpdatedAt != "" && timestamps(ctx) && !slices.ContainsFunc(sets, func(a Assignment[M]) bool { return a.col == t.UpdatedAt }) {
-		ts := now()
-		sets = append(slices.Clip(sets), Assignment[M]{col: t.UpdatedAt, val: func(b *SQL) { b.Arg(ts) }, raw: ts})
+		sets = append(slices.Clip(sets), setLiteral[M](t.UpdatedAt, now()))
 	}
 	return q.update(ctx, sets)
 }
 
 func (q Query[M]) update(ctx context.Context, sets []Assignment[M]) (int64, error) {
+	if len(sets) == 0 {
+		return 0, fmt.Errorf("orm: update on %s: no columns to set", q.table.Name)
+	}
 	q = q.prepared()
-	if n, ok, err := q.updateDocs(ctx, sets, "update"); ok {
+	cs := colSets(sets)
+	if n, ok, err := q.updateDocs(ctx, cs, "update"); ok {
 		return n, err
 	}
-	res, err := q.exec(ctx, func(b *SQL) {
-		b.Dialect.UpdatePrefix(b, q.table.Name)
-		b.Write(" ")
-		for i, a := range sets {
-			if i > 0 {
-				b.Write(", ")
-			}
-			b.Ident(a.col)
-			b.Write(" = ")
-			a.val(b)
-		}
-		q.renderWhere(b)
-		if m, ok := b.Dialect.(interface{ mutationSuffix(*SQL) }); ok {
-			m.mutationSuffix(b)
-		}
-	})
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+	return mutate(ctx, q.connName(), q.table.Name, q.renderWhere, func(b *SQL) { writeUpdate(b, q.table.Name, cs, q.renderWhere) })
 }
 
 // Increment adds by to a numeric column on every matching row.
 func (q Query[M]) Increment[V Number](ctx context.Context, col Column[M, V], by V, extra ...Assignment[M]) (int64, error) {
-	return q.Update(ctx, append([]Assignment[M]{col.SetExpr(Plus(col, by))}, extra...)...)
+	return q.Update(ctx, append([]Assignment[M]{{colSet: increment(col, col.name, by)}}, extra...)...)
 }
 
 func (q Query[M]) Decrement[V Number](ctx context.Context, col Column[M, V], by V, extra ...Assignment[M]) (int64, error) {
-	return q.Update(ctx, append([]Assignment[M]{col.SetExpr(Minus(col, by))}, extra...)...)
+	return q.Update(ctx, append([]Assignment[M]{{colSet: decrement(col, col.name, by)}}, extra...)...)
 }
 
 // Delete deletes every matching row — soft deletes if the table uses them.
 func (q Query[M]) Delete(ctx context.Context) (int64, error) {
 	if q.table.softDeletes() {
-		ts := now()
-		return q.Update(ctx, Assignment[M]{col: q.table.DeletedAt, val: func(b *SQL) { b.Arg(ts) }, raw: ts})
+		return q.Update(ctx, setLiteral[M](q.table.DeletedAt, now()))
 	}
 	return q.hardDelete(ctx)
 }
@@ -453,7 +437,60 @@ func (q Query[M]) ForceDelete(ctx context.Context) (int64, error) { return q.har
 
 // Restore un-deletes every matching soft deleted row.
 func (q Query[M]) Restore(ctx context.Context) (int64, error) {
-	return q.WithTrashed().Update(ctx, Assignment[M]{col: q.table.DeletedAt, val: func(b *SQL) { b.Arg(nil) }, raw: nil})
+	return q.WithTrashed().Update(ctx, setLiteral[M](q.table.DeletedAt, nil))
+}
+
+// increment adds by to the column e renders as; decrement subtracts it.
+// Both carry the signed amount for document stores.
+func increment[V Number](e AnyExpr, col string, by V) colSet {
+	return colSet{col: col, expr: arith(e, " + ", by), inc: by}
+}
+
+func decrement[V Number](e AnyExpr, col string, by V) colSet {
+	return colSet{col: col, expr: arith(e, " - ", by), inc: negated(by)}
+}
+
+func arith(e AnyExpr, op string, by any) frag {
+	return func(b *SQL) { e.build(b); b.Write(op); b.Arg(by) }
+}
+
+// negated is -v, widened to int64 for unsigned types, which cannot hold it.
+func negated[V Number](v V) any {
+	switch reflect.ValueOf(v).Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return -int64(v)
+	}
+	return -v
+}
+
+// writeUpdate renders an UPDATE of table in the dialect's mutation form,
+// with where writing the WHERE clause.
+func writeUpdate(b *SQL, table string, sets []colSet, where frag) {
+	b.Dialect.UpdatePrefix(b, table)
+	b.Write(" ")
+	for i, s := range sets {
+		if i > 0 {
+			b.Write(", ")
+		}
+		b.Ident(s.col)
+		b.Write(" = ")
+		s.renderValue(b)
+	}
+	where(b)
+	mutationSuffix(b)
+}
+
+// writeDelete renders a DELETE from table in the dialect's mutation form.
+func writeDelete(b *SQL, table string, where frag) {
+	b.Dialect.DeletePrefix(b, table)
+	where(b)
+	mutationSuffix(b)
+}
+
+func mutationSuffix(b *SQL) {
+	if m, ok := b.Dialect.(interface{ mutationSuffix(*SQL) }); ok {
+		m.mutationSuffix(b)
+	}
 }
 
 func (q Query[M]) hardDelete(ctx context.Context) (int64, error) {
@@ -461,17 +498,7 @@ func (q Query[M]) hardDelete(ctx context.Context) (int64, error) {
 	if n, ok, err := q.deleteDocs(ctx, "delete"); ok {
 		return n, err
 	}
-	res, err := q.exec(ctx, func(b *SQL) {
-		b.Dialect.DeletePrefix(b, q.table.Name)
-		q.renderWhere(b)
-		if m, ok := b.Dialect.(interface{ mutationSuffix(*SQL) }); ok {
-			m.mutationSuffix(b)
-		}
-	})
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+	return mutate(ctx, q.connName(), q.table.Name, q.renderWhere, func(b *SQL) { writeDelete(b, q.table.Name, q.renderWhere) })
 }
 
 func (q Query[M]) renderWhere(b *SQL) {
@@ -510,8 +537,21 @@ func (q Query[M]) InsertUsing[O any](ctx context.Context, cols []AnyColumn[M], s
 }
 
 // Truncate empties the table and resets its auto-increment counter.
-func (t *Table[M]) Truncate(ctx context.Context) error {
-	q := t.Query()
+func (t *Table[M]) Truncate(ctx context.Context) error { return t.Query().Truncate(ctx) }
+
+// Truncate empties the table on the query's connection, resetting its
+// auto-increment counter; on a document store it deletes every document.
+// The query's conditions do not apply.
+func (q Query[M]) Truncate(ctx context.Context) error {
+	t := q.table
+	if ds, ok, err := q.docstore(ctx); err != nil {
+		return err
+	} else if ok {
+		start := time.Now()
+		_, err := ds.DeleteDocs(ctx, t.Name, Plan{Table: t.Name})
+		emitDocRaw(q.connName(), "truncate "+t.Name, time.Since(start), err)
+		return err
+	}
 	c, err := q.conn(ctx)
 	if err != nil {
 		return err
@@ -575,12 +615,12 @@ func timestamps(ctx context.Context) bool { return ctx.Value(noTimestampsKey{}) 
 
 // Insert bulk-inserts rows as-is: no events, no timestamps (insert()).
 func (q Query[M]) Insert(ctx context.Context, ms ...M) error {
-	return q.insertRows(ctx, "", false, nil, nil, ms)
+	return q.insertRows(ctx, ms, conflict{})
 }
 
 // InsertOrIgnore bulk-inserts, skipping rows that violate unique constraints.
 func (q Query[M]) InsertOrIgnore(ctx context.Context, ms ...M) error {
-	return q.insertRows(ctx, "", true, nil, nil, ms)
+	return q.insertRows(ctx, ms, conflict{kind: conflictIgnore})
 }
 
 // InsertGetID inserts one row as-is and returns the database-generated
@@ -594,37 +634,7 @@ func (q Query[M]) InsertGetID(ctx context.Context, m M) (int64, error) {
 		return 0, fmt.Errorf("orm: InsertGetID called with a key already set on %s", t.Name)
 	}
 	cols := slices.DeleteFunc(slices.Clone(t.Columns), func(c string) bool { return c == t.PrimaryKey })
-	c, err := q.conn(ctx)
-	if err != nil {
-		return 0, err
-	}
-	stmt := func(b *SQL) {
-		q.renderInsert(b, "INSERT", cols, []*M{&m})
-		if c.Dialect.Returning() {
-			b.Write(" RETURNING ")
-			b.Ident(t.PrimaryKey)
-		}
-	}
-	if c.Dialect.Returning() {
-		rows, err := q.queryWrite(ctx, stmt)
-		if err != nil {
-			return 0, err
-		}
-		defer closeRows(rows)
-		if rows.Next() {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				return 0, err
-			}
-			return id, rows.Err()
-		}
-		return 0, rows.Err()
-	}
-	res, err := q.exec(ctx, stmt)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+	return insertGetID(ctx, q.connName(), t.Name, t.PrimaryKey, func(b *SQL) { q.renderInsert(b, "INSERT", cols, []*M{&m}) })
 }
 
 // Upsert inserts rows or updates the update columns (default: all others)
@@ -650,84 +660,53 @@ func (q Query[M]) Upsert(ctx context.Context, ms []M, uniqueBy []AnyColumn[M], u
 	} else if t.UpdatedAt != "" && !slices.Contains(upd, t.UpdatedAt) {
 		upd = append(upd, t.UpdatedAt)
 	}
-	return q.insertRows(ctx, "", false, uniq, upd, ms)
+	return q.insertRows(ctx, ms, conflict{kind: conflictUpdate, uniqueBy: uniq, update: upd})
 }
 
-func (q Query[M]) insertRows(ctx context.Context, _ string, ignore bool, uniq, upd []string, ms []M) error {
+func (q Query[M]) insertRows(ctx context.Context, ms []M, c conflict) error {
 	if len(ms) == 0 {
 		return nil
 	}
 	t := q.table
+	ptrs := make([]*M, len(ms))
+	for i := range ms {
+		ptrs[i] = &ms[i]
+	}
 	if ds, ok, err := q.docstore(ctx); err != nil {
 		return err
 	} else if ok {
-		for i := range ms {
-			t.assignKey(&ms[i]) // document stores have no generated keys
-		}
-		ptrs := make([]*M, len(ms))
-		for i := range ms {
-			ptrs[i] = &ms[i]
+		for _, m := range ptrs {
+			t.assignKey(m) // document stores have no generated keys
 		}
 		docs, err := q.docMaps("insert", ptrs)
 		if err != nil {
 			return err
 		}
-		keys := slices.Clone(uniq)
-		if len(keys) == 0 {
-			keys = []string{t.PrimaryKey}
-		}
-		switch {
-		case ignore:
-			return insertOrIgnoreDocs(ctx, ds, t.Name, docs, keys)
-		case upd != nil:
-			return ds.UpsertDocs(ctx, t.Name, docs, keys)
-		default:
-			return ds.InsertDocs(ctx, t.Name, docs)
-		}
+		return c.storeDocs(ctx, ds, q.connName(), t.Name, docs, t.PrimaryKey)
 	}
 	cols := slices.Clone(t.Columns)
 	if t.KeyType == KeyAutoIncrement && t.PrimaryKey != "" &&
-		!slices.ContainsFunc(ms, func(m M) bool { return !isZero(t.key(&m)) }) {
+		!slices.ContainsFunc(ptrs, func(m *M) bool { return !isZero(t.key(m)) }) {
 		cols = slices.DeleteFunc(cols, func(c string) bool { return c == t.PrimaryKey })
 	}
-	ptrs := make([]*M, len(ms))
-	for i := range ms {
-		ptrs[i] = &ms[i]
-	}
-	_, err := q.exec(ctx, func(b *SQL) {
-		q.renderInsert(b, b.Dialect.InsertVerb(ignore), cols, ptrs)
-		if ignore || upd != nil {
-			b.Dialect.OnConflict(b, ignore, uniq, upd)
-		}
-	})
-	return err
+	return insertSQL(ctx, q.connName(), t.Name, cols, q.modelRows(cols, ptrs), c, t.PrimaryKey)
 }
 
 func (q Query[M]) renderInsert(b *SQL, verb string, cols []string, ms []*M) {
-	t := q.table
-	b.Write(verb, " INTO ")
-	b.Ident(t.Name)
-	b.Write(" (")
-	for i, c := range cols {
-		if i > 0 {
-			b.Write(", ")
+	writeInsert(b, verb, q.table.Name, cols, q.modelRows(cols, ms))
+}
+
+// modelRows is ms as insert rows over cols.
+func (q Query[M]) modelRows(cols []string, ms []*M) [][]colSet {
+	rows := make([][]colSet, len(ms))
+	for i, m := range ms {
+		row := make([]colSet, len(cols))
+		for j, c := range cols {
+			row[j] = colSet{col: c, raw: q.table.dbValue(m, c)}
 		}
-		b.Ident(c)
+		rows[i] = row
 	}
-	b.Write(") VALUES ")
-	for r, m := range ms {
-		if r > 0 {
-			b.Write(", ")
-		}
-		b.Write("(")
-		for i, c := range cols {
-			if i > 0 {
-				b.Write(", ")
-			}
-			b.Arg(t.dbValue(m, c))
-		}
-		b.Write(")")
-	}
+	return rows
 }
 
 func names[M any](cols []AnyColumn[M]) []string {

@@ -3,13 +3,16 @@ package orm
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/x/bsonx/bsoncore"
 )
 
 // MongoStore runs the typed builder against MongoDB. Collections are named
@@ -40,18 +43,287 @@ func (s *MongoStore) Close(ctx context.Context) error { return s.client.Disconne
 
 func (s *MongoStore) coll(table string) *mongo.Collection { return s.db.Collection(table) }
 
-// CreateIndex declares an index: db.events.createIndex(...) in a migration.
-func (s *MongoStore) CreateIndex(ctx context.Context, table string, keys any, unique bool) error {
-	_, err := s.coll(table).Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    keys,
-		Options: options.Index().SetUnique(unique),
-	})
-	return err
+func (s *MongoStore) Engine() string { return "mongodb" }
+
+func (s *MongoStore) Collections(ctx context.Context) ([]string, error) {
+	names, err := s.db.ListCollectionNames(ctx, bson.D{})
+	if err != nil {
+		return nil, fmt.Errorf("orm: mongo listing collections: %w", err)
+	}
+	names = slices.DeleteFunc(names, func(n string) bool { return strings.HasPrefix(n, "system.") })
+	slices.Sort(names)
+	return names, nil
 }
 
-// DropCollection removes a collection (dropIfExists in a migration).
+// CreateCollection creates the collection with a $jsonSchema validator
+// enforcing the declared fields' types and presence, then its indexes.
+// MongoDB has no vector index outside Atlas, so a vector is refused.
+func (s *MongoStore) CreateCollection(ctx context.Context, c Collection) error {
+	if c.Vector != nil {
+		return &ErrNotTranslatable{Reason: "vector indexes on MongoDB (Atlas Vector Search is not wired up; use Qdrant or pgvector)"}
+	}
+	opts := options.CreateCollection()
+	if len(c.Fields) > 0 {
+		opts.SetValidator(mongoValidator(c.Fields))
+	}
+	if err := s.db.CreateCollection(ctx, c.Name, opts); err != nil {
+		return fmt.Errorf("orm: mongo creating collection %s: %w", c.Name, err)
+	}
+	for _, idx := range c.Indexes {
+		if err := s.CreateIndex(ctx, c.Name, idx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *MongoStore) DescribeCollection(ctx context.Context, name string) (Collection, error) {
+	specs, err := s.db.ListCollectionSpecifications(ctx, bson.D{{Key: "name", Value: name}})
+	if err != nil {
+		return Collection{}, fmt.Errorf("orm: mongo describing collection %s: %w", name, err)
+	}
+	if len(specs) == 0 {
+		return Collection{}, fmt.Errorf("orm: mongo collection %s does not exist", name)
+	}
+	c := Collection{Name: name}
+	if c.Fields, err = mongoFields(specs[0].Options); err != nil {
+		return Collection{}, fmt.Errorf("orm: mongo reading the validator of %s: %w", name, err)
+	}
+	cur, err := s.coll(name).Indexes().List(ctx)
+	if err != nil {
+		return Collection{}, fmt.Errorf("orm: mongo listing indexes of %s: %w", name, err)
+	}
+	var specsOut []struct {
+		Name    string   `bson:"name"`
+		Key     bson.D   `bson:"key"`
+		Unique  bool     `bson:"unique"`
+		Weights bson.Raw `bson:"weights"`
+	}
+	if err := cur.All(ctx, &specsOut); err != nil {
+		return Collection{}, fmt.Errorf("orm: mongo reading indexes of %s: %w", name, err)
+	}
+	kinds := map[string]DocField{}
+	for _, f := range c.Fields {
+		kinds[f.Name] = f
+	}
+	field := func(n string) DocField {
+		if f, ok := kinds[n]; ok {
+			return f
+		}
+		return DocField{Name: n}
+	}
+	for _, spec := range specsOut {
+		if spec.Name == "_id_" {
+			continue
+		}
+		idx := DocIndex{Name: spec.Name, Unique: spec.Unique}
+		if spec.Weights != nil {
+			idx.Text = true
+			elems, err := spec.Weights.Elements()
+			if err != nil {
+				return Collection{}, fmt.Errorf("orm: mongo reading text index %s: %w", spec.Name, err)
+			}
+			for _, e := range elems {
+				idx.Fields = append(idx.Fields, field(e.Key()))
+			}
+		} else {
+			for _, k := range spec.Key {
+				idx.Fields = append(idx.Fields, field(k.Key))
+			}
+		}
+		c.Indexes = append(c.Indexes, idx)
+	}
+	return c, nil
+}
+
+// DropCollection removes a collection; a missing one is not an error.
 func (s *MongoStore) DropCollection(ctx context.Context, table string) error {
-	return s.coll(table).Drop(ctx)
+	if err := s.coll(table).Drop(ctx); err != nil {
+		return fmt.Errorf("orm: mongo dropping collection %s: %w", table, err)
+	}
+	return nil
+}
+
+func (s *MongoStore) RenameCollection(ctx context.Context, from, to string) error {
+	db := s.db.Name()
+	err := s.client.Database("admin").RunCommand(ctx, bson.D{
+		{Key: "renameCollection", Value: db + "." + from},
+		{Key: "to", Value: db + "." + to},
+	}).Err()
+	if err != nil {
+		return fmt.Errorf("orm: mongo renaming collection %s to %s: %w", from, to, err)
+	}
+	return nil
+}
+
+// SetFields replaces the collection's validator with one for fields.
+func (s *MongoStore) SetFields(ctx context.Context, collection string, fields []DocField) error {
+	validator := any(bson.D{})
+	if len(fields) > 0 {
+		validator = mongoValidator(fields)
+	}
+	err := s.db.RunCommand(ctx, bson.D{{Key: "collMod", Value: collection}, {Key: "validator", Value: validator}}).Err()
+	if err != nil {
+		return fmt.Errorf("orm: mongo updating the validator of %s: %w", collection, err)
+	}
+	return nil
+}
+
+// bypassValidation lets a field rewrite through while the validator still
+// describes the fields before the change.
+var bypassValidation = options.UpdateMany().SetBypassDocumentValidation(true)
+
+func (s *MongoStore) DropFields(ctx context.Context, collection string, fields []string) error {
+	unset := make(bson.D, len(fields))
+	for i, f := range fields {
+		unset[i] = bson.E{Key: f, Value: ""}
+	}
+	if _, err := s.coll(collection).UpdateMany(ctx, bson.D{}, bson.D{{Key: "$unset", Value: unset}}, bypassValidation); err != nil {
+		return fmt.Errorf("orm: mongo dropping fields of %s: %w", collection, err)
+	}
+	return nil
+}
+
+func (s *MongoStore) RenameField(ctx context.Context, collection, from, to string) error {
+	_, err := s.coll(collection).UpdateMany(ctx, bson.D{}, bson.D{{Key: "$rename", Value: bson.D{{Key: from, Value: to}}}}, bypassValidation)
+	if err != nil {
+		return fmt.Errorf("orm: mongo renaming field %s of %s: %w", from, collection, err)
+	}
+	return nil
+}
+
+func (s *MongoStore) CreateIndex(ctx context.Context, collection string, idx DocIndex) error {
+	keys := make(bson.D, len(idx.Fields))
+	for i, f := range idx.Fields {
+		keys[i] = bson.E{Key: f.Name, Value: map[bool]any{false: 1, true: "text"}[idx.Text]}
+	}
+	_, err := s.coll(collection).Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    keys,
+		Options: options.Index().SetName(idx.Name).SetUnique(idx.Unique),
+	})
+	if err != nil {
+		return fmt.Errorf("orm: mongo creating index %s on %s: %w", idx.Name, collection, err)
+	}
+	return nil
+}
+
+func (s *MongoStore) DropIndex(ctx context.Context, collection string, idx DocIndex) error {
+	if err := s.coll(collection).Indexes().DropOne(ctx, idx.Name); err != nil {
+		return fmt.Errorf("orm: mongo dropping index %s on %s: %w", idx.Name, collection, err)
+	}
+	return nil
+}
+
+// mongoValidator is a $jsonSchema validator for fields: each declared
+// field must hold its kind's BSON types (or null when nullable), and the
+// non-nullable ones must be present. The kind is kept as the description,
+// so DescribeCollection reads it back.
+func mongoValidator(fields []DocField) bson.D {
+	props := make(bson.D, 0, len(fields))
+	required := bson.A{}
+	for _, f := range fields {
+		prop := bson.D{{Key: "description", Value: f.Kind.String()}}
+		if types := mongoTypes(f.Kind); types != nil {
+			if f.Nullable {
+				types = append(types, "null")
+			}
+			prop = append(prop, bson.E{Key: "bsonType", Value: types})
+		}
+		if f.Unsigned {
+			prop = append(prop, bson.E{Key: "minimum", Value: 0})
+		}
+		if len(f.Allowed) > 0 {
+			allowed := make(bson.A, 0, len(f.Allowed)+1)
+			for _, v := range f.Allowed {
+				allowed = append(allowed, v)
+			}
+			if f.Nullable {
+				allowed = append(allowed, nil)
+			}
+			prop = append(prop, bson.E{Key: "enum", Value: allowed})
+		}
+		props = append(props, bson.E{Key: f.Name, Value: prop})
+		if !f.Nullable {
+			required = append(required, f.Name)
+		}
+	}
+	js := bson.D{{Key: "bsonType", Value: "object"}, {Key: "properties", Value: props}}
+	if len(required) > 0 {
+		js = append(js, bson.E{Key: "required", Value: required})
+	}
+	return bson.D{{Key: "$jsonSchema", Value: js}}
+}
+
+// mongoTypes are the BSON types the ORM stores a kind as: JSON casts and
+// vectors arrive as their text form, maps and slices as documents and
+// arrays.
+func mongoTypes(k FieldKind) bson.A {
+	switch k {
+	case KindString:
+		return bson.A{"string"}
+	case KindInt:
+		return bson.A{"int", "long"}
+	case KindFloat:
+		return bson.A{"double", "int", "long", "decimal"}
+	case KindBool:
+		return bson.A{"bool"}
+	case KindTime:
+		return bson.A{"date"}
+	case KindJSON:
+		return bson.A{"string", "object", "array"}
+	case KindVector:
+		return bson.A{"string", "array"}
+	}
+	return nil
+}
+
+// mongoFields reads the declared fields back from collection options; a
+// collection without a validator declares none.
+func mongoFields(opts bson.Raw) ([]DocField, error) {
+	if opts == nil {
+		return nil, nil
+	}
+	js, err := opts.LookupErr("validator", "$jsonSchema")
+	if errors.Is(err, bsoncore.ErrElementNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var schema struct {
+		Properties bson.Raw `bson:"properties"`
+		Required   []string `bson:"required"`
+	}
+	if err := js.Unmarshal(&schema); err != nil {
+		return nil, err
+	}
+	elems, err := schema.Properties.Elements()
+	if err != nil {
+		return nil, err
+	}
+	fields := make([]DocField, len(elems))
+	for i, e := range elems {
+		var prop struct {
+			Description string `bson:"description"`
+			Minimum     *int   `bson:"minimum"`
+			Enum        []any  `bson:"enum"`
+		}
+		if err := e.Value().Unmarshal(&prop); err != nil {
+			return nil, err
+		}
+		kind, ok := ParseFieldKind(prop.Description)
+		if !ok {
+			return nil, fmt.Errorf("field %s has no kind in its description", e.Key())
+		}
+		f := DocField{Name: e.Key(), Kind: kind, Nullable: !slices.Contains(schema.Required, e.Key()), Unsigned: prop.Minimum != nil}
+		for _, v := range prop.Enum {
+			if s, ok := v.(string); ok {
+				f.Allowed = append(f.Allowed, s)
+			}
+		}
+		fields[i] = f
+	}
+	return fields, nil
 }
 
 func (s *MongoStore) FindDocs(ctx context.Context, table string, p Plan) ([]map[string]any, error) {
@@ -104,7 +376,11 @@ func (s *MongoStore) InsertDocs(ctx context.Context, table string, docs []map[st
 	}
 	elems := make([]any, len(docs))
 	for i, doc := range docs {
-		elems[i] = mongoDoc(doc)
+		d, err := mongoDoc(doc)
+		if err != nil {
+			return fmt.Errorf("orm: mongo insert into %s: %w", table, err)
+		}
+		elems[i] = d
 	}
 	if _, err := s.coll(table).InsertMany(ctx, elems); err != nil {
 		return fmt.Errorf("orm: mongo insert into %s: %w", table, err)
@@ -117,12 +393,16 @@ func (s *MongoStore) InsertDocs(ctx context.Context, table string, docs []map[st
 // column, which is what Upsert's default update list asks for.
 func (s *MongoStore) UpsertDocs(ctx context.Context, table string, docs []map[string]any, keys []string) error {
 	for _, doc := range docs {
-		filter := make(bson.D, 0, len(keys))
-		for _, k := range keys {
-			filter = append(filter, bson.E{Key: k, Value: bsonValue(doc[k])})
+		filter, err := mongoDoc(pick(doc, keys))
+		if err != nil {
+			return fmt.Errorf("orm: mongo upsert into %s: %w", table, err)
 		}
-		_, err := s.coll(table).UpdateOne(ctx, filter,
-			mongo.Pipeline{bson.D{{Key: "$replaceWith", Value: mongoDoc(doc)}}},
+		replacement, err := mongoDoc(doc)
+		if err != nil {
+			return fmt.Errorf("orm: mongo upsert into %s: %w", table, err)
+		}
+		_, err = s.coll(table).UpdateOne(ctx, filter,
+			mongo.Pipeline{bson.D{{Key: "$replaceWith", Value: replacement}}},
 			options.UpdateOne().SetUpsert(true))
 		if err != nil {
 			return fmt.Errorf("orm: mongo upsert into %s: %w", table, err)
@@ -131,16 +411,26 @@ func (s *MongoStore) UpsertDocs(ctx context.Context, table string, docs []map[st
 	return nil
 }
 
-func (s *MongoStore) UpdateDocs(ctx context.Context, table string, p Plan, sets map[string]any) (int64, error) {
+func (s *MongoStore) UpdateDocs(ctx context.Context, table string, p Plan, u DocUpdate) (int64, error) {
 	filter, err := mongoFilter(p.Where)
 	if err != nil {
 		return 0, err
 	}
-	set := bson.D{}
-	for _, c := range sortedKeys(sets) {
-		set = append(set, bson.E{Key: c, Value: bsonValue(sets[c])})
+	update := bson.D{}
+	for _, op := range []struct {
+		name   string
+		fields map[string]any
+	}{{"$set", u.Set}, {"$inc", u.Inc}} {
+		if len(op.fields) == 0 {
+			continue
+		}
+		fields, err := mongoDoc(op.fields)
+		if err != nil {
+			return 0, fmt.Errorf("orm: mongo update on %s: %w", table, err)
+		}
+		update = append(update, bson.E{Key: op.name, Value: fields})
 	}
-	res, err := s.coll(table).UpdateMany(ctx, filter, bson.D{{Key: "$set", Value: set}})
+	res, err := s.coll(table).UpdateMany(ctx, filter, update)
 	if err != nil {
 		return 0, fmt.Errorf("orm: mongo update on %s: %w", table, err)
 	}
@@ -177,29 +467,44 @@ func (s *MongoStore) CountDocs(ctx context.Context, table string, p Plan) (int64
 // mongoDoc converts a builder document to BSON: values implementing
 // driver.Valuer (orm.JSON, orm.Vector, orm.Encrypted) go through their
 // value form, times stay native.
-func mongoDoc(doc map[string]any) bson.D {
-	d := bson.D{}
+func mongoDoc(doc map[string]any) (bson.D, error) {
+	d := make(bson.D, 0, len(doc))
 	for _, k := range sortedKeys(doc) {
-		d = append(d, bson.E{Key: k, Value: bsonValue(doc[k])})
+		v, err := bsonValue(doc[k])
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", k, err)
+		}
+		d = append(d, bson.E{Key: k, Value: v})
 	}
-	return d
+	return d, nil
 }
 
-func bsonValue(v any) any {
-	switch x := v.(type) {
-	case time.Time:
-		return x
-	case string, bool, int, int32, int64, uint, uint32, uint64, float64, nil:
-		return v
-	case []any, map[string]any:
-		return v
+// pick is the fields of doc named by keys.
+func pick(doc map[string]any, keys []string) map[string]any {
+	out := make(map[string]any, len(keys))
+	for _, k := range keys {
+		out[k] = doc[k]
 	}
-	if val, ok := v.(driver.Valuer); ok {
-		if raw, err := val.Value(); err == nil && raw != nil {
-			return raw
-		}
+	return out
+}
+
+// bsonValue is v as MongoDB stores it. A driver.Valuer's error is
+// returned, never papered over: Encrypted fails that way without a key,
+// and storing the value as-is would write it in plain text.
+func bsonValue(v any) (any, error) {
+	switch v.(type) {
+	case time.Time, string, bool, int, int32, int64, uint, uint32, uint64, float64, nil, []any, map[string]any:
+		return v, nil
 	}
-	return v
+	val, ok := v.(driver.Valuer)
+	if !ok {
+		return v, nil
+	}
+	raw, err := val.Value()
+	if err != nil {
+		return nil, fmt.Errorf("converting %T: %w", v, err)
+	}
+	return raw, nil
 }
 
 // mongoFilter compiles a plan condition to a BSON filter.
@@ -217,22 +522,29 @@ func mongoFilter(n Node) (bson.D, error) {
 func mongoCond(n Node) (bson.D, error) {
 	switch c := n.(type) {
 	case Field:
-		v := mongoValue(c.Value)
+		v, err := bsonValue(c.Value)
+		if err != nil {
+			return nil, err
+		}
 		switch c.Op {
 		case "=":
 			return bson.D{{Key: c.Column, Value: v}}, nil
-		case "<>":
+		case "<>", "!=":
 			return bson.D{{Key: c.Column, Value: bson.D{{Key: "$ne", Value: v}}}}, nil
 		case ">", ">=", "<", "<=":
 			return bson.D{{Key: c.Column, Value: bson.D{{Key: "$" + mongoOp(c.Op), Value: v}}}}, nil
-		case "LIKE", "NOT LIKE":
+		case "LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE":
 			re, err := likeRegex(c.Value)
 			if err != nil {
 				return nil, err
 			}
-			val := any(bson.D{{Key: "$regex", Value: re}})
-			if c.Op == "NOT LIKE" {
-				val = bson.D{{Key: "$not", Value: val}}
+			match := bson.D{{Key: "$regex", Value: re}}
+			if strings.Contains(c.Op, "ILIKE") {
+				match = append(match, bson.E{Key: "$options", Value: "i"})
+			}
+			val := any(match)
+			if strings.HasPrefix(c.Op, "NOT") {
+				val = bson.D{{Key: "$not", Value: match}}
 			}
 			return bson.D{{Key: c.Column, Value: val}}, nil
 		}
@@ -240,7 +552,10 @@ func mongoCond(n Node) (bson.D, error) {
 	case List:
 		vals := make([]any, len(c.Values))
 		for i, v := range c.Values {
-			vals[i] = mongoValue(v)
+			var err error
+			if vals[i], err = bsonValue(v); err != nil {
+				return nil, err
+			}
 		}
 		op := "$in"
 		if c.Not {
@@ -248,7 +563,14 @@ func mongoCond(n Node) (bson.D, error) {
 		}
 		return bson.D{{Key: c.Column, Value: bson.D{{Key: op, Value: vals}}}}, nil
 	case Range:
-		lo, hi := mongoValue(c.Lo), mongoValue(c.Hi)
+		lo, err := bsonValue(c.Lo)
+		if err != nil {
+			return nil, err
+		}
+		hi, err := bsonValue(c.Hi)
+		if err != nil {
+			return nil, err
+		}
 		inner := bson.D{{Key: "$gte", Value: lo}, {Key: "$lte", Value: hi}}
 		if c.Not {
 			return bson.D{{Key: "$or", Value: bson.A{
@@ -335,8 +657,4 @@ func likeRegex(v any) (string, error) {
 	}
 	b.WriteString("$")
 	return b.String(), nil
-}
-
-func mongoValue(v any) any {
-	return bsonValue(v)
 }

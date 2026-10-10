@@ -52,7 +52,7 @@ func (q Query[M]) WithExists[R any](rel Relation[M, R], into Column[M, bool], sc
 	sub := rel.correlate(chain(scopes)).forAggregate()
 	return q.AddSelectAs(into, Scalar[M, bool]{f: func(b *SQL) {
 		b.Write("EXISTS (")
-		sub.renderSelect(b, constSelect("1"))
+		sub.renderSelect(b, selectOne)
 		b.Write(")")
 	}})
 }
@@ -202,15 +202,17 @@ type HasManyRel[M, R any, K comparable] struct {
 
 // HasMany: parent M has many R where R.foreign = M.local.
 //
-//	var UserPosts = orm.HasMany(Posts.Table, Users.ID, Posts.UserID,
+//	var UserPosts = orm.HasMany(Users.ID, Posts.UserID,
 //		func(u *User, ps []Post) { u.Posts = ps })
-func HasMany[M, R any, K comparable](related *Table[R], local Column[M, K], foreign Column[R, K], set func(*M, []R)) *HasManyRel[M, R, K] {
-	return &HasManyRel[M, R, K]{hasBase[M, R, K]{related: related, local: local, foreign: foreign}, set}
+//
+// The related table is foreign's, so it cannot disagree with the columns.
+func HasMany[M, R any, K comparable](local Column[M, K], foreign Column[R, K], set func(*M, []R)) *HasManyRel[M, R, K] {
+	return &HasManyRel[M, R, K]{hasBase[M, R, K]{related: foreign.table, local: local, foreign: foreign}, set}
 }
 
 // MorphMany: parent M has many polymorphic R (R.morphID = M.local AND R.morphType = M's alias).
-func MorphMany[M, R any, K comparable](related *Table[R], local Column[M, K], morphID Column[R, K], morphType Column[R, string], set func(*M, []R)) *HasManyRel[M, R, K] {
-	r := HasMany(related, local, morphID, set)
+func MorphMany[M, R any, K comparable](local Column[M, K], morphID Column[R, K], morphType Column[R, string], set func(*M, []R)) *HasManyRel[M, R, K] {
+	r := HasMany(local, morphID, set)
 	r.morphType = &morphType
 	return r
 }
@@ -274,12 +276,12 @@ type HasOneRel[M, R any, K comparable] struct {
 	better func(a, b *R) bool // ofMany: whether a beats b
 }
 
-func HasOne[M, R any, K comparable](related *Table[R], local Column[M, K], foreign Column[R, K], set func(*M, *R)) *HasOneRel[M, R, K] {
-	return &HasOneRel[M, R, K]{related: related, local: local, foreign: foreign, set: set}
+func HasOne[M, R any, K comparable](local Column[M, K], foreign Column[R, K], set func(*M, *R)) *HasOneRel[M, R, K] {
+	return &HasOneRel[M, R, K]{related: foreign.table, local: local, foreign: foreign, set: set}
 }
 
-func MorphOne[M, R any, K comparable](related *Table[R], local Column[M, K], morphID Column[R, K], morphType Column[R, string], set func(*M, *R)) *HasOneRel[M, R, K] {
-	r := HasOne(related, local, morphID, set)
+func MorphOne[M, R any, K comparable](local Column[M, K], morphID Column[R, K], morphType Column[R, string], set func(*M, *R)) *HasOneRel[M, R, K] {
+	r := HasOne(local, morphID, set)
 	r.morphType = &morphType
 	return r
 }
@@ -340,8 +342,8 @@ type BelongsToRel[M, R any, K comparable] struct {
 }
 
 // BelongsTo: child M points at one R where M.foreign = R.owner.
-func BelongsTo[M, R any, K comparable](related *Table[R], foreign Column[M, K], owner Column[R, K], set func(*M, *R)) *BelongsToRel[M, R, K] {
-	return &BelongsToRel[M, R, K]{related: related, foreign: foreign, owner: owner, set: set}
+func BelongsTo[M, R any, K comparable](foreign Column[M, K], owner Column[R, K], set func(*M, *R)) *BelongsToRel[M, R, K] {
+	return &BelongsToRel[M, R, K]{related: owner.table, foreign: foreign, owner: owner, set: set}
 }
 
 // WithDefault supplies a model when the owner is missing (withDefault()).
@@ -436,15 +438,15 @@ type BelongsToManyRel[M, R, P any, K, RK comparable] struct {
 
 // BelongsToMany: M and R are linked through pivot rows P where
 // P.pivotParent = M.parentKey and P.pivotRelated = R.relatedKey.
-// The pivot is a regular (generated) model, so pivot columns are typed.
+// The pivot is a regular (generated) model, so pivot columns are typed;
+// the related and pivot tables are their columns' tables.
 func BelongsToMany[M, R, P any, K, RK comparable](
-	related *Table[R], pivot *Table[P],
 	parentKey Column[M, K], pivotParent Column[P, K],
 	relatedKey Column[R, RK], pivotRelated Column[P, RK],
 	set func(*M, []R),
 ) *BelongsToManyRel[M, R, P, K, RK] {
 	return &BelongsToManyRel[M, R, P, K, RK]{
-		related: related, pivot: pivot, parentKey: parentKey, relatedKey: relatedKey,
+		related: relatedKey.table, pivot: pivotParent.table, parentKey: parentKey, relatedKey: relatedKey,
 		pivotParent: pivotParent, pivotRelated: pivotRelated, set: set,
 	}
 }
@@ -452,25 +454,23 @@ func BelongsToMany[M, R, P any, K, RK comparable](
 // MorphToMany: polymorphic many-to-many from the owning side (Post -> Tags
 // via taggables(taggable_id, taggable_type, tag_id)).
 func MorphToMany[M, R, P any, K, RK comparable](
-	related *Table[R], pivot *Table[P],
 	parentKey Column[M, K], pivotMorphID Column[P, K], pivotMorphType Column[P, string],
 	relatedKey Column[R, RK], pivotRelated Column[P, RK],
 	set func(*M, []R),
 ) *BelongsToManyRel[M, R, P, K, RK] {
-	r := BelongsToMany(related, pivot, parentKey, pivotMorphID, relatedKey, pivotRelated, set)
+	r := BelongsToMany(parentKey, pivotMorphID, relatedKey, pivotRelated, set)
 	r.pivotType, r.typeValue = &pivotMorphType, parentKey.table.morphAlias()
 	return r
 }
 
 // MorphedByMany: the inverse (Tag -> Posts via taggables).
 func MorphedByMany[M, R, P any, K, RK comparable](
-	related *Table[R], pivot *Table[P],
 	parentKey Column[M, K], pivotParent Column[P, K],
 	relatedKey Column[R, RK], pivotMorphID Column[P, RK], pivotMorphType Column[P, string],
 	set func(*M, []R),
 ) *BelongsToManyRel[M, R, P, K, RK] {
-	r := BelongsToMany(related, pivot, parentKey, pivotParent, relatedKey, pivotMorphID, set)
-	r.pivotType, r.typeValue = &pivotMorphType, related.morphAlias()
+	r := BelongsToMany(parentKey, pivotParent, relatedKey, pivotMorphID, set)
+	r.pivotType, r.typeValue = &pivotMorphType, relatedKey.table.morphAlias()
 	return r
 }
 
@@ -754,15 +754,20 @@ type HasManyThroughRel[M, T, R any, K, TK comparable] struct {
 
 // HasManyThrough: M -> T (T.firstKey = M.localKey) -> R (R.secondKey = T.secondLocal).
 //
-//	var CountryPosts = orm.HasManyThrough(Posts.Table, Users.Table,
+//	var CountryPosts = orm.HasManyThrough(
 //		Countries.ID, Users.CountryID, Users.ID, Posts.UserID, set)
 func HasManyThrough[M, T, R any, K, TK comparable](
-	related *Table[R], through *Table[T],
 	localKey Column[M, K], firstKey Column[T, K],
 	secondLocal Column[T, TK], secondKey Column[R, TK],
 	set func(*M, []R),
 ) *HasManyThroughRel[M, T, R, K, TK] {
-	return &HasManyThroughRel[M, T, R, K, TK]{throughBase[M, T, R, K, TK]{related, through, localKey, firstKey, secondLocal, secondKey}, set}
+	return &HasManyThroughRel[M, T, R, K, TK]{through(localKey, firstKey, secondLocal, secondKey), set}
+}
+
+// through is the shared part of the through relations; the tables are
+// their key columns' tables.
+func through[M, T, R any, K, TK comparable](localKey Column[M, K], firstKey Column[T, K], secondLocal Column[T, TK], secondKey Column[R, TK]) throughBase[M, T, R, K, TK] {
+	return throughBase[M, T, R, K, TK]{secondKey.table, firstKey.table, localKey, firstKey, secondLocal, secondKey}
 }
 
 func (r *HasManyThroughRel[M, T, R, K, TK]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R]) Query[R]) error {
@@ -787,12 +792,11 @@ type HasOneThroughRel[M, T, R any, K, TK comparable] struct {
 }
 
 func HasOneThrough[M, T, R any, K, TK comparable](
-	related *Table[R], through *Table[T],
 	localKey Column[M, K], firstKey Column[T, K],
 	secondLocal Column[T, TK], secondKey Column[R, TK],
 	set func(*M, *R),
 ) *HasOneThroughRel[M, T, R, K, TK] {
-	return &HasOneThroughRel[M, T, R, K, TK]{throughBase[M, T, R, K, TK]{related, through, localKey, firstKey, secondLocal, secondKey}, set}
+	return &HasOneThroughRel[M, T, R, K, TK]{through(localKey, firstKey, secondLocal, secondKey), set}
 }
 
 func (r *HasOneThroughRel[M, T, R, K, TK]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R]) Query[R]) error {

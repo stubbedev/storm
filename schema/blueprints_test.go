@@ -21,12 +21,12 @@ func flightsBlueprint(t *Blueprint) {
 }
 
 func alterBlueprint(t *Blueprint) {
-	t.String("gate", 10).Nullable().After("code")
+	t.String("gate", 10).Nullable()
 	t.String("name", 200).Change()
 	t.RenameColumn("notes", "remarks")
 	t.DropColumn("ref")
 	t.RenameIndex("flights_code_unique", "flights_code_uq")
-	t.DropForeign("airline_id")
+	t.DropForeignOn("airline_id")
 	t.ForeignID("airline_id").Nullable().Change()
 	t.Foreign("airline_id").References("id").On("carriers").NullOnDelete()
 }

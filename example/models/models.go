@@ -40,10 +40,11 @@ type User struct {
 	DeletedAt *time.Time         `db:"deleted_at"`
 
 	// Virtual columns: filled by WithCount / WithSum / AddSelectAs.
-	PostsCount      int64  `db:"posts_count,virtual"`
-	PostViews       int64  `db:"post_views,virtual"`
-	HasAvatar       bool   `db:"has_avatar,virtual"`
-	LatestPostTitle string `db:"latest_post_title,virtual"`
+	PostsCount      int64   `db:"posts_count,virtual"`
+	PostViews       int64   `db:"post_views,virtual"`
+	HasAvatar       bool    `db:"has_avatar,virtual"`
+	LatestPostTitle string  `db:"latest_post_title,virtual"`
+	AvgPostViews    float64 `db:"avg_post_views,virtual"`
 
 	Country    *Country
 	Posts      []Post

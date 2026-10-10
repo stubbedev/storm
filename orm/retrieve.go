@@ -142,7 +142,7 @@ func (q Query[M]) Exists(ctx context.Context) (bool, error) {
 	}
 	q = q.prepared()
 	q.extras, q.eager = nil, nil
-	rows, err := q.Limit(1).query(ctx, func(b *SQL) { q.Limit(1).renderSelect(b, constSelect("1")) })
+	rows, err := q.Limit(1).query(ctx, func(b *SQL) { q.Limit(1).renderSelect(b, selectOne) })
 	if err != nil {
 		return false, err
 	}
@@ -162,7 +162,7 @@ func (q Query[M]) Count(ctx context.Context) (int64, error) {
 	q = q.prepared()
 	if len(q.groups) > 0 || q.distinct || len(q.unions) > 0 {
 		inner := q.forAggregate()
-		return scalarOf[int64](ctx, q, func(b *SQL) {
+		return scalarOn[int64](ctx, q.connName(), func(b *SQL) {
 			b.Write("SELECT COUNT(*) FROM (")
 			inner.renderSelect(b, nil)
 			b.Write(") AS ")
@@ -289,22 +289,7 @@ func (q Query[M]) forAggregate() Query[M] {
 
 func aggregate[V, M any](ctx context.Context, q Query[M], e AnyExpr) (V, error) {
 	q = q.prepared().forAggregate()
-	return scalarOf[V](ctx, q, func(b *SQL) { q.renderSelect(b, e.build) })
-}
-
-func scalarOf[V, M any](ctx context.Context, q Query[M], f frag) (V, error) {
-	var v V
-	rows, err := q.query(ctx, f)
-	if err != nil {
-		return v, err
-	}
-	defer closeRows(rows)
-	if rows.Next() {
-		if err := rows.Scan(nullable{&v}); err != nil {
-			return v, err
-		}
-	}
-	return v, rows.Err()
+	return scalarOn[V](ctx, q.connName(), func(b *SQL) { q.renderSelect(b, e.build) })
 }
 
 // Explain returns the database's query plan for the query as one map of
@@ -335,48 +320,86 @@ func (q Query[M]) Explain(ctx context.Context) ([]map[string]any, error) {
 // Chunk processes results in pages of size (ordered queries only).
 // Return ErrStop from fn to stop early.
 func (q Query[M]) Chunk(ctx context.Context, size int, fn func([]M) error) error {
-	for page := 1; ; page++ {
-		models, err := q.ForPage(page, size).Get(ctx)
+	return chunkPages(size, func(limit, offset int) ([]M, error) { return q.Limit(limit).Offset(offset).Get(ctx) }, fn)
+}
+
+// ChunkByID pages by primary key, safe when fn modifies the rows it gets.
+func (q Query[M]) ChunkByID(ctx context.Context, size int, fn func([]M) error) error {
+	return eachChunk(q.chunksByID(ctx, size), fn)
+}
+
+// chunkPages hands fn the pages of size rows that page fetches by offset,
+// until a short page.
+func chunkPages[T any](size int, page func(limit, offset int) ([]T, error), fn func([]T) error) error {
+	if size < 1 {
+		return fmt.Errorf("orm: chunk size must be at least 1, got %d", size)
+	}
+	for offset := 0; ; offset += size {
+		items, err := page(size, offset)
 		if err != nil {
 			return err
 		}
-		if len(models) > 0 {
-			if err := fn(models); err != nil {
+		if len(items) > 0 {
+			if err := fn(items); err != nil {
 				return ignoreStop(err)
 			}
 		}
-		if len(models) < size {
+		if len(items) < size {
 			return nil
 		}
 	}
 }
 
-// ChunkByID pages by primary key, safe when fn modifies the rows it gets.
-func (q Query[M]) ChunkByID(ctx context.Context, size int, fn func([]M) error) error {
-	for models, err := range q.chunksByID(ctx, size) {
+func eachChunk[T any](chunks iter.Seq2[[]T, error], fn func([]T) error) error {
+	for items, err := range chunks {
 		if err != nil {
 			return err
 		}
-		if err := fn(models); err != nil {
+		if err := fn(items); err != nil {
 			return ignoreStop(err)
 		}
 	}
 	return nil
 }
 
-// Lazy streams models chunk by chunk (lazyById), with eager loads per chunk:
-//
-//	for u, err := range Users.Query().With(UserPosts).Lazy(ctx, 500) { ... }
-func (q Query[M]) Lazy(ctx context.Context, size int) iter.Seq2[M, error] {
-	return func(yield func(M, error) bool) {
-		for models, err := range q.chunksByID(ctx, size) {
+// keysetChunks pages by a key column in ascending order: fetch returns the
+// size rows after the given key (nil: from the start), key reads a row's
+// key, so rows changed or deleted by the consumer never shift the pages.
+func keysetChunks[T any](size int, fetch func(after any) ([]T, error), key func(T) (any, error)) iter.Seq2[[]T, error] {
+	return func(yield func([]T, error) bool) {
+		if size < 1 {
+			yield(nil, fmt.Errorf("orm: chunk size must be at least 1, got %d", size))
+			return
+		}
+		var after any
+		for {
+			items, err := fetch(after)
 			if err != nil {
-				var zero M
+				yield(nil, err)
+				return
+			}
+			if len(items) == 0 || !yield(items, nil) || len(items) < size {
+				return
+			}
+			if after, err = key(items[len(items)-1]); err != nil {
+				yield(nil, err)
+				return
+			}
+		}
+	}
+}
+
+// flatten streams the items of chunks one at a time.
+func flatten[T any](chunks iter.Seq2[[]T, error]) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		for items, err := range chunks {
+			if err != nil {
+				var zero T
 				yield(zero, err)
 				return
 			}
-			for _, m := range models {
-				if !yield(m, nil) {
+			for _, it := range items {
+				if !yield(it, nil) {
 					return
 				}
 			}
@@ -384,25 +407,21 @@ func (q Query[M]) Lazy(ctx context.Context, size int) iter.Seq2[M, error] {
 	}
 }
 
+// Lazy streams models chunk by chunk (lazyById), with eager loads per chunk:
+//
+//	for u, err := range Users.Query().With(UserPosts).Lazy(ctx, 500) { ... }
+func (q Query[M]) Lazy(ctx context.Context, size int) iter.Seq2[M, error] {
+	return flatten(q.chunksByID(ctx, size))
+}
+
 func (q Query[M]) chunksByID(ctx context.Context, size int) iter.Seq2[[]M, error] {
-	return func(yield func([]M, error) bool) {
-		var last any
-		for {
-			page := q.Reorder(Order[M]{f: func(b *SQL) { q.keyCol()(b); b.Write(" ASC") }}).Limit(size)
-			if last != nil {
-				page = page.Where(Scalar[M, any]{f: q.keyCol()}.Gt(last))
-			}
-			models, err := page.Get(ctx)
-			if err != nil {
-				yield(nil, err)
-				return
-			}
-			if len(models) == 0 || !yield(models, nil) || len(models) < size {
-				return
-			}
-			last = q.table.key(&models[len(models)-1])
+	page := q.Reorder(Order[M]{f: func(b *SQL) { q.keyCol()(b); b.Write(" ASC") }}).Limit(size)
+	return keysetChunks(size, func(after any) ([]M, error) {
+		if after == nil {
+			return page.Get(ctx)
 		}
-	}
+		return page.Where(Scalar[M, any]{f: q.keyCol()}.Gt(after)).Get(ctx)
+	}, func(m M) (any, error) { return q.table.key(&m), nil })
 }
 
 // ChunkWhile processes results ordered by primary key, splitting into a
@@ -484,13 +503,18 @@ func ignoreStop(err error) error {
 // Pagination
 // ---------------------------------------------------------------------------
 
-// Page is a length-aware page (paginate()).
+// Page is a length-aware page (paginate()), shaped like Laravel's JSON.
+// From and To are the 1-based positions of the first and last item in the
+// whole result, both 0 on an empty page.
 type Page[M any] struct {
 	Items       []M   `json:"data"`
 	Total       int64 `json:"total"`
 	PerPage     int   `json:"per_page"`
 	CurrentPage int   `json:"current_page"`
 	LastPage    int   `json:"last_page"`
+	From        int64 `json:"from"`
+	To          int64 `json:"to"`
+	HasMore     bool  `json:"has_more"`
 }
 
 // SimplePage is a page without a total count (simplePaginate()).
@@ -508,25 +532,61 @@ type CursorPage[M any] struct {
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
+// Paginate returns page (from 1) of perPage models with the total count;
+// it works on every engine, document stores included.
 func (q Query[M]) Paginate(ctx context.Context, perPage, page int) (Page[M], error) {
-	total, err := q.Count(ctx)
-	if err != nil {
-		return Page[M]{}, err
-	}
-	items, err := q.ForPage(page, perPage).Get(ctx)
-	return Page[M]{
-		Items: items, Total: total, PerPage: perPage, CurrentPage: page,
-		LastPage: max(1, int((total+int64(perPage)-1)/int64(perPage))),
-	}, err
+	return paginate(perPage, page, func() (int64, error) { return q.Count(ctx) },
+		func(limit, offset int) ([]M, error) { return q.Limit(limit).Offset(offset).Get(ctx) })
 }
 
+// SimplePaginate is Paginate without the count query: it only reports
+// whether another page follows.
 func (q Query[M]) SimplePaginate(ctx context.Context, perPage, page int) (SimplePage[M], error) {
-	items, err := q.Offset(max(page-1, 0) * perPage).Limit(perPage + 1).Get(ctx)
+	return simplePaginate(perPage, page, func(limit, offset int) ([]M, error) { return q.Limit(limit).Offset(offset).Get(ctx) })
+}
+
+func checkPage(perPage, page int) error {
+	if perPage < 1 || page < 1 {
+		return fmt.Errorf("orm: paginate needs perPage and page of at least 1, got %d and %d", perPage, page)
+	}
+	return nil
+}
+
+func paginate[T any](perPage, page int, count func() (int64, error), get func(limit, offset int) ([]T, error)) (Page[T], error) {
+	if err := checkPage(perPage, page); err != nil {
+		return Page[T]{}, err
+	}
+	total, err := count()
+	if err != nil {
+		return Page[T]{}, err
+	}
+	offset := (page - 1) * perPage
+	items, err := get(perPage, offset)
+	if err != nil {
+		return Page[T]{}, err
+	}
+	last := max(1, int((total+int64(perPage)-1)/int64(perPage)))
+	p := Page[T]{Items: items, Total: total, PerPage: perPage, CurrentPage: page, LastPage: last, HasMore: page < last}
+	if len(items) > 0 {
+		p.From = int64(offset) + 1
+		p.To = int64(offset + len(items))
+	}
+	return p, nil
+}
+
+func simplePaginate[T any](perPage, page int, get func(limit, offset int) ([]T, error)) (SimplePage[T], error) {
+	if err := checkPage(perPage, page); err != nil {
+		return SimplePage[T]{}, err
+	}
+	items, err := get(perPage+1, (page-1)*perPage)
+	if err != nil {
+		return SimplePage[T]{}, err
+	}
 	more := len(items) > perPage
 	if more {
 		items = items[:perPage]
 	}
-	return SimplePage[M]{Items: items, PerPage: perPage, CurrentPage: page, HasMore: more}, err
+	return SimplePage[T]{Items: items, PerPage: perPage, CurrentPage: page, HasMore: more}, nil
 }
 
 // CursorPaginate pages by the values of the ORDER BY columns (keyset
@@ -538,69 +598,115 @@ func (q Query[M]) CursorPaginate(ctx context.Context, perPage int, cursor string
 		orders = []Order[M]{{f: func(b *SQL) { pk.build(b); b.Write(" ASC") }, col: pk}}
 		q = q.Reorder(orders...)
 	}
-	for _, o := range orders {
+	terms := make([]keysetTerm, len(orders))
+	for i, o := range orders {
 		if o.col == nil {
 			return CursorPage[M]{}, errors.New("orm: CursorPaginate needs column orders")
 		}
+		terms[i] = keysetTerm{e: o.col, col: o.col.Name(), desc: o.desc}
 	}
+	return cursorPaginate(perPage, cursor, terms,
+		func(i int, raw json.RawMessage) (any, error) { return orders[i].col.decode(raw) },
+		func(after *Cond[M], limit int) ([]M, error) {
+			page := q.Limit(limit)
+			if after != nil {
+				page = page.Where(*after)
+			}
+			return page.Get(ctx)
+		},
+		func(m M, i int) any { return orders[i].col.anyValue(&m) })
+}
+
+// keysetTerm is one ORDER BY column of a keyset (cursor) page.
+type keysetTerm struct {
+	e    AnyExpr
+	col  string
+	desc bool
+}
+
+// cursorPaginate fetches perPage items after cursor in the order of terms:
+// decode reads term i's value back from the cursor, fetch runs the page
+// query (after is nil on the first page), value reads term i from an item.
+func cursorPaginate[T, M any](perPage int, cursor string, terms []keysetTerm,
+	decode func(i int, raw json.RawMessage) (any, error),
+	fetch func(after *Cond[M], limit int) ([]T, error),
+	value func(item T, i int) any,
+) (CursorPage[T], error) {
+	if perPage < 1 {
+		return CursorPage[T]{}, fmt.Errorf("orm: CursorPaginate needs perPage of at least 1, got %d", perPage)
+	}
+	var after *Cond[M]
 	if cursor != "" {
-		cond, err := cursorCond(orders, cursor)
+		vals, err := decodeCursor(cursor, len(terms), decode)
 		if err != nil {
-			return CursorPage[M]{}, err
+			return CursorPage[T]{}, err
 		}
-		q = q.Where(cond)
+		c := keysetAfter[M](terms, vals)
+		after = &c
 	}
-	items, err := q.Limit(perPage + 1).Get(ctx)
+	items, err := fetch(after, perPage+1)
 	if err != nil {
-		return CursorPage[M]{}, err
+		return CursorPage[T]{}, err
 	}
-	page := CursorPage[M]{Items: items, PerPage: perPage}
-	if len(items) > perPage {
-		page.Items = items[:perPage]
-		last := &items[perPage-1]
-		vals := make([]any, len(orders))
-		for i, o := range orders {
-			vals[i] = o.col.anyValue(last)
-		}
-		raw, err := json.Marshal(vals)
-		if err != nil {
-			return page, err
-		}
-		page.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
+	page := CursorPage[T]{Items: items, PerPage: perPage}
+	if len(items) <= perPage {
+		return page, nil
 	}
+	page.Items = items[:perPage]
+	vals := make([]any, len(terms))
+	for i := range terms {
+		vals[i] = value(items[perPage-1], i)
+	}
+	raw, err := json.Marshal(vals)
+	if err != nil {
+		return CursorPage[T]{}, fmt.Errorf("orm: encoding the next cursor: %w", err)
+	}
+	page.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
 	return page, nil
 }
 
-// cursorCond builds (a > x) OR (a = x AND b > y) ... respecting directions.
-func cursorCond[M any](orders []Order[M], cursor string) (Cond[M], error) {
+func decodeCursor(cursor string, n int, decode func(i int, raw json.RawMessage) (any, error)) ([]any, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil {
-		return Cond[M]{}, fmt.Errorf("orm: bad cursor: %w", err)
+		return nil, fmt.Errorf("orm: bad cursor: %w", err)
 	}
 	var parts []json.RawMessage
-	if err := json.Unmarshal(raw, &parts); err != nil || len(parts) != len(orders) {
-		return Cond[M]{}, errors.New("orm: bad cursor")
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return nil, fmt.Errorf("orm: bad cursor: %w", err)
 	}
-	vals := make([]any, len(parts))
+	if len(parts) != n {
+		return nil, fmt.Errorf("orm: bad cursor: %d values for %d order columns", len(parts), n)
+	}
+	vals := make([]any, n)
 	for i, p := range parts {
-		if vals[i], err = orders[i].col.decode(p); err != nil {
-			return Cond[M]{}, fmt.Errorf("orm: bad cursor: %w", err)
+		if vals[i], err = decode(i, p); err != nil {
+			return nil, fmt.Errorf("orm: bad cursor: %w", err)
 		}
 	}
-	var ors []Cond[M]
-	for i := range orders {
-		var ands []Cond[M]
+	return vals, nil
+}
+
+// keysetAfter is the condition for rows after vals in the order of terms —
+// (a > x) OR (a = x AND b > y) ..., with < for descending terms — in its
+// SQL and document-store forms.
+func keysetAfter[M any](terms []keysetTerm, vals []any) Cond[M] {
+	ors := make([]Cond[M], len(terms))
+	for i := range terms {
+		ands := make([]Cond[M], i+1)
 		for j := 0; j <= i; j++ {
 			op := "="
 			if j == i {
-				op = map[bool]string{false: ">", true: "<"}[orders[j].desc]
+				op = map[bool]string{false: ">", true: "<"}[terms[j].desc]
 			}
-			col, v := orders[j].col, vals[j]
-			ands = append(ands, Cond[M]{f: func(b *SQL) { col.build(b); b.Write(" ", op, " "); b.Arg(v) }})
+			t, v := terms[j], vals[j]
+			ands[j] = Cond[M]{
+				f:  func(b *SQL) { t.e.build(b); b.Write(" ", op, " "); b.Arg(v) },
+				ir: Field{Column: t.col, Op: op, Value: v},
+			}
 		}
-		ors = append(ors, And(ands...))
+		ors[i] = And(ands...)
 	}
-	return Or(ors...), nil
+	return Or(ors...)
 }
 
 func decodeInto(raw json.RawMessage, ptr any) (any, error) {

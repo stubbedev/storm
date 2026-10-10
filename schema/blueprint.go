@@ -11,10 +11,16 @@
 //	})
 //
 // DDL is compiled by a grammar chosen from the connection's dialect, so the
-// same blueprint produces SQLite, Postgres or MySQL statements.
+// same blueprint produces SQLite, Postgres, MySQL, MariaDB, DuckDB or
+// ClickHouse statements. A blueprint the engine cannot express fails with an
+// *UnsupportedError naming the engine and the operation; nothing is
+// approximated.
 package schema
 
 import (
+	"cmp"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/stubbedev/eloquent-go/orm"
@@ -23,7 +29,6 @@ import (
 // Blueprint collects column definitions and commands for one table.
 type Blueprint struct {
 	table     string
-	create    bool
 	ifNot     bool
 	temporary bool
 	engine    string
@@ -32,10 +37,74 @@ type Blueprint struct {
 	comment   string
 	columns   []*Column
 	commands  []*command
+	sorting   sorting
+	errs      []error
+}
+
+// sorting holds the ClickHouse MergeTree storage clauses.
+type sorting struct {
+	orderBy     []string
+	unsorted    bool
+	partitionBy string
+	ttl         string
+	settings    []setting
+}
+
+type setting struct {
+	name  string
+	value any
+}
+
+func (s sorting) declared() bool {
+	return len(s.orderBy) > 0 || s.unsorted || s.partitionBy != "" || s.ttl != "" || len(s.settings) > 0
+}
+
+type commandKind int
+
+const (
+	cmdPrimary commandKind = iota
+	cmdUnique
+	cmdIndex
+	cmdFullText
+	cmdSpatial
+	cmdHnsw
+	cmdForeign
+	cmdDropColumn
+	cmdRenameColumn
+	cmdRenameIndex
+	cmdDropIndex
+	cmdDropForeign
+	cmdDropPrimary
+)
+
+func (k commandKind) String() string {
+	return [...]string{
+		cmdPrimary:      "add a primary key",
+		cmdUnique:       "create a unique index",
+		cmdIndex:        "create an index",
+		cmdFullText:     "create a full text index",
+		cmdSpatial:      "create a spatial index",
+		cmdHnsw:         "create an hnsw vector index",
+		cmdForeign:      "add a foreign key",
+		cmdDropColumn:   "drop a column",
+		cmdRenameColumn: "rename a column",
+		cmdRenameIndex:  "rename an index",
+		cmdDropIndex:    "drop an index",
+		cmdDropForeign:  "drop a foreign key",
+		cmdDropPrimary:  "drop the primary key",
+	}[k]
+}
+
+func (k commandKind) createsIndex() bool {
+	switch k {
+	case cmdUnique, cmdIndex, cmdFullText, cmdSpatial, cmdHnsw:
+		return true
+	}
+	return false
 }
 
 type command struct {
-	kind    string // primary, unique, index, fullText, spatial, foreign, dropColumn, renameColumn, renameIndex, dropIndex, dropForeign, dropPrimary
+	kind    commandKind
 	index   *Index
 	columns []string
 	from    string
@@ -71,12 +140,17 @@ type Column struct {
 	Identity        string // "BY DEFAULT" or "ALWAYS" (Postgres identity columns)
 	Changed         bool   // modify an existing column
 
-	bp       *Blueprint
-	refTable string // set by ForeignIDFor
+	bp        *Blueprint
+	refTable  string // set by ForeignIDFor
+	refColumn string // set by ForeignIDFor
 }
 
 // Expr is a raw SQL default value, e.g. schema.Expr("CURRENT_TIMESTAMP").
 type Expr string
+
+// currentTimestamp is the default UseCurrent sets; each grammar renders
+// its engine's spelling.
+type currentTimestamp struct{}
 
 func (b *Blueprint) add(name, typ string) *Column {
 	c := &Column{Name: name, Type: typ, bp: b}
@@ -84,15 +158,52 @@ func (b *Blueprint) add(name, typ string) *Column {
 	return c
 }
 
+func (b *Blueprint) fail(err error) { b.errs = append(b.errs, err) }
+
+func (b *Blueprint) err() error { return errors.Join(b.errs...) }
+
 // ---------------------------------------------------------------------------
 // Table options
 // ---------------------------------------------------------------------------
 
-func (b *Blueprint) Engine(engine string)   { b.engine = engine }   // MySQL
-func (b *Blueprint) Charset(charset string) { b.charset = charset } // MySQL
-func (b *Blueprint) Collation(coll string)  { b.collation = coll }  // MySQL
-func (b *Blueprint) Comment(comment string) { b.comment = comment } // MySQL / Postgres
-func (b *Blueprint) Temporary()             { b.temporary = true }
+// Engine sets the table engine: MySQL's (InnoDB, ...) or ClickHouse's
+// (MergeTree by default; ReplacingMergeTree(ver), Memory, Log, ...).
+func (b *Blueprint) Engine(engine string) { b.engine = engine }
+
+// Charset sets the MySQL table character set.
+func (b *Blueprint) Charset(charset string) { b.charset = charset }
+
+// Collation sets the MySQL table collation.
+func (b *Blueprint) Collation(coll string) { b.collation = coll }
+
+// Comment sets the table comment.
+func (b *Blueprint) Comment(comment string) { b.comment = comment }
+
+// Temporary creates a temporary table.
+func (b *Blueprint) Temporary() { b.temporary = true }
+
+// OrderBy sets a ClickHouse MergeTree table's sorting key (ORDER BY). It
+// defaults to the primary key.
+func (b *Blueprint) OrderBy(column string, more ...string) {
+	b.sorting.orderBy = append([]string{column}, more...)
+}
+
+// Unsorted declares a ClickHouse MergeTree table without a sorting key
+// (ORDER BY tuple()).
+func (b *Blueprint) Unsorted() { b.sorting.unsorted = true }
+
+// PartitionBy sets a ClickHouse MergeTree partition key expression, e.g.
+// "toYYYYMM(created_at)".
+func (b *Blueprint) PartitionBy(expr string) { b.sorting.partitionBy = expr }
+
+// TTL sets a ClickHouse MergeTree table TTL expression, e.g.
+// "created_at + INTERVAL 1 MONTH".
+func (b *Blueprint) TTL(expr string) { b.sorting.ttl = expr }
+
+// Setting adds a ClickHouse table setting (SETTINGS name = value), in call order.
+func (b *Blueprint) Setting(name string, value any) {
+	b.sorting.settings = append(b.sorting.settings, setting{name, value})
+}
 
 // ---------------------------------------------------------------------------
 // Column types
@@ -202,7 +313,7 @@ func (b *Blueprint) Enum(name string, allowed ...string) *Column {
 	return c
 }
 
-// Set is MySQL's SET type (a varchar elsewhere).
+// Set is MySQL's SET type; other engines refuse it, as Laravel does.
 func (b *Blueprint) Set(name string, allowed ...string) *Column {
 	c := b.add(name, TypeSet)
 	c.Allowed = allowed
@@ -218,7 +329,7 @@ func (b *Blueprint) Geometry(name string, subtype string, srid int) *Column {
 
 func (b *Blueprint) Geography(name string, subtype string, srid int) *Column {
 	c := b.add(name, TypeGeography)
-	c.Subtype, c.SRID = subtype, cmpOr(srid, 4326)
+	c.Subtype, c.SRID = subtype, cmp.Or(srid, 4326)
 	return c
 }
 
@@ -236,17 +347,41 @@ func (b *Blueprint) ForeignUUID(name string) *Column { return b.UUID(name) }
 func (b *Blueprint) ForeignULID(name string) *Column { return b.ULID(name) }
 
 // ForeignIDFor adds a key column referencing a model's table, typed after
-// its key: ForeignIDFor(Users.Table) adds user_id (foreignIdFor).
+// its key: ForeignIDFor(Users.Table) adds user_id (foreignIdFor), and
+// Constrained() then references the model's primary key column. Models with
+// manual keys have no known column type; declare their column explicitly.
 func (b *Blueprint) ForeignIDFor[M any](t *orm.Table[M], column ...string) *Column {
-	name := first(column, singular(t.Name)+"_"+cmpOr(t.PrimaryKey, "id"))
-	var c *Column
-	if t.KeyType == orm.KeyUUID {
-		c = b.ForeignUUID(name)
-	} else {
-		c = b.ForeignID(name)
+	if t.PrimaryKey == "" {
+		b.fail(fmt.Errorf("schema: ForeignIDFor(%s) on table %s: the model has no primary key to reference", t.Name, b.table))
 	}
-	c.refTable = t.Name
+	name := b.keyColumn(t.Name, t.PrimaryKey, column)
+	var c *Column
+	switch t.KeyType {
+	case orm.KeyAutoIncrement:
+		c = b.ForeignID(name)
+	case orm.KeyUUID:
+		c = b.ForeignUUID(name)
+	case orm.KeyULID:
+		c = b.ForeignULID(name)
+	default:
+		b.fail(fmt.Errorf("schema: ForeignIDFor(%s) on table %s: the model's key is set manually, so its column type is unknown; declare %s with its type and Constrained(%q, %q)",
+			t.Name, b.table, name, t.Name, t.PrimaryKey))
+		c = &Column{Name: name, bp: b}
+	}
+	c.refTable, c.refColumn = t.Name, t.PrimaryKey
 	return c
+}
+
+// keyColumn is the column given, or the one a model's key is stored in
+// elsewhere: user_id.
+func (b *Blueprint) keyColumn(table, primaryKey string, column []string) string {
+	if len(column) > 0 && column[0] != "" {
+		return column[0]
+	}
+	if primaryKey == "" {
+		b.fail(fmt.Errorf("schema: cannot name the key column for table %s on %s: it has no primary key; pass the column", table, b.table))
+	}
+	return singular(table) + "_" + primaryKey
 }
 
 // Timestamps adds nullable created_at and updated_at.
@@ -326,10 +461,10 @@ func (c *Column) AutoIncrement() *Column { c.IsAutoIncrement = true; return c }
 // From sets the starting value of an auto-incrementing column.
 func (c *Column) From(start int) *Column { c.StartingValue = start; return c }
 
-// StoredAs makes the column a stored generated column.
+// StoredAs makes the column a stored generated column (MATERIALIZED on ClickHouse).
 func (c *Column) StoredAs(expr string) *Column { c.StoredExpr = expr; return c }
 
-// VirtualAs makes the column a virtual generated column.
+// VirtualAs makes the column a virtual generated column (ALIAS on ClickHouse).
 func (c *Column) VirtualAs(expr string) *Column { c.VirtualExpr = expr; return c }
 
 // GeneratedAs makes the column a Postgres identity column (GENERATED BY DEFAULT AS IDENTITY).
@@ -338,14 +473,15 @@ func (c *Column) GeneratedAs() *Column { c.Identity = "BY DEFAULT"; return c }
 // Always makes an identity column GENERATED ALWAYS.
 func (c *Column) Always() *Column { c.Identity = "ALWAYS"; return c }
 
-// UseCurrent defaults the column to CURRENT_TIMESTAMP.
-func (c *Column) UseCurrent() *Column { return c.Default(Expr("CURRENT_TIMESTAMP")) }
+// UseCurrent defaults the column to the current timestamp.
+func (c *Column) UseCurrent() *Column { return c.Default(currentTimestamp{}) }
 
 // UseCurrentOnUpdate sets the column to CURRENT_TIMESTAMP on update (MySQL).
 func (c *Column) UseCurrentOnUpdate() *Column { c.OnUpdateNow = true; return c }
 
 // Change marks the definition as a modification of an existing column
-// (SQLite rebuilds the table, like Laravel).
+// (SQLite rebuilds the table, like Laravel). On Postgres an enum's CHECK
+// constraint, <table>_<column>_check, is replaced with the new values.
 func (c *Column) Change() *Column { c.Changed = true; return c }
 
 func (c *Column) Primary() *Column      { c.bp.Primary(c.Name); return c }
@@ -359,16 +495,22 @@ func (c *Column) HnswIndex(metric orm.VectorMetric) *Column {
 }
 
 // Constrained adds a foreign key on the column. The table defaults to the
-// one guessed from the column name (user_id -> users) or the model given to
-// ForeignIDFor; the column defaults to "id".
+// model given to ForeignIDFor, or is guessed from the column name
+// (category_id -> categories); the column defaults to the model's primary
+// key, or "id".
 func (c *Column) Constrained(tableAndColumn ...string) *Foreign {
-	table := first(tableAndColumn, c.refTable)
-	if table == "" {
-		table = strings.TrimSuffix(c.Name, "_id") + "s"
-	}
-	col := "id"
+	col := cmp.Or(c.refColumn, "id")
 	if len(tableAndColumn) > 1 {
 		col = tableAndColumn[1]
+	}
+	table := first(tableAndColumn, c.refTable)
+	if table == "" {
+		stem, ok := strings.CutSuffix(c.Name, "_"+col)
+		if !ok || stem == "" {
+			c.bp.fail(fmt.Errorf("schema: cannot guess the table %s.%s references: the name does not end in _%s; pass the table to Constrained",
+				c.bp.table, c.Name, col))
+		}
+		table = pluralize(stem)
 	}
 	return c.bp.Foreign(c.Name).References(col).On(table)
 }
@@ -381,7 +523,7 @@ func (c *Column) Constrained(tableAndColumn ...string) *Foreign {
 type Index struct {
 	IndexName string
 	Columns   []string
-	Algo      string // btree, hash, gin, gist, hnsw, ...
+	Algo      string // btree, hash, gin, gist, hnsw, ...; ClickHouse skip index type
 	Lang      string // full text language (Postgres)
 	VectorOp  string // pgvector operator class (vector_cosine_ops, ...)
 }
@@ -397,40 +539,53 @@ func vectorOpClass(m orm.VectorMetric) string {
 	}
 }
 
-func (i *Index) Name(name string) *Index      { i.IndexName = name; return i }
+func (i *Index) Name(name string) *Index { i.IndexName = name; return i }
+
+// Algorithm sets the index method: USING on Postgres, MySQL and DuckDB; the
+// data skipping index TYPE on ClickHouse (bloom_filter by default, or
+// minmax, set(100), ...).
 func (i *Index) Algorithm(algo string) *Index { i.Algo = algo; return i }
 func (i *Index) Language(lang string) *Index  { i.Lang = lang; return i }
 
-func (b *Blueprint) Primary(cols ...string) *Index      { return b.index("primary", cols) }
-func (b *Blueprint) Unique(cols ...string) *Index       { return b.index("unique", cols) }
-func (b *Blueprint) Index(cols ...string) *Index        { return b.index("index", cols) }
-func (b *Blueprint) FullText(cols ...string) *Index     { return b.index("fullText", cols) }
-func (b *Blueprint) SpatialIndex(cols ...string) *Index { return b.index("spatial", cols) }
+// Primary sets the primary key. On ClickHouse it is the MergeTree primary
+// key, which also becomes the sorting key unless OrderBy sets one.
+func (b *Blueprint) Primary(cols ...string) *Index { return b.index(cmdPrimary, "primary", cols) }
+
+func (b *Blueprint) Unique(cols ...string) *Index   { return b.index(cmdUnique, "unique", cols) }
+func (b *Blueprint) Index(cols ...string) *Index    { return b.index(cmdIndex, "index", cols) }
+func (b *Blueprint) FullText(cols ...string) *Index { return b.index(cmdFullText, "fulltext", cols) }
+
+func (b *Blueprint) SpatialIndex(cols ...string) *Index {
+	return b.index(cmdSpatial, "spatialindex", cols)
+}
 
 // HnswIndex builds a pgvector HNSW index over one vector column, making
 // Nearest ordering an index-backed search instead of a sequential scan.
 func (b *Blueprint) HnswIndex(column string, metric orm.VectorMetric) *Index {
-	idx := b.index("hnsw", []string{column})
+	idx := b.index(cmdHnsw, "hnsw", []string{column})
 	idx.Algo = "hnsw"
 	idx.VectorOp = vectorOpClass(metric)
 	return idx
 }
 
-func (b *Blueprint) index(kind string, cols []string) *Index {
-	idx := &Index{IndexName: indexName(b.table, kindSuffix(kind), cols), Columns: cols}
+func (b *Blueprint) index(kind commandKind, suffix string, cols []string) *Index {
+	if len(cols) == 0 {
+		b.fail(fmt.Errorf("schema: cannot %s on table %s without columns", kind, b.table))
+	}
+	idx := &Index{IndexName: indexName(b.table, suffix, cols), Columns: cols}
 	b.commands = append(b.commands, &command{kind: kind, index: idx, columns: cols})
 	return idx
 }
 
 // RenameIndex renames an index.
 func (b *Blueprint) RenameIndex(from, to string) {
-	b.commands = append(b.commands, &command{kind: "renameIndex", from: from, to: to})
+	b.commands = append(b.commands, &command{kind: cmdRenameIndex, from: from, to: to})
 }
 
 // Foreign starts a foreign key on cols.
 func (b *Blueprint) Foreign(cols ...string) *Foreign {
 	f := &Foreign{Columns: cols, Name: indexName(b.table, "foreign", cols)}
-	b.commands = append(b.commands, &command{kind: "foreign", foreign: f})
+	b.commands = append(b.commands, &command{kind: cmdForeign, foreign: f})
 	return f
 }
 
@@ -470,38 +625,74 @@ func (f *Foreign) InitiallyDeferred() *Foreign { f.Defer, f.InitDefer = true, tr
 // Alter commands
 // ---------------------------------------------------------------------------
 
-func (b *Blueprint) DropColumn(cols ...string) {
-	b.commands = append(b.commands, &command{kind: "dropColumn", columns: cols})
+func (b *Blueprint) DropColumn(column string, more ...string) {
+	b.commands = append(b.commands, &command{kind: cmdDropColumn, columns: append([]string{column}, more...)})
 }
 
 func (b *Blueprint) RenameColumn(from, to string) {
-	b.commands = append(b.commands, &command{kind: "renameColumn", from: from, to: to})
+	b.commands = append(b.commands, &command{kind: cmdRenameColumn, from: from, to: to})
 }
 
-// DropIndex drops an index by name, or by the columns it was created on.
-func (b *Blueprint) DropIndex(nameOrCols ...string)    { b.drop("dropIndex", "index", nameOrCols) }
-func (b *Blueprint) DropUnique(nameOrCols ...string)   { b.drop("dropIndex", "unique", nameOrCols) }
-func (b *Blueprint) DropFullText(nameOrCols ...string) { b.drop("dropIndex", "fulltext", nameOrCols) }
+// DropIndex drops the index named name (dropIndex('name')).
+func (b *Blueprint) DropIndex(name string) { b.dropNamed(cmdDropIndex, name) }
 
-func (b *Blueprint) DropSpatialIndex(nameOrCols ...string) {
-	b.drop("dropIndex", "spatialindex", nameOrCols)
+// DropIndexOn drops the index Index(columns...) created (dropIndex(['a', 'b'])).
+func (b *Blueprint) DropIndexOn(column string, more ...string) {
+	b.dropOn(cmdDropIndex, "index", column, more)
 }
 
-func (b *Blueprint) DropForeign(nameOrCols ...string) { b.drop("dropForeign", "foreign", nameOrCols) }
+// DropUnique drops the unique index named name.
+func (b *Blueprint) DropUnique(name string) { b.dropNamed(cmdDropIndex, name) }
+
+// DropUniqueOn drops the unique index Unique(columns...) created.
+func (b *Blueprint) DropUniqueOn(column string, more ...string) {
+	b.dropOn(cmdDropIndex, "unique", column, more)
+}
+
+// DropFullText drops the full text index named name.
+func (b *Blueprint) DropFullText(name string) { b.dropNamed(cmdDropIndex, name) }
+
+// DropFullTextOn drops the full text index FullText(columns...) created.
+func (b *Blueprint) DropFullTextOn(column string, more ...string) {
+	b.dropOn(cmdDropIndex, "fulltext", column, more)
+}
+
+// DropSpatialIndex drops the spatial index named name.
+func (b *Blueprint) DropSpatialIndex(name string) { b.dropNamed(cmdDropIndex, name) }
+
+// DropSpatialIndexOn drops the spatial index SpatialIndex(columns...) created.
+func (b *Blueprint) DropSpatialIndexOn(column string, more ...string) {
+	b.dropOn(cmdDropIndex, "spatialindex", column, more)
+}
+
+// DropForeign drops the foreign key named name.
+func (b *Blueprint) DropForeign(name string) { b.dropNamed(cmdDropForeign, name) }
+
+// DropForeignOn drops the foreign key Foreign(columns...) created.
+func (b *Blueprint) DropForeignOn(column string, more ...string) {
+	b.dropOn(cmdDropForeign, "foreign", column, more)
+}
 
 func (b *Blueprint) DropPrimary() {
-	b.commands = append(b.commands, &command{kind: "dropPrimary", index: &Index{IndexName: indexName(b.table, "primary", nil)}})
+	b.commands = append(b.commands, &command{kind: cmdDropPrimary, index: &Index{IndexName: indexName(b.table, "primary", nil)}})
 }
 
-// DropConstrainedForeignID drops the foreign key and its column.
+// DropConstrainedForeignID drops the foreign key on column and the column.
 func (b *Blueprint) DropConstrainedForeignID(column string) {
-	b.DropForeign(column)
+	b.DropForeignOn(column)
 	b.DropColumn(column)
 }
 
-// DropForeignIDFor drops the foreign key column created by ForeignIDFor.
+// DropForeignIDFor drops the key column ForeignIDFor added; drop its
+// foreign key first, or use DropConstrainedForeignIDFor.
 func (b *Blueprint) DropForeignIDFor[M any](t *orm.Table[M], column ...string) {
-	b.DropColumn(first(column, singular(t.Name)+"_"+cmpOr(t.PrimaryKey, "id")))
+	b.DropColumn(b.keyColumn(t.Name, t.PrimaryKey, column))
+}
+
+// DropConstrainedForeignIDFor drops the foreign key and key column that
+// ForeignIDFor(...).Constrained() added.
+func (b *Blueprint) DropConstrainedForeignIDFor[M any](t *orm.Table[M], column ...string) {
+	b.DropConstrainedForeignID(b.keyColumn(t.Name, t.PrimaryKey, column))
 }
 
 func (b *Blueprint) DropTimestamps()    { b.DropColumn("created_at", "updated_at") }
@@ -510,16 +701,20 @@ func (b *Blueprint) DropSoftDeletes()   { b.DropColumn("deleted_at") }
 func (b *Blueprint) DropSoftDeletesTz() { b.DropSoftDeletes() }
 func (b *Blueprint) DropRememberToken() { b.DropColumn("remember_token") }
 func (b *Blueprint) DropMorphs(name string) {
-	b.DropIndex(name+"_type", name+"_id")
+	b.DropIndexOn(name+"_type", name+"_id")
 	b.DropColumn(name+"_type", name+"_id")
 }
 
-func (b *Blueprint) drop(kind, idx string, nameOrCols []string) {
-	name := nameOrCols[0]
-	if len(nameOrCols) > 1 || !strings.HasSuffix(name, "_"+idx) {
-		name = indexName(b.table, idx, nameOrCols)
+func (b *Blueprint) dropNamed(kind commandKind, name string) {
+	if name == "" {
+		b.fail(fmt.Errorf("schema: cannot %s on table %s: no name given", kind, b.table))
 	}
 	b.commands = append(b.commands, &command{kind: kind, index: &Index{IndexName: name}})
+}
+
+func (b *Blueprint) dropOn(kind commandKind, suffix, column string, more []string) {
+	cols := append([]string{column}, more...)
+	b.commands = append(b.commands, &command{kind: kind, index: &Index{IndexName: indexName(b.table, suffix, cols), Columns: cols}})
 }
 
 // indexName follows Laravel's convention: users_email_unique.
@@ -528,38 +723,10 @@ func indexName(table, suffix string, cols []string) string {
 	return strings.ToLower(strings.NewReplacer("-", "_", ".", "_").Replace(strings.Join(parts, "_")))
 }
 
-func kindSuffix(kind string) string {
-	switch kind {
-	case "fullText":
-		return "fulltext"
-	case "spatial":
-		return "spatialindex"
-	}
-	return kind
-}
-
-func singular(table string) string {
-	switch {
-	case strings.HasSuffix(table, "ies"):
-		return strings.TrimSuffix(table, "ies") + "y"
-	case strings.HasSuffix(table, "ses"), strings.HasSuffix(table, "xes"):
-		return table[:len(table)-2]
-	}
-	return strings.TrimSuffix(table, "s")
-}
-
 func first[T comparable](vs []T, def T) T {
 	var zero T
 	if len(vs) > 0 && vs[0] != zero {
 		return vs[0]
 	}
 	return def
-}
-
-func cmpOr[T comparable](v, def T) T {
-	var zero T
-	if v == zero {
-		return def
-	}
-	return v
 }

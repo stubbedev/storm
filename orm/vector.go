@@ -35,12 +35,17 @@ const (
 //
 // Ordering with Nearest runs a nearest-neighbour search on the engine —
 // an index-backed one with pgvector's HNSW or a Qdrant collection.
-type Vector[N ~int] struct{ comps []float64 }
+type Vector[N Dimension] struct{ comps []float64 }
 
-// Dimension markers for Vector's type argument: orm.Vector[orm.D3] is a
-// 3-dimensional vector. The dimension is enforced by the schema
-// (vector(3), a Qdrant collection's size), since Go cannot recover N from
-// the type parameter.
+// Dimension is a vector size marker: orm.Vector[orm.D3] is a
+// 3-dimensional vector, and every vector built, scanned or decoded is
+// checked against it.
+type Dimension interface {
+	~int
+	Dim() int
+}
+
+// Dimension markers for Vector's type argument.
 type (
 	D2    int
 	D3    int
@@ -74,11 +79,65 @@ type (
 	D4096 int
 )
 
-// NewVector builds a Vector of dimension N from its components. The
-// dimension is enforced by the schema (vector(3), a Qdrant collection's
-// size), not at construction: Go cannot recover N from a type parameter.
-func NewVector[N ~int](fs ...float64) Vector[N] {
-	return Vector[N]{comps: append([]float64(nil), fs...)}
+func (D2) Dim() int    { return 2 }
+func (D3) Dim() int    { return 3 }
+func (D4) Dim() int    { return 4 }
+func (D5) Dim() int    { return 5 }
+func (D6) Dim() int    { return 6 }
+func (D7) Dim() int    { return 7 }
+func (D8) Dim() int    { return 8 }
+func (D9) Dim() int    { return 9 }
+func (D10) Dim() int   { return 10 }
+func (D12) Dim() int   { return 12 }
+func (D16) Dim() int   { return 16 }
+func (D24) Dim() int   { return 24 }
+func (D32) Dim() int   { return 32 }
+func (D48) Dim() int   { return 48 }
+func (D64) Dim() int   { return 64 }
+func (D96) Dim() int   { return 96 }
+func (D128) Dim() int  { return 128 }
+func (D160) Dim() int  { return 160 }
+func (D256) Dim() int  { return 256 }
+func (D384) Dim() int  { return 384 }
+func (D512) Dim() int  { return 512 }
+func (D640) Dim() int  { return 640 }
+func (D768) Dim() int  { return 768 }
+func (D896) Dim() int  { return 896 }
+func (D1024) Dim() int { return 1024 }
+func (D1280) Dim() int { return 1280 }
+func (D1536) Dim() int { return 1536 }
+func (D2048) Dim() int { return 2048 }
+func (D3072) Dim() int { return 3072 }
+func (D4096) Dim() int { return 4096 }
+
+func dimOf[N Dimension]() int {
+	var n N
+	return n.Dim()
+}
+
+// VectorOf builds a Vector of dimension N from components that come from
+// outside the program, failing when their count is not N.
+func VectorOf[N Dimension](fs []float64) (Vector[N], error) {
+	var v Vector[N]
+	return v, v.set(append([]float64(nil), fs...))
+}
+
+// NewVector builds a Vector of dimension N from literal components; it
+// panics when their count is not N. Use VectorOf for runtime data.
+func NewVector[N Dimension](fs ...float64) Vector[N] {
+	v, err := VectorOf[N](fs)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+func (v *Vector[N]) set(comps []float64) error {
+	if want := dimOf[N](); len(comps) != want {
+		return fmt.Errorf("orm: a %d-dimension vector cannot hold %d components", want, len(comps))
+	}
+	v.comps = comps
+	return nil
 }
 
 // NewVector3 is shorthand for NewVector[orm.D3].
@@ -110,26 +169,23 @@ func (v *Vector[N]) Scan(src any) error {
 	case []byte:
 		return v.parse(string(s))
 	case []float64:
-		v.comps = append([]float64(nil), s...)
-		return nil
+		return v.set(append([]float64(nil), s...))
 	case []float32:
 		comps := make([]float64, len(s))
 		for i, f := range s {
 			comps[i] = float64(f)
 		}
-		v.comps = comps
-		return nil
+		return v.set(comps)
 	case []any:
 		comps := make([]float64, len(s))
 		for i, f := range s {
-			if n, err := toFloat(f); err != nil {
-				return err
-			} else {
-				comps[i] = n
+			n, err := toFloat(f)
+			if err != nil {
+				return fmt.Errorf("orm: scanning vector component %d: %w", i, err)
 			}
+			comps[i] = n
 		}
-		v.comps = comps
-		return nil
+		return v.set(comps)
 	}
 	return fmt.Errorf("orm: cannot scan %T into a Vector", src)
 }
@@ -158,9 +214,6 @@ func (v *Vector[N]) parse(s string) error {
 		return nil
 	}
 	fs := strings.Split(strings.Trim(s, "[] "), ",")
-	if len(v.comps) != 0 && len(fs) != len(v.comps) {
-		return fmt.Errorf("orm: vector of %d components cannot scan %q", len(v.comps), s)
-	}
 	comps := make([]float64, len(fs))
 	for i, f := range fs {
 		x, err := strconv.ParseFloat(strings.TrimSpace(f), 64)
@@ -169,8 +222,7 @@ func (v *Vector[N]) parse(s string) error {
 		}
 		comps[i] = x
 	}
-	v.comps = comps
-	return nil
+	return v.set(comps)
 }
 
 func (v Vector[N]) MarshalJSON() ([]byte, error) {
@@ -185,11 +237,11 @@ func (v *Vector[N]) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &fs); err != nil {
 		return err
 	}
-	if len(v.comps) != 0 && len(fs) != len(v.comps) {
-		return fmt.Errorf("orm: vector of %d components cannot unmarshal %d values", len(v.comps), len(fs))
+	if fs == nil {
+		*v = Vector[N]{}
+		return nil
 	}
-	v.comps = fs
-	return nil
+	return v.set(fs)
 }
 
 // Nearest orders rows by distance from v under the metric (pgvector's

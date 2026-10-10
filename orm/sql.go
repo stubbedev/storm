@@ -30,8 +30,23 @@ func (b *SQL) Write(parts ...string) {
 	}
 }
 
-// Ident appends a quoted identifier.
-func (b *SQL) Ident(name string) { b.sb.WriteString(b.Dialect.Quote(name)) }
+// Ident appends a quoted identifier; a dotted name is quoted per part
+// ("users.id" is table users, column id) and a * part stays bare
+// ("users.*").
+func (b *SQL) Ident(name string) {
+	i := 0
+	for part := range strings.SplitSeq(name, ".") {
+		if i > 0 {
+			b.sb.WriteByte('.')
+		}
+		i++
+		if part == "*" {
+			b.sb.WriteByte('*')
+			continue
+		}
+		b.sb.WriteString(b.Dialect.Quote(part))
+	}
+}
 
 // Arg appends a bound argument using the dialect's placeholder syntax.
 func (b *SQL) Arg(v any) {

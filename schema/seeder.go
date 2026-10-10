@@ -198,20 +198,3 @@ func snake(s string) string {
 	}
 	return b.String()
 }
-
-// pluralize forms the plural of a snake_case noun, well enough for table
-// names (Laravel's Str::plural).
-func pluralize(s string) string {
-	switch {
-	case s == "":
-		return s
-	case strings.HasSuffix(s, "s"), strings.HasSuffix(s, "x"), strings.HasSuffix(s, "z"),
-		strings.HasSuffix(s, "ch"), strings.HasSuffix(s, "sh"):
-		return s + "es"
-	case strings.HasSuffix(s, "y") && len(s) > 1 && !isVowel(s[len(s)-2]):
-		return s[:len(s)-1] + "ies"
-	}
-	return s + "s"
-}
-
-func isVowel(c byte) bool { return c == 'a' || c == 'e' || c == 'i' || c == 'o' || c == 'u' }

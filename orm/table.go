@@ -55,6 +55,13 @@ type Table[M any] struct {
 	listeners map[Event][]func(context.Context, *M) error
 }
 
+// TableRef is a model's table: its generated schema (Users) or the
+// *Table itself (Users.Table). Builder methods that name a table take it,
+// so completion offers the schemas instead of a table-name string.
+type TableRef[M any] interface{ tableRef() *Table[M] }
+
+func (t *Table[M]) tableRef() *Table[M] { return t }
+
 // Model is embedded in every model struct. It tracks whether the row
 // exists and what it looked like when loaded, for dirty checking.
 type Model struct {

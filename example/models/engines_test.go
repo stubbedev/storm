@@ -2,6 +2,8 @@ package models_test
 
 import (
 	"context"
+	sqldriver "database/sql/driver"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -123,11 +125,13 @@ var Docs = DocSchema{
 	Vec:   orm.NewColumn(docTable, "vec", func(m *Doc) *orm.Vector[orm.D3] { return &m.Vec }),
 }
 
-func createWidgetTable(ctx context.Context, t *testing.T, conn string) {
+// createWidgetTable creates widgets keyed by key, which adds the id column:
+// auto-incrementing where the engine generates keys, manual on ClickHouse.
+func createWidgetTable(ctx context.Context, t *testing.T, conn string, key func(*schema.Blueprint)) {
 	t.Helper()
 	tCheck(t, schema.On(conn).DropAllTables(ctx))
 	tCheck(t, schema.On(conn).Create(ctx, "widgets", func(t *schema.Blueprint) {
-		t.ID()
+		key(t)
 		t.String("name")
 		t.String("kind")
 		t.BigInteger("karma").Default(0)
@@ -165,6 +169,15 @@ func assertWidgets(t *testing.T, ctx context.Context, conn string) {
 	n = must(Widgets.Query().On(conn).Where(Widgets.ID.Eq(w.ID)).Delete(ctx))
 	eq(t, "delete", n, int64(1))
 	eq(t, "gone", must(Widgets.Query().On(conn).Count(ctx)), int64(2))
+
+	beta := orm.FromTable(Widgets).On(conn).WhereCond(Widgets.Name.Eq("beta"))
+	eq(t, "table update", must(beta.UpdateCols(ctx, Widgets.Karma.SetExpr(orm.Plus(Widgets.Karma, 1)))), int64(1))
+	eq(t, "table update applied", must(beta.PluckCol(ctx, Widgets.Karma)), []int64{16})
+	eq(t, "table delete", must(beta.Delete(ctx)), int64(1))
+	eq(t, "table deleted", must(orm.From("widgets").On(conn).Count(ctx)), int64(1))
+	gamma := must(orm.FromTable(Widgets).On(conn).PluckCol(ctx, Widgets.ID))[0]
+	ok(orm.From("widgets").On(conn).Upsert(ctx, []map[string]any{{"id": gamma, "name": "gamma2", "kind": "gear", "karma": 1}}, []string{"id"}, "name"))
+	eq(t, "table upsert", must(orm.FromTable(Widgets).On(conn).PluckCol(ctx, Widgets.Name)), []string{"gamma2"})
 }
 
 func TestDuckDB(t *testing.T) {
@@ -177,12 +190,16 @@ func TestDuckDB(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	createWidgetTable(ctx, t, "duck")
+	createWidgetTable(ctx, t, "duck", func(t *schema.Blueprint) { t.ID() })
 	for i := range seedWidgets(t) {
 		w := seedWidgets(t)[i]
 		ok(Widgets.Query().On("duck").Create(ctx, &w))
 	}
 	assertWidgets(t, ctx, "duck")
+	assertEvents(t, ctx, "duck")
+	assertBlueprintSurface(t, ctx, "duck")
+	assertForeignKeys(t, ctx, "duck")
+	assertDropHelpers(t, ctx, "duck")
 
 	// Flat files: DuckDB reads CSV straight from the builder.
 	csv := t.TempDir() + "/flat.csv"
@@ -207,6 +224,19 @@ func TestDuckDB(t *testing.T) {
 		OrderBy(Docs.Vec.Nearest(orm.NewVector[orm.D3](1, 0, 0), orm.L2)).
 		Limit(1).Get(ctx))
 	eq(t, "nearest", found[0].Title, "near")
+
+	refusesExampleSchema(ctx, t, "duck", "duckdb", "create_users_table")
+}
+
+// refusesExampleSchema checks that the example migrations, written for the
+// transactional engines, fail on an analytical one with a precise refusal
+// rather than a half-right schema.
+func refusesExampleSchema(ctx context.Context, t *testing.T, conn, engine, migration string) {
+	t.Helper()
+	_, err := (&schema.Migrator{Connection: conn, Migrations: schema.Registered()}).Migrate(ctx, false)
+	var refusal *schema.UnsupportedError
+	eq(t, "example schema refused on "+engine, errors.As(err, &refusal) && refusal.Engine == engine && strings.Contains(err.Error(), migration), true)
+	tCheck(t, schema.On(conn).DropAllTables(ctx))
 }
 
 func TestClickHouse(t *testing.T) {
@@ -221,7 +251,7 @@ func TestClickHouse(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	createWidgetTable(ctx, t, "ch")
+	createWidgetTable(ctx, t, "ch", func(t *schema.Blueprint) { t.BigInteger("id").Primary() })
 	for i, w := range seedWidgets(t) {
 		w.ID = int64(i + 1) // ClickHouse does not generate integer keys
 		ok(Widgets.Query().On("ch").Create(ctx, &w))
@@ -230,11 +260,45 @@ func TestClickHouse(t *testing.T) {
 	eq(t, "where + order", len(ws), 2)
 	eq(t, "order desc", ws[0].Name, "gamma")
 	eq(t, "count", must(Widgets.Query().On("ch").Count(ctx)), int64(3))
-	n := must(Widgets.Query().On("ch").Where(Widgets.ID.Eq(ws[0].ID)).Update(ctx, Widgets.Karma.Set(99)))
-	_ = n // ClickHouse mutations report zero affected rows
+	eq(t, "update count", must(Widgets.Query().On("ch").Where(Widgets.ID.Eq(ws[0].ID)).Update(ctx, Widgets.Karma.Set(99))), int64(1))
 	eq(t, "updated", must(Widgets.Query().On("ch").Find(ctx, ws[0].ID)).Karma, int64(99))
-	must(Widgets.Query().On("ch").Where(Widgets.ID.Eq(ws[0].ID)).Delete(ctx))
+	eq(t, "delete count", must(Widgets.Query().On("ch").Where(Widgets.ID.Eq(ws[0].ID)).Delete(ctx)), int64(1))
 	eq(t, "gone", must(Widgets.Query().On("ch").Count(ctx)), int64(2))
+
+	beta := orm.FromTable(Widgets).On("ch").WhereCond(Widgets.Name.Eq("beta"))
+	eq(t, "table update count", must(beta.UpdateCols(ctx, Widgets.Karma.SetExpr(orm.Plus(Widgets.Karma, 1)))), int64(1))
+	eq(t, "table update", must(beta.PluckCol(ctx, Widgets.Karma)), []int64{16})
+	eq(t, "table increment", must(beta.Increment(ctx, "karma", 4)), int64(1))
+	eq(t, "table incremented", must(beta.PluckCol(ctx, Widgets.Karma)), []int64{20})
+	eq(t, "table delete count", must(beta.Delete(ctx)), int64(1))
+	eq(t, "table delete", must(orm.From("widgets").On("ch").Count(ctx)), int64(1))
+
+	widgets := orm.FromTable(Widgets).On("ch")
+	ok(widgets.InsertOrIgnore(ctx,
+		map[string]any{"id": 1, "name": "clash", "kind": "gear", "karma": 0},
+		map[string]any{"id": 10, "name": "ten", "kind": "gear", "karma": 0},
+		map[string]any{"id": 10, "name": "ten again", "kind": "gear", "karma": 0}))
+	eq(t, "insertOrIgnore", must(widgets.OrderByCol(Widgets.ID).PluckCol(ctx, Widgets.Name)), []string{"alpha", "ten"})
+	ok(widgets.Upsert(ctx, []map[string]any{
+		{"id": 10, "name": "ten upserted", "kind": "spring", "karma": 5},
+		{"id": 11, "name": "eleven", "kind": "gear", "karma": 0},
+	}, []string{"id"}, "name"))
+	eq(t, "upsert", must(widgets.OrderByCol(Widgets.ID).PluckCol(ctx, Widgets.Name)), []string{"alpha", "ten upserted", "eleven"})
+	eq(t, "upsert leaves other columns", must(widgets.WhereCond(Widgets.ID.Eq(10)).PluckCol(ctx, Widgets.Kind)), []string{"gear"})
+	ws = must(Widgets.Query().On("ch").Where(Widgets.ID.Eq(11)).Get(ctx))
+	ws[0].Karma = 7
+	ok(Widgets.Query().On("ch").Upsert(ctx, ws, []orm.AnyColumn[Widget]{Widgets.ID}, Widgets.Karma))
+	eq(t, "model upsert", must(Widgets.Query().On("ch").Find(ctx, int64(11))).Karma, int64(7))
+
+	_, err = Widgets.Query().On("ch").InsertGetID(ctx, Widget{Name: "keyless"})
+	eq(t, "insertGetID needs generated keys", err != nil && strings.Contains(err.Error(), "does not generate integer keys"), true)
+	err = Widgets.Query().On("ch").Create(ctx, &Widget{Name: "keyless"})
+	eq(t, "create needs a key", err != nil && strings.Contains(err.Error(), "does not generate integer keys"), true)
+	assertEvents(t, ctx, "ch")
+	assertBlueprintSurface(t, ctx, "ch")
+	assertForeignKeys(t, ctx, "ch")
+	assertDropHelpers(t, ctx, "ch")
+	refusesExampleSchema(ctx, t, "ch", "clickhouse", "create_countries_table")
 }
 
 func TestMongo(t *testing.T) {
@@ -291,12 +355,47 @@ func TestMongo(t *testing.T) {
 		WhereCond(Docs.Views.Gt(1)).Count(ctx)), int64(3))
 	_, err = orm.From("documents").On("mongo").WhereCond(orm.Raw[Doc]("views > 1")).Count(ctx)
 	eq(t, "typed raw refused", orm.IsNotTranslatable(err), true)
+	eq(t, "table exists", must(orm.From("documents").On("mongo").WhereCond(Docs.Views.Gt(1)).Exists(ctx)), true)
+	eq(t, "table doesn't exist", must(orm.From("documents").On("mongo").WhereCond(Docs.Views.Gt(100)).Exists(ctx)), false)
+	_, err = orm.From("documents").On("mongo").InsertGetID(ctx, map[string]any{"title": "x"})
+	eq(t, "table insertGetID refused", orm.IsNotTranslatable(err), true)
+	_, err = Docs.Query().On("mongo").Pluck(ctx, Docs.Title)
+	eq(t, "SQL-only method refused", orm.IsNotTranslatable(err), true)
+	ok(orm.From("documents").On("mongo").InsertCols(ctx, Docs.ID.Set("typed-row"), Docs.Title.Set("typed"), Docs.Views.Set(4)))
+	typedRow := orm.From("documents").On("mongo").WhereCond(Docs.ID.Eq("typed-row"))
+	eq(t, "typed table update", must(typedRow.UpdateCols(ctx, Docs.Views.Set(6))), int64(1))
+	eq(t, "typed table pluck", must(typedRow.PluckCol(ctx, Docs.Views)), []int64{6})
+	_, err = typedRow.UpdateCols(ctx, Docs.Views.SetExpr(orm.Plus(Docs.Views, 1)))
+	eq(t, "typed table expr refused", orm.IsNotTranslatable(err), true)
+	eq(t, "increment", must(typedRow.Increment(ctx, "views", 3)), int64(1))
+	eq(t, "decrement", must(typedRow.Decrement(ctx, "views", 2)), int64(1))
+	eq(t, "model increment", must(Docs.Query().On("mongo").Where(Docs.ID.Eq("typed-row")).Increment(ctx, Docs.Views, 10)), int64(1))
+	eq(t, "increments applied", must(typedRow.PluckCol(ctx, Docs.Views)), []int64{17})
+	_, err = typedRow.UpdateCols(ctx, Docs.Views.SetExpr(orm.Plus(Docs.Views, 1)))
+	eq(t, "other expressions refused", orm.IsNotTranslatable(err), true)
+	_, err = orm.From("documents").On("mongo").Sum[int64](ctx, "views")
+	eq(t, "aggregate refused", orm.IsNotTranslatable(err), true)
+	_, err = orm.From("documents").On("mongo").WhereCond(Users.Name.Eq("x")).Count(ctx)
+	eq(t, "foreign column refused", orm.IsNotTranslatable(err), true)
+	ok(orm.From("documents").On("mongo").InsertOrIgnore(ctx,
+		map[string]any{"id": "typed-row", "title": "dropped", "views": 5},
+		map[string]any{"id": "fresh-row", "title": "fresh", "views": 1}))
+	eq(t, "row insertOrIgnore kept", must(typedRow.PluckCol(ctx, Docs.Title)), []string{"typed"})
+	freshRow := orm.From("documents").On("mongo").WhereCond(Docs.ID.Eq("fresh-row"))
+	eq(t, "row insertOrIgnore inserted", must(freshRow.PluckCol(ctx, Docs.Title)), []string{"fresh"})
+	ok(orm.From("documents").On("mongo").Upsert(ctx, []map[string]any{{"id": "fresh-row", "title": "upserted", "views": 1}}, []string{"id"}))
+	eq(t, "row upsert", must(freshRow.PluckCol(ctx, Docs.Title)), []string{"upserted"})
+	eq(t, "row cleanup", must(freshRow.Delete(ctx)), int64(1))
+	_, err = typedRow.SelectCols(Docs.Title.As("t")).Get(ctx)
+	eq(t, "alias refused", orm.IsNotTranslatable(err), true)
+	eq(t, "typed table delete", must(typedRow.Delete(ctx)), int64(1))
+	eq(t, "restore", must(Users.Query().On("mongo").Restore(ctx)), int64(0))
 
 	eq(t, "delete", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("renamed")).Delete(ctx)), int64(1))
 	eq(t, "deleted", must(Docs.Query().On("mongo").Count(ctx)), int64(2))
 
 	// Joins and raw conditions refuse with a precise error.
-	_, err = Users.Query().Join(Posts.Table, Posts.UserID.EqCol(Users.ID)).On("mongo").Get(ctx)
+	_, err = Users.Query().Join(Posts, Posts.UserID.EqCol(Users.ID)).On("mongo").Get(ctx)
 	eq(t, "join refused", orm.IsNotTranslatable(err), true)
 	_, err = Docs.Query().On("mongo").Where(orm.Raw[Doc]("views > 1")).Get(ctx)
 	eq(t, "raw refused", orm.IsNotTranslatable(err), true)
@@ -318,6 +417,79 @@ func TestMongo(t *testing.T) {
 	eq(t, "orIgnore count", must(Docs.Query().On("mongo").Count(ctx)), int64(4))
 	eq(t, "orIgnore skipped existing", must(Docs.Query().On("mongo").Find(ctx, dup.ID)).Views, int64(77))
 	eq(t, "orIgnore inserted missing", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("ignored newcomer")).Count(ctx)), int64(1))
+	assertDocPagination(t, ctx, "mongo", 4)
+
+	eq(t, "like", must(Docs.Query().On("mongo").Where(Docs.Title.Like("ea")).Count(ctx)), int64(1))
+	eq(t, "like escapes regex syntax", must(Docs.Query().On("mongo").Where(Docs.Title.Like("(n")).Count(ctx)), int64(0))
+	eq(t, "like with wildcards", must(orm.From("documents").On("mongo").Where("title", orm.Like, "n_ar").Count(ctx)), int64(1))
+
+	assertValuerErrors(t, ctx, "mongo")
+	eq(t, "not equal", must(orm.From("documents").On("mongo").Where("title", "!=", "near").Count(ctx)), int64(3))
+	eq(t, "ilike", must(orm.From("documents").On("mongo").Where("title", orm.Ilike, "NEAR").Count(ctx)), int64(1))
+	eq(t, "not ilike", must(orm.From("documents").On("mongo").Where("title", orm.NotIlike, "%E%").Count(ctx)), int64(1))
+	eq(t, "unsigned decrement", must(orm.From("documents").On("mongo").Where("title", orm.Eq, "near").Decrement(ctx, "views", uint8(1))), int64(1))
+
+	assertDocMigrations(t, ctx, "mongo")
+}
+
+// failingValuer fails to convert, as Encrypted does without a key.
+type failingValuer struct{}
+
+func (failingValuer) Value() (sqldriver.Value, error) { return nil, errors.New("no key") }
+
+// assertValuerErrors checks a value that fails to convert is never stored
+// in some other form: writes and filters with it fail.
+func assertValuerErrors(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	docs := orm.From("documents").On(conn)
+	before := must(docs.Count(ctx))
+	err := docs.Insert(ctx, map[string]any{"id": "0198c0de-0000-7000-8000-000000000001", "title": failingValuer{}})
+	eq(t, conn+" insert refuses a failing value", err != nil && strings.Contains(err.Error(), "no key"), true)
+	eq(t, conn+" nothing stored", must(docs.Count(ctx)), before)
+	_, err = docs.Where("title", orm.Eq, "near").Update(ctx, map[string]any{"title": failingValuer{}})
+	eq(t, conn+" update refuses a failing value", err != nil && strings.Contains(err.Error(), "no key"), true)
+	_, err = docs.Where("title", orm.Eq, failingValuer{}).Count(ctx)
+	eq(t, conn+" filter refuses a failing value", err != nil && strings.Contains(err.Error(), "no key"), true)
+}
+
+// assertDocPagination pages through a document store's documents one at a
+// time and in chunks, checking every document turns up exactly once.
+func assertDocPagination(t *testing.T, ctx context.Context, conn string, total int64) {
+	t.Helper()
+	docs := orm.From("documents").On(conn)
+	seen := map[string]bool{}
+	for page := 1; page <= int(total); page++ {
+		p := must(docs.Paginate(ctx, 1, page))
+		eq(t, "page meta", fmt.Sprint(p.Total, p.LastPage, p.From, p.To, p.HasMore),
+			fmt.Sprint(total, total, page, page, int64(page) < total))
+		seen[fmt.Sprint(p.Items[0]["id"])] = true
+	}
+	eq(t, "pages cover every document once", len(seen), int(total))
+	model := must(Docs.Query().On(conn).Paginate(ctx, 2, 1))
+	eq(t, "model page", fmt.Sprint(len(model.Items), model.Total, model.LastPage), fmt.Sprint(2, total, (total+1)/2))
+	var chunked int
+	ok(docs.Chunk(ctx, 3, func(rows []map[string]any) error { chunked += len(rows); return nil }))
+	eq(t, "chunk covers every document", chunked, int(total))
+	var byID int
+	ok(docs.ChunkByID(ctx, 2, func(rows []map[string]any) error { byID += len(rows); return nil }))
+	eq(t, "chunkByID covers every document", byID, int(total))
+	var streamed int
+	for _, err := range docs.Cursor(ctx) {
+		ok(err)
+		streamed++
+	}
+	eq(t, "cursor covers every document", streamed, int(total))
+	seen = map[string]bool{}
+	for cursor := ""; ; {
+		page := must(docs.CursorPaginate(ctx, 2, cursor))
+		for _, d := range page.Items {
+			seen[fmt.Sprint(d["id"])] = true
+		}
+		if cursor = page.NextCursor; cursor == "" {
+			break
+		}
+	}
+	eq(t, "cursor pages cover every document once", len(seen), int(total))
 }
 
 func TestQdrant(t *testing.T) {
@@ -363,6 +535,8 @@ func TestQdrant(t *testing.T) {
 
 	rows := must(orm.From("documents").On("qdrant").Where("views", "=", 2).Get(ctx))
 	eq(t, "table query", len(rows), 1)
+	_, err = orm.From("documents").On("qdrant").Where("views", "=", 2).Increment(ctx, "views", 1)
+	eq(t, "increment refused", orm.IsNotTranslatable(err), true)
 
 	// Upsert overwrites the matching point; the PUT is idempotent.
 	kept := must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("near")).First(ctx))
@@ -378,6 +552,27 @@ func TestQdrant(t *testing.T) {
 	another := Doc{Title: "ignored newcomer", Views: 5, Vec: orm.NewVector3(0, 2, 0)}
 	ok(Docs.Query().On("qdrant").InsertOrIgnore(ctx, dup, another))
 	eq(t, "orIgnore count", must(Docs.Query().On("qdrant").Count(ctx)), int64(5))
+	assertDocPagination(t, ctx, "qdrant", 5)
+
+	assertValuerErrors(t, ctx, "qdrant")
+	must(orm.From("documents").On("qdrant").Where("title", orm.Eq, "brand new").Update(ctx, map[string]any{"title": nil}))
+	cleared := must(orm.From("documents").On("qdrant").WhereNull("title").Count(ctx))
+	eq(t, "nil clears a payload field", cleared, int64(1))
+
+	_, err = orm.From("missing_collection").On("qdrant").Get(ctx)
+	eq(t, "http errors name the request", err != nil && strings.Contains(err.Error(), "/collections/missing_collection/points/scroll: 404"), true)
+	keyed, err := orm.OpenQdrant("qdrant_keyed", os.Getenv("ELOQUENT_TEST_QDRANT"))
+	ok(err)
+	keyed.WithKey("code")
+	ok(keyed.EnsureCollection(ctx, "keyed", 3, orm.L2))
+	ok(orm.From("keyed").On("qdrant_keyed").Insert(ctx, map[string]any{"code": 7, "name": "seven", "vec": orm.NewVector3(1, 2, 3)}))
+	point := must(orm.From("keyed").On("qdrant_keyed").Where("code", orm.Eq, 7).First(ctx))
+	eq(t, "withKey names the point id column", fmt.Sprintf("%v %v", point["code"], point["name"]), "7 seven")
+	ok(keyed.DropCollection(ctx, "keyed"))
+	assertDocMigrations(t, ctx, "qdrant")
+	ok(store.EnsureCollection(ctx, "documents", 3, orm.Cosine))
+	err = store.EnsureCollection(ctx, "documents", 4, orm.Cosine)
+	eq(t, "ensureCollection mismatch", err != nil && strings.Contains(err.Error(), "exists with 3-dimension Cosine"), true)
 	eq(t, "orIgnore skipped existing", must(Docs.Query().On("qdrant").Find(ctx, dup.ID)).Views, int64(77))
 
 	eq(t, "delete", must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("renamed")).Delete(ctx)), int64(1))

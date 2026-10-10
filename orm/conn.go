@@ -104,8 +104,34 @@ func Open(name, driver, dsn string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	if d, err = flavour(d, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("orm: opening %s: %w", name, err)
+	}
 	AddConnection(name, db, d)
 	return db, nil
+}
+
+// flavourTimeout bounds the server version query flavour runs.
+const flavourTimeout = 10 * time.Second
+
+// flavour tells MariaDB from MySQL — they share a driver — by asking the
+// server, so Open connects for the MySQL driver. Other dialects pass
+// through.
+func flavour(d Dialect, db *sql.DB) (Dialect, error) {
+	if d != MySQL {
+		return d, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), flavourTimeout)
+	defer cancel()
+	var version string
+	if err := db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
+		return nil, fmt.Errorf("reading the server version: %w", err)
+	}
+	if strings.Contains(strings.ToLower(version), "mariadb") {
+		return MariaDB, nil
+	}
+	return MySQL, nil
 }
 
 // SetDefault registers the default connection.
@@ -127,6 +153,11 @@ func OpenReadWrite(name, driver, readDSN, writeDSN string) (*sql.DB, error) {
 	if err != nil {
 		_ = read.Close()
 		return nil, err
+	}
+	if d, err = flavour(d, write); err != nil {
+		_ = read.Close()
+		_ = write.Close()
+		return nil, fmt.Errorf("orm: opening %s: %w", name, err)
 	}
 	connMu.Lock()
 	conns[name] = Conn{DB: write, Read: read, Dialect: d}
@@ -190,13 +221,13 @@ func TransactionOnce(ctx context.Context, name string, fn func(ctx context.Conte
 	if st, ok := ctx.Value(txKey{name}).(*txState); ok {
 		return savepoint(ctx, name, st, fn)
 	}
-	if c, err := lookup(ctx, name); err == nil && c.Doc != nil {
-		// Document stores have no transactions; run the unit of work as-is.
-		return fn(ctx)
-	}
 	c, err := lookup(ctx, name)
 	if err != nil {
 		return err
+	}
+	if c.Doc != nil {
+		// Document stores have no transactions; run the unit of work as-is.
+		return fn(ctx)
 	}
 	beginner, ok := c.DB.(interface {
 		BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
@@ -391,8 +422,18 @@ func IsUniqueViolation(err error) bool {
 // transaction instead when ctx carries one for that connection.
 func Connection(ctx context.Context, name string) (Conn, error) { return lookup(ctx, name) }
 
+type heldKey struct{ conn string }
+
+// WithConn returns a ctx in which every statement on the named connection
+// runs on conn, one connection taken from its pool — for session state
+// that only lives on a connection, like MySQL's FOREIGN_KEY_CHECKS or
+// SQLite's PRAGMAs. A transaction begun in that ctx runs on conn too.
+func WithConn(ctx context.Context, name string, conn *sql.Conn) context.Context {
+	return context.WithValue(ctx, heldKey{name}, conn)
+}
+
 // lookup resolves a connection name: an active transaction in ctx wins,
-// then the registry.
+// then a connection held with WithConn, then the registry.
 func lookup(ctx context.Context, name string) (Conn, error) {
 	if st, ok := ctx.Value(txKey{name}).(*txState); ok {
 		return st.conn, nil
@@ -402,6 +443,23 @@ func lookup(ctx context.Context, name string) (Conn, error) {
 	connMu.RUnlock()
 	if !ok {
 		return Conn{}, fmt.Errorf("orm: no connection %q registered (call orm.Open, orm.SetDefault or orm.AddConnection)", name)
+	}
+	if held, ok := ctx.Value(heldKey{name}).(*sql.Conn); ok {
+		c.DB, c.Read = held, nil
+	}
+	return c, nil
+}
+
+// sqlConn is lookup for statements that only have an SQL form: on a
+// document store they fail as not translatable instead of reaching a
+// connection with no database behind it.
+func sqlConn(ctx context.Context, name string) (Conn, error) {
+	c, err := lookup(ctx, name)
+	if err != nil {
+		return Conn{}, err
+	}
+	if c.Doc != nil {
+		return Conn{}, &ErrNotTranslatable{Reason: fmt.Sprintf("a SQL-only operation on connection %q", name)}
 	}
 	return c, nil
 }

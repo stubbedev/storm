@@ -22,13 +22,21 @@ type DocStore interface {
 	// UpsertDocs stores documents, replacing any existing document that
 	// matches on all of keys (upsert).
 	UpsertDocs(ctx context.Context, table string, docs []map[string]any, keys []string) error
-	// UpdateDocs applies sets to matching documents and reports how many
+	// UpdateDocs applies u to matching documents and reports how many
 	// matched.
-	UpdateDocs(ctx context.Context, table string, p Plan, sets map[string]any) (int64, error)
+	UpdateDocs(ctx context.Context, table string, p Plan, u DocUpdate) (int64, error)
 	// DeleteDocs removes matching documents and reports how many.
 	DeleteDocs(ctx context.Context, table string, p Plan) (int64, error)
 	// CountDocs counts matching documents.
 	CountDocs(ctx context.Context, table string, p Plan) (int64, error)
+}
+
+// DocUpdate is the change UpdateDocs applies: Set overwrites fields (nil
+// clears one), Inc adds to numeric fields (a negative amount subtracts).
+// A store that cannot add atomically refuses Inc with ErrNotTranslatable.
+type DocUpdate struct {
+	Set map[string]any
+	Inc map[string]any
 }
 
 // AddDocStore registers a document store as a connection. Tables directed
@@ -195,47 +203,56 @@ func (q Query[M]) writeDocs(ctx context.Context, method string, models []*M) err
 }
 
 // insertOrIgnoreDocs inserts only the documents whose key combination is
-// not present yet. The read-then-write gap means a concurrent writer can
-// still insert the same key; a unique index on keys makes that safe.
+// neither stored yet nor repeated earlier in docs; like a NULL in SQL, a
+// document missing a key column never collides. The read-then-write gap
+// means a concurrent writer can still insert the same key; a unique index
+// on keys makes that safe.
 func insertOrIgnoreDocs(ctx context.Context, ds DocStore, table string, docs []map[string]any, keys []string) error {
-	parts := make([]Node, 0, len(keys))
-	for _, k := range keys {
-		vals := make([]any, 0, len(docs))
-		for _, d := range docs {
-			if v, ok := d[k]; ok {
-				vals = append(vals, v)
+	key := func(d map[string]any) (string, bool) {
+		for _, k := range keys {
+			if _, ok := d[k]; !ok {
+				return "", false
 			}
 		}
-		if len(vals) > 0 {
-			parts = append(parts, List{Table: table, Column: k, Values: vals})
-		}
+		return docKey(keys, d), true
 	}
-	existing, err := ds.FindDocs(ctx, table, Plan{Table: table, Where: Composite{Parts: parts}})
-	if err != nil {
-		return err
-	}
-	taken := make(map[string]bool, len(existing))
-	for _, d := range existing {
-		taken[docKey(keys, d)] = true
-	}
-	fresh := make([]map[string]any, 0, len(docs))
+	var keyed []map[string]any
 	for _, d := range docs {
-		if !taken[docKey(keys, d)] {
-			fresh = append(fresh, d)
+		if _, ok := key(d); ok {
+			keyed = append(keyed, d)
 		}
 	}
+	taken := map[string]bool{}
+	if len(keyed) > 0 {
+		parts := make([]Node, len(keys))
+		for i, k := range keys {
+			vals := make([]any, len(keyed))
+			for j, d := range keyed {
+				vals[j] = d[k]
+			}
+			parts[i] = List{Table: table, Column: k, Values: vals}
+		}
+		existing, err := ds.FindDocs(ctx, table, Plan{Table: table, Where: Composite{Parts: parts}})
+		if err != nil {
+			return err
+		}
+		for _, d := range existing {
+			taken[docKey(keys, d)] = true
+		}
+	}
+	fresh, _ := splitByKey(docs, key, taken)
 	return ds.InsertDocs(ctx, table, fresh)
 }
 
 func docKey(keys []string, doc map[string]any) string {
-	parts := make([]string, len(keys))
+	vals := make([]any, len(keys))
 	for i, k := range keys {
-		parts[i] = fmt.Sprint(doc[k])
+		vals[i] = doc[k]
 	}
-	return strings.Join(parts, "\x00")
+	return keyString(vals)
 }
 
-func (q Query[M]) updateDocs(ctx context.Context, sets []Assignment[M], method string) (int64, bool, error) {
+func (q Query[M]) updateDocs(ctx context.Context, sets []colSet, method string) (int64, bool, error) {
 	ds, ok, err := q.docstore(ctx)
 	if err != nil || !ok {
 		return 0, false, err
@@ -244,17 +261,44 @@ func (q Query[M]) updateDocs(ctx context.Context, sets []Assignment[M], method s
 	if err != nil {
 		return 0, true, err
 	}
-	values := make(map[string]any, len(sets))
-	for _, a := range sets {
-		if a.raw == nil {
-			return 0, true, fmt.Errorf("orm: %s on %s: SetExpr assignments need SQL; use Column.Set", method, q.table.Name)
-		}
-		values[a.col] = a.raw
+	u, err := docUpdate(sets)
+	if err != nil {
+		return 0, true, fmt.Errorf("orm: %s on %s: %w", method, q.table.Name, err)
 	}
 	start := time.Now()
-	n, err := ds.UpdateDocs(ctx, q.table.Name, p, values)
+	n, err := ds.UpdateDocs(ctx, q.table.Name, p, u)
 	emitDoc(q.connName(), "update", p, time.Since(start), err)
 	return n, true, err
+}
+
+// docUpdate is sets as a document update: literals are set, increments
+// added; other expressions (SetExpr) have no document form.
+func docUpdate(sets []colSet) (DocUpdate, error) {
+	u := DocUpdate{Set: map[string]any{}, Inc: map[string]any{}}
+	for _, s := range sets {
+		switch {
+		case s.inc != nil:
+			u.Inc[s.col] = s.inc
+		case s.expr != nil:
+			return DocUpdate{}, &ErrNotTranslatable{Reason: "an expression assigned to " + s.col}
+		default:
+			u.Set[s.col] = s.raw
+		}
+	}
+	return u, nil
+}
+
+// docFields is sets as the fields of a new document, which only literals
+// can fill.
+func docFields(sets []colSet) (map[string]any, error) {
+	fields := make(map[string]any, len(sets))
+	for _, s := range sets {
+		if s.expr != nil {
+			return nil, &ErrNotTranslatable{Reason: "an expression inserted into " + s.col}
+		}
+		fields[s.col] = s.raw
+	}
+	return fields, nil
 }
 
 func (q Query[M]) deleteDocs(ctx context.Context, method string) (int64, bool, error) {

@@ -4,47 +4,43 @@ import "github.com/stubbedev/eloquent-go/orm"
 
 // Relations — the equivalent of Eloquent's relationship methods.
 var (
-	UserPosts = orm.HasMany(Posts.Table, Users.ID, Posts.UserID,
+	UserPosts = orm.HasMany(Users.ID, Posts.UserID,
 		func(u *User, ps []Post) { u.Posts = ps })
 
-	UserLatestPost = orm.HasOne(Posts.Table, Users.ID, Posts.UserID,
+	UserLatestPost = orm.HasOne(Users.ID, Posts.UserID,
 		func(u *User, p *Post) { u.LatestPost = p }).OfMany(Posts.ID, true) // latestOfMany
 
-	UserCountry = orm.BelongsTo(Countries.Table, Users.CountryID, Countries.ID,
+	UserCountry = orm.BelongsTo(Users.CountryID, Countries.ID,
 		func(u *User, c *Country) { u.Country = c })
 
-	UserRoles = orm.BelongsToMany(Roles.Table, RoleUsers.Table,
-		Users.ID, RoleUsers.UserID, Roles.ID, RoleUsers.RoleID,
+	UserRoles = orm.BelongsToMany(Users.ID, RoleUsers.UserID, Roles.ID, RoleUsers.RoleID,
 		func(u *User, rs []Role) { u.Roles = rs }).
 		WithPivot(func(r *Role, p RoleUser) { r.Pivot = p })
 
-	UserAvatar = orm.MorphOne(Images.Table, Users.ID, Images.ImageableID, Images.ImageableType,
+	UserAvatar = orm.MorphOne(Users.ID, Images.ImageableID, Images.ImageableType,
 		func(u *User, i *Image) { u.Avatar = i })
 
-	PostAuthor = orm.BelongsTo(Users.Table, Posts.UserID, Users.ID,
+	PostAuthor = orm.BelongsTo(Posts.UserID, Users.ID,
 		func(p *Post, u *User) { p.Author = u }).
 		WithDefault(func(*Post) *User { return &User{Name: "Guest Author"} })
 
-	PostComments = orm.MorphMany(Comments.Table, Posts.ID, Comments.CommentableID, Comments.CommentableType,
+	PostComments = orm.MorphMany(Posts.ID, Comments.CommentableID, Comments.CommentableType,
 		func(p *Post, cs []Comment) { p.Comments = cs })
 
-	VideoComments = orm.MorphMany(Comments.Table, Videos.ID, Comments.CommentableID, Comments.CommentableType,
+	VideoComments = orm.MorphMany(Videos.ID, Comments.CommentableID, Comments.CommentableType,
 		func(v *Video, cs []Comment) { v.Comments = cs })
 
 	CommentCommentable = orm.MorphTo(Comments.CommentableID, Comments.CommentableType,
 		func(c *Comment, owner any) { c.Commentable = owner },
 		orm.Target(Posts.ID), orm.Target(Videos.ID))
 
-	PostTags = orm.MorphToMany(Tags.Table, Taggables.Table,
-		Posts.ID, Taggables.TaggableID, Taggables.TaggableType, Tags.ID, Taggables.TagID,
+	PostTags = orm.MorphToMany(Posts.ID, Taggables.TaggableID, Taggables.TaggableType, Tags.ID, Taggables.TagID,
 		func(p *Post, ts []Tag) { p.Tags = ts })
 
-	TagPosts = orm.MorphedByMany(Posts.Table, Taggables.Table,
-		Tags.ID, Taggables.TagID, Posts.ID, Taggables.TaggableID, Taggables.TaggableType,
+	TagPosts = orm.MorphedByMany(Tags.ID, Taggables.TagID, Posts.ID, Taggables.TaggableID, Taggables.TaggableType,
 		func(t *Tag, ps []Post) { t.Posts = ps })
 
-	CountryPosts = orm.HasManyThrough(Posts.Table, Users.Table,
-		Countries.ID, Users.CountryID, Users.ID, Posts.UserID,
+	CountryPosts = orm.HasManyThrough(Countries.ID, Users.CountryID, Users.ID, Posts.UserID,
 		func(c *Country, ps []Post) { c.Posts = ps })
 )
 

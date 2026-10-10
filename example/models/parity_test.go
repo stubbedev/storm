@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -172,10 +173,37 @@ func TestRowQueryBuilder(t *testing.T) {
 	eq(t, "typed order", must(orm.From("users").OrderByColDesc(Users.Karma).Limit(1).Pluck(ctx, "name"))[0], "Carol")
 	joined := must(orm.From("users").
 		SelectCols(Users.Email).
-		JoinTyped(Countries.Table, Users.CountryID, Countries.ID, orm.Eq).
+		Join(Countries, Countries.ID.EqCol(Users.CountryID)).
 		WhereCond(Countries.Name.Eq("Norway")).
 		Count(ctx))
 	eq(t, "typed join", joined, int64(2))
+
+	aliased := must(orm.From("users").
+		SelectCols(Users.Name.As("user"), Countries.Name.As("country")).
+		Join(Countries, Countries.ID.EqCol(Users.CountryID)).
+		WhereCond(Countries.Name.Eq("Norway")).
+		OrderByColDesc(Users.Name).
+		Get(ctx))
+	eq(t, "aliased rows", len(aliased), 2)
+	eq(t, "aliased left", aliased[0]["user"], any("Dave"))
+	eq(t, "aliased right", aliased[0]["country"], any("Norway"))
+
+	eq(t, "fromTable", must(orm.FromTable(Users).WhereCond(Users.Name.Eq("Alice")).Count(ctx)), int64(1))
+	eq(t, "fromTable connection", must(orm.FromTable(AuditLog).Count(ctx)), int64(0))
+	_, err := orm.From("audit_log").Count(ctx)
+	eq(t, "from defaults to the main connection", err != nil, true)
+
+	eq(t, "pluckCol", must(orm.From("countries").OrderBy("id").PluckCol(ctx, Countries.Name)), []string{"Denmark", "Norway"})
+	eq(t, "pluckCol converts", must(orm.FromTable(Users).OrderByCol(Users.ID).Limit(3).PluckCol(ctx, Users.Active)), []bool{true, true, false})
+
+	posts := orm.FromTable(Posts)
+	ok(posts.InsertCols(ctx, Posts.UserID.Set(2), Posts.Title.Set("typed insert"), Posts.Views.Set(3)))
+	inserted := posts.WhereCond(Posts.Title.Eq("typed insert"))
+	eq(t, "insertCols", must(inserted.PluckCol(ctx, Posts.Views)), []int64{3})
+	eq(t, "updateCols", must(inserted.UpdateCols(ctx, Posts.Views.SetExpr(orm.Plus(Posts.Views, 2)), Posts.Published.Set(true))), int64(1))
+	eq(t, "updateCols expr", must(inserted.PluckCol(ctx, Posts.Views)), []int64{5})
+	eq(t, "updateCols literal", must(inserted.PluckCol(ctx, Posts.Published)), []bool{true})
+	eq(t, "delete typed insert", must(inserted.Delete(ctx)), int64(1))
 
 	eq(t, "first", must(orm.From("countries").OrderBy("id").First(ctx))["name"], "Denmark")
 	eq(t, "pluck", fmt.Sprint(must(orm.From("countries").OrderBy("id").Pluck(ctx, "name"))), "[Denmark Norway]")
@@ -197,6 +225,177 @@ func TestRowQueryBuilder(t *testing.T) {
 	eq(t, "updateOrInsert updated", must(orm.From("users").Where("email", "=", "zed@example.com").First(ctx))["name"], "Zed Zed")
 
 	eq(t, "delete", must(orm.From("posts").Where("id", "=", id).Delete(ctx)), int64(1))
+
+	eq(t, "distinct count", must(orm.From("users").Select("country_id").Distinct().Count(ctx)), int64(3))
+	eq(t, "dotted join", must(orm.From("users").
+		LeftJoin(Countries, Countries.ID.EqCol(Users.CountryID)).
+		Where("countries.name", orm.Eq, "Norway").
+		Count(ctx)), int64(2))
+	eq(t, "dotted star", must(orm.From("users").
+		Select("users.*").
+		Join(Countries, Countries.ID.EqCol(Users.CountryID)).
+		Where("countries.name", orm.Eq, "Norway").
+		OrderBy("users.name").
+		First(ctx))["name"], any("Carol"))
+	eq(t, "whereIn none", must(orm.From("users").WhereIn("country_id").Count(ctx)), int64(0))
+	eq(t, "whereNotIn none", must(orm.From("users").WhereNotIn("country_id").Count(ctx)), int64(6))
+	eq(t, "whereNotBetween", must(orm.From("users").WhereNotBetween("karma", 10, 60).Count(ctx)), int64(3))
+	eq(t, "orWhereCond", must(orm.From("users").
+		WhereCond(Users.Name.Eq("Alice")).
+		OrWhereCond(Users.Karma.Gt(90)).
+		Count(ctx)), int64(2))
+	eq(t, "doesntExist", must(orm.From("users").Where("email", orm.Eq, "nobody@example.com").DoesntExist(ctx)), true)
+
+	eq(t, "sum", must(orm.From("users").Sum[int64](ctx, "karma")), int64(211))
+	eq(t, "avg", must(orm.From("users").WhereNotNull("country_id").Avg(ctx, "karma")), 42.2)
+	eq(t, "min", must(orm.From("users").Min[string](ctx, "name")), "Alice")
+	eq(t, "max", must(orm.From("users").WhereCond(Users.Active.Eq(true)).Max[int64](ctx, "karma")), int64(50))
+	eq(t, "sumCol", must(orm.FromTable(Users).SumCol(ctx, Users.Karma)), 211)
+	eq(t, "avgCol", must(orm.FromTable(Users).WhereCond(Users.CountryID.Eq(2)).AvgCol(ctx, Users.Karma)), 51.0)
+	eq(t, "minCol", must(orm.FromTable(Users).WhereCond(Users.CountryID.IsNotNull()).MinCol(ctx, Users.Karma)), 3)
+	eq(t, "maxCol", must(orm.FromTable(Users).WhereCond(Users.CountryID.IsNotNull()).MaxCol(ctx, Users.Name)), "Eve")
+	eq(t, "aggregate of none", must(orm.From("users").WhereIn("id").Sum[int64](ctx, "karma")), int64(0))
+
+	grouped := must(orm.FromTable(Users).
+		SelectCols(Users.CountryID, orm.Count[User]().As("users"), orm.Sum(Users.Karma).As("karma")).
+		WhereCond(Users.CountryID.IsNotNull()).
+		GroupByCols(Users.CountryID).
+		OrderByCol(Users.CountryID).
+		Get(ctx))
+	eq(t, "grouped rows", len(grouped), 2)
+	eq(t, "grouped count", fmt.Sprintf("%v %v", grouped[0]["users"], grouped[1]["users"]), "3 2")
+	eq(t, "grouped sum", fmt.Sprintf("%v %v", grouped[0]["karma"], grouped[1]["karma"]), "109 102")
+	eq(t, "havingCond", len(must(orm.FromTable(Users).
+		SelectCols(Users.CountryID).
+		GroupByCols(Users.CountryID).
+		HavingCond(orm.Count[User]().Gt(2)).
+		Get(ctx))), 1)
+	eq(t, "havingRaw", len(must(orm.From("users").
+		SelectRaw("country_id, COUNT(*) AS n").
+		GroupBy("country_id").
+		HavingRaw("COUNT(*) > ?", 2).
+		Get(ctx))), 1)
+	eq(t, "count groups", must(orm.From("users").GroupBy("country_id").Count(ctx)), int64(3))
+	_, err = orm.From("users").GroupBy("country_id").Sum[int64](ctx, "karma")
+	eq(t, "grouped aggregate refused", err != nil && strings.Contains(err.Error(), "one value per group"), true)
+
+	dave := orm.From("users").Where("name", orm.Eq, "Dave")
+	eq(t, "increment", must(dave.Increment(ctx, "karma", 10)), int64(1))
+	eq(t, "decrement", must(dave.Decrement(ctx, "karma", 4)), int64(1))
+	eq(t, "incremented", must(dave.PluckCol(ctx, Users.Karma)), []int{9})
+
+	countries := orm.From("countries")
+	ok(countries.InsertOrIgnore(ctx, map[string]any{"id": 1, "name": "Duplicate"}, map[string]any{"id": 3, "name": "Sweden"}))
+	eq(t, "insertOrIgnore", fmt.Sprint(must(countries.OrderBy("id").Pluck(ctx, "name"))), "[Denmark Norway Sweden]")
+	ok(countries.Upsert(ctx, []map[string]any{{"id": 1, "name": "Danmark"}, {"id": 4, "name": "Finland"}}, []string{"id"}))
+	eq(t, "upsert", fmt.Sprint(must(countries.OrderBy("id").Pluck(ctx, "name"))), "[Danmark Norway Sweden Finland]")
+	eq(t, "upsert nothing", countries.Upsert(ctx, nil, []string{"id"}), error(nil))
+
+	ordered := countries.OrderBy("id")
+	last := must(ordered.Paginate(ctx, 3, 2))
+	eq(t, "paginate items", fmt.Sprint(last.Items[0]["name"]), "Finland")
+	eq(t, "paginate meta", fmt.Sprint(last.Total, last.LastPage, last.From, last.To, last.HasMore), "4 2 4 4 false")
+	first := must(ordered.Paginate(ctx, 3, 1))
+	eq(t, "paginate first", fmt.Sprint(len(first.Items), first.From, first.To, first.HasMore), "3 1 3 true")
+	beyond := must(ordered.Paginate(ctx, 3, 5))
+	eq(t, "paginate beyond", fmt.Sprint(len(beyond.Items), beyond.From, beyond.To), "0 0 0")
+	eq(t, "simplePaginate more", must(ordered.SimplePaginate(ctx, 3, 1)).HasMore, true)
+	eq(t, "simplePaginate last", must(ordered.SimplePaginate(ctx, 3, 2)).HasMore, false)
+	_, err = ordered.Paginate(ctx, 0, 1)
+	eq(t, "paginate zero perPage refused", err != nil, true)
+	_, err = Users.Query().Paginate(ctx, 2, 0)
+	eq(t, "model paginate zero page refused", err != nil, true)
+	modelPage := must(Users.Query().OrderBy(Users.ID.Asc()).Paginate(ctx, 2, 2))
+	eq(t, "model paginate", fmt.Sprint(names(modelPage.Items), modelPage.From, modelPage.To), "[Carol Dave] 3 4")
+
+	firstCursor := must(countries.CursorPaginate(ctx, 3, ""))
+	eq(t, "cursorPaginate first", fmt.Sprint(len(firstCursor.Items), firstCursor.NextCursor != ""), "3 true")
+	lastCursor := must(countries.CursorPaginate(ctx, 3, firstCursor.NextCursor))
+	eq(t, "cursorPaginate next", fmt.Sprintf("%v %q", lastCursor.Items[0]["name"], lastCursor.NextCursor), `Finland ""`)
+	byName := countries.OrderByDesc("name")
+	descPage := must(byName.CursorPaginate(ctx, 2, must(byName.CursorPaginate(ctx, 2, "")).NextCursor))
+	eq(t, "cursorPaginate desc", fmt.Sprintf("%v %v", descPage.Items[0]["name"], descPage.Items[1]["name"]), "Finland Danmark")
+	_, err = Users.Query().CursorPaginate(ctx, 0, "")
+	eq(t, "model cursorPaginate zero refused", err != nil, true)
+	_, err = countries.CursorPaginate(ctx, 2, "not-a-cursor")
+	eq(t, "bad cursor refused", err != nil && strings.Contains(err.Error(), "bad cursor"), true)
+
+	var sizes []int
+	ok(ordered.Chunk(ctx, 3, func(rows []map[string]any) error { sizes = append(sizes, len(rows)); return nil }))
+	eq(t, "chunk", sizes, []int{3, 1})
+	sizes = nil
+	ok(countries.ChunkByID(ctx, 3, func(rows []map[string]any) error { sizes = append(sizes, len(rows)); return nil }))
+	eq(t, "chunkByID", sizes, []int{3, 1})
+	eq(t, "chunk zero size refused", ordered.Chunk(ctx, 0, func([]map[string]any) error { return nil }) != nil, true)
+	eq(t, "model chunk zero size refused", Users.Query().Chunk(ctx, 0, func([]User) error { return nil }) != nil, true)
+	var lazy, cursor []string
+	for row, err := range countries.Lazy(ctx, 3) {
+		ok(err)
+		lazy = append(lazy, fmt.Sprint(row["name"]))
+	}
+	eq(t, "lazy", lazy, []string{"Danmark", "Norway", "Sweden", "Finland"})
+	for row, err := range ordered.Cursor(ctx) {
+		ok(err)
+		cursor = append(cursor, fmt.Sprint(row["name"]))
+		if len(cursor) == 2 {
+			break
+		}
+	}
+	eq(t, "cursor stops early", cursor, []string{"Danmark", "Norway"})
+	eq(t, "chunkByID needs the key", countries.Select("name").ChunkByID(ctx, 2, func([]map[string]any) error { return nil }) != nil, true)
+
+	for range 2 {
+		ok(orm.From("users").UpdateOrInsert(ctx,
+			map[string]any{"email": "same@example.com"},
+			map[string]any{"name": "Same", "active": true}))
+	}
+	eq(t, "updateOrInsert unchanged row", must(orm.From("users").Where("email", orm.Eq, "same@example.com").Count(ctx)), int64(1))
+
+	_, err = orm.From("users").Update(ctx, map[string]any{})
+	eq(t, "empty update refused", err != nil && strings.Contains(err.Error(), "no columns to set"), true)
+
+	eq(t, "forPage", fmt.Sprint(must(countries.OrderBy("id").ForPage(2, 3).Pluck(ctx, "name"))), "[Finland]")
+	eq(t, "whereBetween", must(orm.From("users").WhereBetween("karma", 10, 60).Count(ctx)), int64(3))
+	eq(t, "having", len(must(orm.From("users").SelectRaw("country_id").GroupBy("country_id").Having("country_id", orm.Gt, 1).Get(ctx))), 1)
+	eq(t, "rightJoin", must(orm.From("users").RightJoin(Countries, Countries.ID.EqCol(Users.CountryID)).Count(ctx)), int64(7))
+	eq(t, "crossJoin", must(countries.CrossJoin(Roles).Count(ctx)), int64(12))
+	var roleNames []string
+	ok(orm.From("roles").WithKey("name").ChunkByID(ctx, 2, func(rows []map[string]any) error {
+		for _, r := range rows {
+			roleNames = append(roleNames, fmt.Sprint(r["name"]))
+		}
+		return nil
+	}))
+	eq(t, "withKey pages by that column", roleNames, []string{"admin", "editor", "viewer"})
+
+	stmt, args := orm.From("users").Where("users.karma", orm.Gt, 10).ToSQL()
+	eq(t, "toSQL", strings.Contains(stmt, "karma") && len(args) == 1, true)
+}
+
+func TestRawSQLRuns(t *testing.T) {
+	ctx := setup(t)
+	raw := Users.Where(
+		Users.Name.Eq("Alice"),
+		Users.Name.Ne("O'Brien"),
+		Users.Active.Eq(true),
+		Users.Karma.Gt(1),
+		Users.CreatedAt.Lt(time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)),
+		orm.Raw[User]("karma < ?", 100.5),
+		orm.Raw[User]("karma > ?", int64(2)),
+		orm.Raw[User]("karma > ?", int32(3)),
+		orm.Raw[User]("email <> ?", []byte("x@example.com")),
+		orm.Raw[User]("(deleted_at IS NULL OR deleted_at = ?)", nil),
+	).ToRawSQL()
+	c := must(orm.Connection(ctx, orm.DefaultConnection))
+	rows := must(c.DB.QueryContext(ctx, raw))
+	var found int
+	for rows.Next() {
+		found++
+	}
+	ok(rows.Err())
+	ok(rows.Close())
+	eq(t, "inlined values select the same rows as bound ones", found, 1)
+	eq(t, "quotes are escaped", strings.Contains(raw, "'O''Brien'"), true)
 }
 
 func TestStickyReadsSeeWrites(t *testing.T) {

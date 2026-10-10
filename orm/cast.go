@@ -37,7 +37,11 @@ func (j *JSON[V]) Scan(src any) error {
 	case []byte:
 		return json.Unmarshal(s, &j.V)
 	}
-	return fmt.Errorf("orm: cannot scan %T into JSON", src)
+	b, err := json.Marshal(src)
+	if err != nil {
+		return fmt.Errorf("orm: cannot scan %T into JSON: %w", src, err)
+	}
+	return json.Unmarshal(b, &j.V)
 }
 
 func (j JSON[V]) MarshalJSON() ([]byte, error)  { return json.Marshal(j.V) }
@@ -53,15 +57,20 @@ func SetEncryptionKey(key []byte) {
 	encryptionKey = sum[:]
 }
 
-func sealed(v []byte) (string, error) {
+// aead is the cipher Encrypted seals with, keyed by SetEncryptionKey.
+func aead() (cipher.AEAD, error) {
 	if encryptionKey == nil {
-		return "", errors.New("orm: call orm.SetEncryptionKey before using Encrypted")
+		return nil, errors.New("orm: call orm.SetEncryptionKey before using Encrypted")
 	}
 	block, err := aes.NewCipher(encryptionKey)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	gcm, err := cipher.NewGCM(block)
+	return cipher.NewGCM(block)
+}
+
+func sealed(v []byte) (string, error) {
+	gcm, err := aead()
 	if err != nil {
 		return "", err
 	}
@@ -73,20 +82,13 @@ func sealed(v []byte) (string, error) {
 }
 
 func opened(s string) ([]byte, error) {
-	if encryptionKey == nil {
-		return nil, errors.New("orm: call orm.SetEncryptionKey before using Encrypted")
+	gcm, err := aead()
+	if err != nil {
+		return nil, err
 	}
 	raw, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
 		return nil, fmt.Errorf("orm: decrypting value: %w", err)
-	}
-	block, err := aes.NewCipher(encryptionKey)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
 	}
 	if len(raw) < gcm.NonceSize() {
 		return nil, errors.New("orm: encrypted value is too short")
@@ -116,30 +118,26 @@ func (e Encrypted[V]) Value() (driver.Value, error) {
 }
 
 func (e *Encrypted[V]) Scan(src any) error {
+	var text string
 	switch s := src.(type) {
 	case nil:
+	case string:
+		text = s
+	case []byte:
+		text = string(s)
+	default:
+		return fmt.Errorf("orm: cannot scan %T into Encrypted", src)
+	}
+	if text == "" {
 		var zero V
 		e.V = zero
 		return nil
-	case string:
-		b, err := opened(s)
-		if err != nil {
-			return err
-		}
-		return json.Unmarshal(b, &e.V)
-	case []byte:
-		if string(s) == "" {
-			var zero V
-			e.V = zero
-			return nil
-		}
-		b, err := opened(string(s))
-		if err != nil {
-			return err
-		}
-		return json.Unmarshal(b, &e.V)
 	}
-	return fmt.Errorf("orm: cannot scan %T into Encrypted", src)
+	b, err := opened(text)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, &e.V)
 }
 
 func (e Encrypted[V]) MarshalJSON() ([]byte, error)  { return json.Marshal(e.V) }

@@ -3,9 +3,12 @@ package schema
 import (
 	"cmp"
 	"context"
-	"errors"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"slices"
+	"strconv"
 	"sync"
 
 	"github.com/stubbedev/eloquent-go/orm"
@@ -19,7 +22,7 @@ type Migration struct {
 	Up         func(ctx context.Context, s *Builder) error
 	Down       func(ctx context.Context, s *Builder) error
 	// NoTransaction disables wrapping the migration in a transaction on
-	// engines with transactional DDL (SQLite, Postgres).
+	// engines with transactional DDL (SQLite, Postgres, DuckDB).
 	NoTransaction bool
 }
 
@@ -64,6 +67,12 @@ type Status struct {
 	Name  string
 	Ran   bool
 	Batch int
+}
+
+// PendingMigration is the SQL a pending migration would run (migrate --pretend).
+type PendingMigration struct {
+	Name       string
+	Statements []string
 }
 
 func (m *Migrator) conn() string  { return cmp.Or(m.Connection, orm.DefaultConnection) }
@@ -116,53 +125,45 @@ func (m *Migrator) Migrate(ctx context.Context, step bool) ([]string, error) {
 
 // Rollback reverts the last batch, or the last steps migrations when steps > 0.
 func (m *Migrator) Rollback(ctx context.Context, steps int) ([]string, error) {
-	if err := m.ensureTable(ctx); err != nil {
-		return nil, err
-	}
-	ran, err := m.ran(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var names []string
-	last := 0
-	for name, b := range ran {
-		names = append(names, name)
-		last = max(last, b)
-	}
-	// Newest first: by batch, then by name.
-	slices.SortFunc(names, func(a, b string) int {
-		return cmp.Or(cmp.Compare(ran[b], ran[a]), cmp.Compare(b, a))
-	})
-	var target []string
-	for _, n := range names {
-		if steps > 0 && len(target) == steps || steps == 0 && ran[n] != last {
-			break
+	return m.revert(ctx, func(newest []string, ran map[string]int) []string {
+		if steps > 0 {
+			return newest[:min(steps, len(newest))]
 		}
-		target = append(target, n)
-	}
-	return m.down(ctx, target)
+		if len(newest) == 0 {
+			return nil
+		}
+		last := ran[newest[0]]
+		if i := slices.IndexFunc(newest, func(n string) bool { return ran[n] != last }); i >= 0 {
+			return newest[:i]
+		}
+		return newest
+	})
 }
 
-// Reset reverts every migration.
+// Reset reverts every migration that has run, newest first.
 func (m *Migrator) Reset(ctx context.Context) ([]string, error) {
+	return m.revert(ctx, func(newest []string, _ map[string]int) []string { return newest })
+}
+
+// revert rolls back the migrations pick selects from the ones that ran,
+// ordered newest first (by batch, then name). A migration that ran but is
+// no longer registered is an error.
+func (m *Migrator) revert(ctx context.Context, pick func(newest []string, ran map[string]int) []string) ([]string, error) {
 	if err := m.ensureTable(ctx); err != nil {
-		return nil, err
-	}
-	all, err := m.sorted()
-	if err != nil {
 		return nil, err
 	}
 	ran, err := m.ran(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var target []string
-	for _, m := range slices.Backward(all) {
-		if _, ok := ran[m.Name]; ok {
-			target = append(target, m.Name)
-		}
+	newest := make([]string, 0, len(ran))
+	for name := range ran {
+		newest = append(newest, name)
 	}
-	return m.down(ctx, target)
+	slices.SortFunc(newest, func(a, b string) int {
+		return cmp.Or(cmp.Compare(ran[b], ran[a]), cmp.Compare(b, a))
+	})
+	return m.down(ctx, pick(newest, ran))
 }
 
 // Refresh resets and re-runs every migration.
@@ -184,7 +185,7 @@ func (m *Migrator) Fresh(ctx context.Context) ([]string, error) {
 	}
 	for _, c := range conns {
 		if err := On(c).DropAllTables(ctx); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("schema: dropping all tables on %q: %w", c, err)
 		}
 	}
 	return m.Migrate(ctx, false)
@@ -211,29 +212,36 @@ func (m *Migrator) Status(ctx context.Context) ([]Status, error) {
 	return out, nil
 }
 
-// Pretend returns the SQL pending migrations would run, without running it.
-func (m *Migrator) Pretend(ctx context.Context) (map[string][]string, error) {
-	if err := m.ensureTable(ctx); err != nil {
-		return nil, err
-	}
-	ran, err := m.ran(ctx)
+// Pretend returns the SQL pending migrations would run, in migration order,
+// without running it or creating the migrations table.
+func (m *Migrator) Pretend(ctx context.Context) ([]PendingMigration, error) {
+	installed, err := On(m.conn()).HasTable(ctx, m.table())
 	if err != nil {
 		return nil, err
+	}
+	ran := map[string]int{}
+	if installed {
+		if ran, err = m.ran(ctx); err != nil {
+			return nil, err
+		}
 	}
 	all, err := m.sorted()
 	if err != nil {
 		return nil, err
 	}
-	out := map[string][]string{}
+	var out []PendingMigration
 	for _, mig := range all {
 		if _, ok := ran[mig.Name]; ok {
 			continue
 		}
+		if mig.Up == nil {
+			return out, fmt.Errorf("schema: migration %s has no Up function", mig.Name)
+		}
 		b, log := On(cmp.Or(mig.Connection, m.conn())).Pretend()
 		if err := mig.Up(ctx, b); err != nil {
-			return out, err
+			return out, fmt.Errorf("schema: pretending %s: %w", mig.Name, err)
 		}
-		out[mig.Name] = log()
+		out = append(out, PendingMigration{Name: mig.Name, Statements: log()})
 	}
 	return out, nil
 }
@@ -262,83 +270,159 @@ func (m *Migrator) down(ctx context.Context, names []string) ([]string, error) {
 // migration and repository share a connection.
 func (m *Migrator) run(ctx context.Context, mig Migration, up bool, batch int) error {
 	conn := cmp.Or(mig.Connection, m.conn())
-	fn := mig.Down
+	fn, direction := mig.Down, "Down"
 	if up {
-		fn = mig.Up
+		fn, direction = mig.Up, "Up"
 	}
 	if fn == nil {
-		return errors.New("no Up/Down function")
+		return fmt.Errorf("schema: migration %s has no %s function", mig.Name, direction)
 	}
 	apply := func(ctx context.Context) error {
 		if err := fn(ctx, On(conn)); err != nil {
 			return err
 		}
 		if up {
-			return m.exec(ctx, "INSERT INTO %s (%s, %s) VALUES (%s, %s)", []string{"migration", "batch"}, mig.Name, batch)
+			return m.logRan(ctx, mig.Name, batch)
 		}
-		return m.exec(ctx, "DELETE FROM %s WHERE %s = %s", []string{"migration"}, mig.Name)
+		return m.logReverted(ctx, mig.Name)
 	}
-	c, err := orm.Connection(ctx, conn)
+	if _, doc, err := On(conn).docStore(ctx); err != nil || doc {
+		return thenRun(err, func() error { return apply(ctx) })
+	}
+	x, err := On(conn).session(ctx)
 	if err != nil {
 		return err
 	}
-	g, err := grammarFor(c.Dialect.Name())
-	if err != nil {
-		return err
-	}
-	if mig.NoTransaction || !g.transactionalDDL() || conn != m.conn() {
+	if mig.NoTransaction || !x.g.transactionalDDL() || conn != m.conn() {
 		return apply(ctx)
 	}
 	return orm.TransactionOn(ctx, conn, apply)
 }
 
+// ensureTable creates the migrations table. Engines that generate no keys
+// (ClickHouse) key it by migration name instead of an id.
 func (m *Migrator) ensureTable(ctx context.Context) error {
-	return On(m.conn()).CreateIfNotExists(ctx, m.table(), func(t *Blueprint) {
-		t.Increments("id")
-		t.String("migration")
+	b := On(m.conn())
+	if _, doc, err := b.docStore(ctx); err != nil || doc {
+		return thenRun(err, func() error {
+			return b.CreateIfNotExists(ctx, m.table(), func(t *Blueprint) {
+				t.String("id").Primary()
+				t.String("migration").Index()
+				t.Integer("batch")
+			})
+		})
+	}
+	x, err := b.session(ctx)
+	if err != nil {
+		return err
+	}
+	autoKeys := x.dialect.AutoKeys()
+	return b.CreateIfNotExists(ctx, m.table(), func(t *Blueprint) {
+		if autoKeys {
+			t.Increments("id")
+			t.String("migration")
+		} else {
+			t.String("migration").Primary()
+		}
 		t.Integer("batch")
 	})
 }
 
 func (m *Migrator) ran(ctx context.Context) (map[string]int, error) {
-	c, err := orm.Connection(ctx, m.conn())
-	if err != nil {
-		return nil, err
-	}
-	g, _ := grammarFor(c.Dialect.Name())
-	rows, err := c.DB.QueryContext(ctx, fmt.Sprintf("SELECT %s, %s FROM %s",
-		g.quote("migration"), g.quote("batch"), g.quote(m.table())))
-	if err != nil {
-		return nil, err
-	}
-	defer closeRows(rows)
-	out := map[string]int{}
-	for rows.Next() {
-		var name string
-		var batch int
-		if err := rows.Scan(&name, &batch); err != nil {
+	if _, doc, err := On(m.conn()).docStore(ctx); err != nil || doc {
+		if err != nil {
 			return nil, err
 		}
-		out[name] = batch
+		return m.ranDocs(ctx)
 	}
-	return out, rows.Err()
+	x, err := On(m.conn()).session(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int{}
+	err = x.query(ctx, fmt.Sprintf("SELECT %s, %s FROM %s", x.g.quote("migration"), x.g.quote("batch"), x.g.quote(m.table())),
+		nil, func(r *sql.Rows) error {
+			var name string
+			var batch int
+			if err := r.Scan(&name, &batch); err != nil {
+				return err
+			}
+			out[name] = batch
+			return nil
+		})
+	if err != nil {
+		return nil, fmt.Errorf("schema: reading migrations table %s on %q: %w", m.table(), m.conn(), err)
+	}
+	return out, nil
 }
 
-// exec formats a statement against the migrations table: the first %s is
+// record formats a statement against the migrations table: the first %s is
 // the table, then the quoted columns, then one placeholder per arg.
-func (m *Migrator) exec(ctx context.Context, format string, cols []string, args ...any) error {
-	c, err := orm.Connection(ctx, m.conn())
+func (m *Migrator) record(ctx context.Context, format string, cols []string, args ...any) error {
+	x, err := On(m.conn()).session(ctx)
 	if err != nil {
 		return err
 	}
-	g, _ := grammarFor(c.Dialect.Name())
-	parts := []any{g.quote(m.table())}
+	parts := []any{x.g.quote(m.table())}
 	for _, col := range cols {
-		parts = append(parts, g.quote(col))
+		parts = append(parts, x.g.quote(col))
 	}
 	for i := range args {
-		parts = append(parts, c.Dialect.Placeholder(i+1))
+		parts = append(parts, x.dialect.Placeholder(i+1))
 	}
-	_, err = c.DB.ExecContext(ctx, fmt.Sprintf(format, parts...), args...)
-	return err
+	return x.execArgs(ctx, fmt.Sprintf(format, parts...), args...)
+}
+
+// ranDocs reads the migrations log from a document store.
+func (m *Migrator) ranDocs(ctx context.Context) (map[string]int, error) {
+	rows, err := orm.From(m.table()).On(m.conn()).Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("schema: reading migrations collection %s on %q: %w", m.table(), m.conn(), err)
+	}
+	out := make(map[string]int, len(rows))
+	for _, row := range rows {
+		name, ok := row["migration"].(string)
+		if !ok {
+			return nil, fmt.Errorf("schema: migrations collection %s on %q holds a document without a migration name", m.table(), m.conn())
+		}
+		batch, err := strconv.Atoi(fmt.Sprint(row["batch"]))
+		if err != nil {
+			return nil, fmt.Errorf("schema: migration %s on %q has batch %v: %w", name, m.conn(), row["batch"], err)
+		}
+		out[name] = batch
+	}
+	return out, nil
+}
+
+// logRan records a migration as run in batch. On a document store the
+// entry is keyed by an id derived from the name, which every store accepts
+// as a key.
+func (m *Migrator) logRan(ctx context.Context, name string, batch int) error {
+	if _, doc, err := On(m.conn()).docStore(ctx); err != nil || doc {
+		return thenRun(err, func() error {
+			return orm.From(m.table()).On(m.conn()).Insert(ctx, map[string]any{"id": nameID(name), "migration": name, "batch": batch})
+		})
+	}
+	return m.record(ctx, "INSERT INTO %s (%s, %s) VALUES (%s, %s)", []string{"migration", "batch"}, name, batch)
+}
+
+// logReverted removes a migration from the log.
+func (m *Migrator) logReverted(ctx context.Context, name string) error {
+	if _, doc, err := On(m.conn()).docStore(ctx); err != nil || doc {
+		return thenRun(err, func() error {
+			_, err := orm.From(m.table()).On(m.conn()).Where("migration", orm.Eq, name).Delete(ctx)
+			return err
+		})
+	}
+	return m.record(ctx, "DELETE FROM %s WHERE %s = %s", []string{"migration"}, name)
+}
+
+// nameID is a stable UUID for name: SHA-256 in the version 8 (custom)
+// layout.
+func nameID(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	sum[6] = sum[6]&0x0f | 0x80
+	sum[8] = sum[8]&0x3f | 0x80
+	h := hex.EncodeToString(sum[:16])
+	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }

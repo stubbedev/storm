@@ -61,11 +61,10 @@ const (
 )
 
 var (
-	SQLite            Dialect = sqliteDialect{}
-	Postgres          Dialect = postgresDialect{}
-	MySQL             Dialect = mysqlDialect{}
-	DuckDBDialect             = duckdbDialect{}
-	ClickHouseDialect         = clickhouseDialect{}
+	SQLite   Dialect = sqliteDialect{}
+	Postgres Dialect = postgresDialect{}
+	MySQL    Dialect = mysqlDialect{}
+	MariaDB  Dialect = mariadbDialect{}
 )
 
 // DialectFor maps a database/sql driver name to a dialect.
@@ -75,12 +74,14 @@ func DialectFor(driver string) (Dialect, bool) {
 		return SQLite, true
 	case "postgres", "pgx", "pq":
 		return Postgres, true
-	case "mysql", "mariadb":
+	case "mysql":
 		return MySQL, true
+	case "mariadb":
+		return MariaDB, true
 	case "duckdb", "duckdb-go":
-		return DuckDBDialect, true
+		return DuckDB, true
 	case "clickhouse":
-		return ClickHouseDialect, true
+		return ClickHouse, true
 	}
 	return nil, false
 }
@@ -170,11 +171,16 @@ func (sqliteDialect) VectorDistance(b *SQL, e AnyExpr, arg any, m VectorMetric) 
 		b.Write(")")
 		return
 	}
-	b.Write("sqrt((SELECT sum((je.value - ")
-	b.Arg(arg)
-	b.Write(") * (je.value - ")
-	b.Arg(arg)
-	b.Write(")) FROM json_each(")
+	component := func() {
+		b.Write("(je.value - json_extract(")
+		b.Arg(arg)
+		b.Write(", '$[' || je.key || ']'))")
+	}
+	b.Write("sqrt((SELECT sum(")
+	component()
+	b.Write(" * ")
+	component()
+	b.Write(") FROM json_each(")
 	e.build(b)
 	b.Write(") je))")
 }
@@ -422,9 +428,33 @@ func (mysqlDialect) DeletePrefix(b *SQL, table string) {
 func (mysqlDialect) VectorDistance(b *SQL, e AnyExpr, arg any, m VectorMetric) {
 	b.Write("DISTANCE(")
 	e.build(b)
-	b.Write(", ")
+	b.Write(", STRING_TO_VECTOR(")
 	b.Arg(arg)
-	b.Write(", ", map[VectorMetric]string{L2: "'EUCLIDEAN'", Cosine: "'COSINE'", InnerProduct: "'DOT'"}[m], ")")
+	b.Write("), ", map[VectorMetric]string{L2: "'EUCLIDEAN'", Cosine: "'COSINE'", InnerProduct: "'DOT'"}[m], ")")
+}
+
+// ---------------------------------------------------------------------------
+
+// mariadbDialect is MySQL's wire protocol and most of its SQL, diverging
+// where MariaDB does: shared locks, INSERT ... RETURNING and vector
+// functions (MariaDB 11.7+).
+type mariadbDialect struct{ mysqlDialect }
+
+func (mariadbDialect) Name() string    { return "mariadb" }
+func (mariadbDialect) Returning() bool { return true }
+
+func (mariadbDialect) Lock(m LockMode) string {
+	return map[LockMode]string{ForUpdate: " FOR UPDATE", ForShare: " LOCK IN SHARE MODE"}[m]
+}
+
+// VectorDistance uses MariaDB's VEC_DISTANCE functions, which have no
+// inner-product form; that metric fails with an unknown-function error.
+func (mariadbDialect) VectorDistance(b *SQL, e AnyExpr, arg any, m VectorMetric) {
+	b.Write(map[VectorMetric]string{L2: "VEC_DISTANCE_EUCLIDEAN(", Cosine: "VEC_DISTANCE_COSINE(", InnerProduct: "orm_vector_metric_unsupported("}[m])
+	e.build(b)
+	b.Write(", VEC_FromText(")
+	b.Arg(arg)
+	b.Write("))")
 }
 
 // ---------------------------------------------------------------------------
