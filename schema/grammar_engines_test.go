@@ -179,7 +179,7 @@ func TestDuckDBGrammar(t *testing.T) {
 	})
 	want(t, "duckdb create", stmts, []string{
 		`CREATE SEQUENCE IF NOT EXISTS "it's_id_seq" START WITH 100`,
-		`CREATE TABLE "it's" ("id" bigint NOT NULL PRIMARY KEY DEFAULT nextval('"it''s_id_seq"'), "at" timestamptz NOT NULL, ` +
+		`CREATE TABLE "it's" ("id" ubigint NOT NULL PRIMARY KEY DEFAULT nextval('"it''s_id_seq"'), "at" timestamptz NOT NULL, ` +
 			`"seen" timestamptz NOT NULL, "clock" timetz NOT NULL, "level" enum('info', 'warn') NOT NULL, ` +
 			`"twice" integer GENERATED ALWAYS AS (id * 2) VIRTUAL, "name" varchar(255) NOT NULL)`,
 		`COMMENT ON TABLE "it's" IS 'quoted table'`,
