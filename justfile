@@ -38,7 +38,7 @@ mysql_audit := "storm:storm@tcp(127.0.0.1:33069)/storm_audit?parseTime=true"
 maria_dsn   := "storm:storm@tcp(127.0.0.1:33070)/storm?parseTime=true&multiStatements=true"
 maria_audit := "storm:storm@tcp(127.0.0.1:33070)/storm_audit?parseTime=true"
 ch_dsn      := "clickhouse://default:storm@127.0.0.1:19000/storm?dial_timeout=5s"
-mongo_dsn   := "mongodb://127.0.0.1:17017"
+mongo_dsn   := "mongodb://127.0.0.1:17017/?directConnection=true"
 qdrant_url  := "http://127.0.0.1:16333"
 
 # Run the suite against Postgres with pgvector.

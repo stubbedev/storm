@@ -3,6 +3,7 @@ package orm
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -185,7 +186,23 @@ type txState struct {
 	conn  Conn
 	depth int
 	after *[]func(context.Context) // afterCommit callbacks, shared with nested levels
+	// doc marks a document-store transaction, which has no savepoints: a
+	// nested transaction joins it, and its failure (failed) rolls the whole
+	// transaction back.
+	doc    bool
+	failed bool
 }
+
+// DocTransactor is a document store with transactions (MongoDB on a
+// replica set); orm.Transaction on its connection runs fn in one.
+type DocTransactor interface {
+	Transaction(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+// ErrNestedFailed is returned by a document-store transaction whose nested
+// transaction failed: with no savepoints to undo the nested part alone,
+// the whole transaction rolled back.
+var ErrNestedFailed = errors.New("orm: a nested transaction failed, so the whole document-store transaction rolled back")
 
 type txKey struct{ conn string }
 
@@ -219,6 +236,13 @@ func TransactionAttemptsOn(ctx context.Context, name string, attempts int, fn fu
 
 func TransactionOnce(ctx context.Context, name string, fn func(ctx context.Context) error) (err error) {
 	if st, ok := ctx.Value(txKey{name}).(*txState); ok {
+		if st.doc {
+			if err := fn(ctx); err != nil {
+				st.failed = true
+				return err
+			}
+			return nil
+		}
 		return savepoint(ctx, name, st, fn)
 	}
 	c, err := lookup(ctx, name)
@@ -226,8 +250,7 @@ func TransactionOnce(ctx context.Context, name string, fn func(ctx context.Conte
 		return err
 	}
 	if c.Doc != nil {
-		// Document stores have no transactions; run the unit of work as-is.
-		return fn(ctx)
+		return docTransaction(ctx, name, c, fn)
 	}
 	beginner, ok := c.DB.(interface {
 		BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
@@ -256,6 +279,47 @@ func TransactionOnce(ctx context.Context, name string, fn func(ctx context.Conte
 		}
 	}()
 	return fn(context.WithValue(ctx, txKey{name}, st))
+}
+
+// docTransaction runs fn in the document store's own transaction; a store
+// without transactions refuses rather than running fn unprotected.
+func docTransaction(ctx context.Context, name string, c Conn, fn func(ctx context.Context) error) error {
+	tr, ok := c.Doc.(DocTransactor)
+	if !ok {
+		return &ErrNotTranslatable{Reason: fmt.Sprintf("transactions on connection %q (%T has none)", name, c.Doc)}
+	}
+	st := &txState{conn: c, doc: true, after: new([]func(context.Context))}
+	err := tr.Transaction(ctx, func(tctx context.Context) error {
+		if err := fn(context.WithValue(tctx, txKey{name}, st)); err != nil {
+			return err
+		}
+		if st.failed {
+			return ErrNestedFailed
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, f := range *st.after {
+		f(ctx)
+	}
+	return nil
+}
+
+// SupportsTransactions reports whether the named connection can run
+// orm.Transaction: every SQL connection, and document stores with their
+// own transactions.
+func SupportsTransactions(ctx context.Context, name string) (bool, error) {
+	c, err := lookup(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	if c.Doc == nil {
+		return true, nil
+	}
+	_, ok := c.Doc.(DocTransactor)
+	return ok, nil
 }
 
 // savepoint runs a nested transaction (DB::transaction inside another).

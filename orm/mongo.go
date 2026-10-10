@@ -45,6 +45,36 @@ func (s *MongoStore) coll(table string) *mongo.Collection { return s.db.Collecti
 
 func (s *MongoStore) Engine() string { return "mongodb" }
 
+// Transaction runs fn in a multi-document transaction, which MongoDB
+// offers on replica sets and sharded clusters; operations on fn's ctx join
+// it. fn runs once: a failure aborts, it is not retried.
+func (s *MongoStore) Transaction(ctx context.Context, fn func(ctx context.Context) error) (err error) {
+	sess, err := s.client.StartSession()
+	if err != nil {
+		return fmt.Errorf("orm: mongo starting a session: %w", err)
+	}
+	defer sess.EndSession(ctx)
+	if err := sess.StartTransaction(); err != nil {
+		return fmt.Errorf("orm: mongo starting a transaction: %w", err)
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = sess.AbortTransaction(ctx)
+			panic(p)
+		}
+	}()
+	if err := fn(mongo.NewSessionContext(ctx, sess)); err != nil {
+		if abortErr := sess.AbortTransaction(ctx); abortErr != nil {
+			return errors.Join(err, fmt.Errorf("orm: mongo aborting a transaction: %w", abortErr))
+		}
+		return err
+	}
+	if err := sess.CommitTransaction(ctx); err != nil {
+		return fmt.Errorf("orm: mongo committing a transaction: %w", err)
+	}
+	return nil
+}
+
 func (s *MongoStore) Collections(ctx context.Context) ([]string, error) {
 	names, err := s.db.ListCollectionNames(ctx, bson.D{})
 	if err != nil {

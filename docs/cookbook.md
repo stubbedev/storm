@@ -469,6 +469,14 @@ err = orm.RetryingTransaction(ctx, 3, func(ctx context.Context) error { return U
 
 Every query that receives the transaction's `ctx` runs inside it.
 
+On MongoDB (a replica set or sharded cluster) `orm.TransactionOn(ctx,
+"mongo", ...)` is a real multi-document transaction. MongoDB has no
+savepoints, so a nested transaction joins the outer one, and if it fails
+the whole transaction rolls back with `orm.ErrNestedFailed` instead of
+committing half of it. Qdrant has no transactions and refuses with
+`ErrNotTranslatable`; `orm.SupportsTransactions` reports which connections
+can, and seeders run in a transaction exactly where it is supported.
+
 ## Connections and dialects
 
 ```go

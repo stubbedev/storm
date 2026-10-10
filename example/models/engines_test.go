@@ -448,6 +448,29 @@ func TestMongo(t *testing.T) {
 	eq(t, "unsigned decrement", must(orm.From("documents").On("mongo").Where("title", orm.Eq, "near").Decrement(ctx, "views", uint8(1))), int64(1))
 
 	assertDocMigrations(t, ctx, "mongo")
+
+	txDocs := orm.From("tx_docs").On("mongo")
+	ok(txDocs.Insert(ctx, map[string]any{"id": "seed"}))
+	committed := false
+	ok(orm.TransactionOn(ctx, "mongo", func(ctx context.Context) error {
+		eq(t, "inTransaction on mongo", must(txDocs.Count(ctx)), int64(1))
+		orm.AfterCommitOn(ctx, "mongo", func(context.Context) { committed = true })
+		return txDocs.Insert(ctx, map[string]any{"id": "kept"})
+	}))
+	eq(t, "mongo transaction commits", fmt.Sprint(must(txDocs.Count(ctx)), committed), "2 true")
+	err = orm.TransactionOn(ctx, "mongo", func(ctx context.Context) error {
+		ok(txDocs.Insert(ctx, map[string]any{"id": "dropped"}))
+		return errors.New("roll back")
+	})
+	eq(t, "mongo transaction rolls back", err != nil && must(txDocs.Count(ctx)) == 2, true)
+	err = orm.TransactionOn(ctx, "mongo", func(ctx context.Context) error {
+		ok(txDocs.Insert(ctx, map[string]any{"id": "outer"}))
+		_ = orm.TransactionOn(ctx, "mongo", func(ctx context.Context) error { return errors.New("inner fails") })
+		return nil
+	})
+	eq(t, "failed nested transaction rolls back the whole", errors.Is(err, orm.ErrNestedFailed) && must(txDocs.Count(ctx)) == 2, true)
+	eq(t, "mongo supports transactions", must(orm.SupportsTransactions(ctx, "mongo")), true)
+	ok(schema.On("mongo").Drop(ctx, "tx_docs"))
 }
 
 // failingValuer fails to convert, as Encrypted does without a key.
@@ -588,6 +611,9 @@ func TestQdrant(t *testing.T) {
 	eq(t, "withKey names the point id column", fmt.Sprintf("%v %v", point["code"], point["name"]), "7 seven")
 	ok(keyed.DropCollection(ctx, "keyed"))
 	assertDocMigrations(t, ctx, "qdrant")
+	err = orm.TransactionOn(ctx, "qdrant", func(context.Context) error { return nil })
+	eq(t, "qdrant transactions refused", orm.IsNotTranslatable(err), true)
+	eq(t, "qdrant has no transactions", must(orm.SupportsTransactions(ctx, "qdrant")), false)
 	ok(store.EnsureCollection(ctx, "documents", 3, orm.Cosine))
 	err = store.EnsureCollection(ctx, "documents", 4, orm.Cosine)
 	eq(t, "ensureCollection mismatch", err != nil && strings.Contains(err.Error(), "exists with 3-dimension Cosine"), true)

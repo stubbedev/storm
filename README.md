@@ -436,7 +436,8 @@ What translates: `Where` (comparisons, `In`, `Between`, null tests,
 `Upsert` and `InsertOrIgnore`, `Increment` / `Decrement` (`$inc` on
 MongoDB), and the model lifecycle — `Create`, `Save` (dirty columns only),
 `Delete`, soft deletes, events, `Count`, `Exists`, length-aware and simple
-pagination, chunking, and `orm.From(...)` table queries. Keys must be
+pagination, chunking, transactions (MongoDB replica sets), and
+`orm.From(...)` table queries. Keys must be
 UUID, ULID or manual (assigned automatically when missing). Every
 operation reaches `orm.Listen` and the query log with a readable rendering
 of the plan. What refuses, with a precise error naming the part

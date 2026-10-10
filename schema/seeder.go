@@ -53,8 +53,8 @@ func RegisteredSeeders() []Seeder {
 }
 
 // Seed runs every registered seeder (or just the named ones) on the default
-// connection, each in its own transaction (db:seed). Unknown names are an
-// error. Returns the names that ran.
+// connection, each in its own transaction where the store has transactions
+// (db:seed). Unknown names are an error. Returns the names that ran.
 func Seed(ctx context.Context, names ...string) ([]string, error) {
 	return SeedOn(ctx, orm.DefaultConnection, names...)
 }
@@ -79,9 +79,17 @@ func SeedOn(ctx context.Context, connection string, names ...string) ([]string, 
 			selected = append(selected, all[i])
 		}
 	}
+	transactional, err := orm.SupportsTransactions(ctx, connection)
+	if err != nil {
+		return nil, err
+	}
 	var ran []string
 	for _, s := range selected {
-		if err := orm.TransactionOn(ctx, connection, s.Run); err != nil {
+		run := s.Run
+		if transactional {
+			run = func(ctx context.Context) error { return orm.TransactionOn(ctx, connection, s.Run) }
+		}
+		if err := run(ctx); err != nil {
 			return ran, fmt.Errorf("schema: seeding %s: %w", s.Name, err)
 		}
 		ran = append(ran, s.Name)
