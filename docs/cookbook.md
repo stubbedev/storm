@@ -637,6 +637,19 @@ users, err := UserFactory.Count(4).
 draft := UserFactory.MakeOne() // unsaved
 ```
 
+## Raw SQL
+
+For what the builders do not cover, `orm.Select` and `orm.Statement` run
+SQL on a connection (`DB::select`, `DB::statement`). Placeholders are `?`
+on every engine and are bound, never interpolated; the statements reach
+`orm.Listen`, honour transactions and sticky reads, and refuse on document
+stores.
+
+```go
+rows, err := orm.Select(ctx, "SELECT name FROM users WHERE karma > ?", 10)   // []map[string]any
+n, err := orm.StatementOn(ctx, "audit", "DELETE FROM audit_log WHERE at < ?", cutoff)
+```
+
 ## Debugging
 
 ```go
@@ -782,6 +795,16 @@ on that connection — a MongoDB or Qdrant one included (see the README's
 "Migrating document stores"); a migrator whose own connection is a document
 store keeps its log there. `Migrator` exposes the same operations
 programmatically, for example to migrate in tests.
+
+Views are created over a SELECT in the engine's SQL, listed apart from
+tables, and dropped one by one or all at once; `migrate:fresh -drop-views`
+(`Migrator.DropViews`) drops them before the tables:
+
+```go
+err = schema.Default().CreateView(ctx, "active_users", "SELECT * FROM users WHERE active")
+views, err := schema.Default().Views(ctx)
+err = schema.Default().DropViewIfExists(ctx, "active_users")
+```
 
 Indexes can be partial or cover an expression:
 

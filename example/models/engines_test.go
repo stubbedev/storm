@@ -202,6 +202,7 @@ func TestDuckDB(t *testing.T) {
 	assertDropHelpers(t, ctx, "duck")
 	assertTimePrecision(t, ctx, "duck")
 	assertIndexForms(t, ctx, "duck")
+	assertViews(t, ctx, "duck")
 
 	// Flat files: DuckDB reads CSV straight from the builder.
 	csv := t.TempDir() + "/flat.csv"
@@ -302,6 +303,7 @@ func TestClickHouse(t *testing.T) {
 	assertDropHelpers(t, ctx, "ch")
 	assertTimePrecision(t, ctx, "ch")
 	assertIndexForms(t, ctx, "ch")
+	assertViews(t, ctx, "ch")
 	refusesExampleSchema(ctx, t, "ch", "clickhouse", "create_countries_table")
 }
 
@@ -428,6 +430,12 @@ func TestMongo(t *testing.T) {
 	eq(t, "like with wildcards", must(orm.From("documents").On("mongo").Where("title", orm.Like, "n_ar").Count(ctx)), int64(1))
 
 	assertValuerErrors(t, ctx, "mongo")
+	_, err = orm.SelectOn(ctx, "mongo", "SELECT 1")
+	eq(t, "raw select refused", orm.IsNotTranslatable(err), true)
+	_, err = orm.StatementOn(ctx, "mongo", "DELETE FROM documents")
+	eq(t, "raw statement refused", orm.IsNotTranslatable(err), true)
+	_, refusal := errors.AsType[*schema.UnsupportedError](schema.On("mongo").CreateView(ctx, "v", "SELECT 1"))
+	eq(t, "views refused", refusal, true)
 	mongoDocs := orm.From("documents").On("mongo")
 	eq(t, "row find", must(mongoDocs.Find(ctx, one.ID))["title"], any("near"))
 	eq(t, "row sole", must(mongoDocs.Where("title", orm.Eq, "near").Sole(ctx))["id"], any(one.ID))

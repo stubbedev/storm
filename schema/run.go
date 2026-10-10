@@ -35,7 +35,7 @@ import (
 //	                              revert the last batch, N migrations or batch B
 //	reset                         revert all migrations
 //	refresh [-steps N] [-seed]    revert all (or N) migrations, migrate again
-//	fresh [-seed]                 drop all tables, migrate (and seed)
+//	fresh [-seed] [-drop-views]   drop all tables (and views), migrate (and seed)
 //	wipe                          drop all tables (db:wipe)
 //	status                        list migrations and whether they ran
 //	db:seed [-class X]            run every seeder (or just X)
@@ -56,6 +56,7 @@ func Run(ctx context.Context, m *Migrator, args []string, out io.Writer) error {
 	steps := fs.Int("steps", 0, "number of migrations to roll back or refresh")
 	batch := fs.Int("batch", 0, "roll back this batch only")
 	isolated := fs.Bool("isolated", false, "hold the migration lock; skip when another run holds it")
+	dropViews := fs.Bool("drop-views", false, "fresh also drops views")
 	seed := fs.Bool("seed", false, "run seeders after migrating")
 	class := fs.String("class", "", "run only this seeder")
 	dir := fs.String("dir", "migrations", "directory for new migrations")
@@ -72,9 +73,10 @@ func Run(ctx context.Context, m *Migrator, args []string, out io.Writer) error {
 		}
 	}
 
-	if *database != "" {
+	if *database != "" || *dropViews {
 		c := *m
-		c.Connection = *database
+		c.Connection = cmp.Or(*database, c.Connection)
+		c.DropViews = c.DropViews || *dropViews
 		m = &c
 	}
 	report := func(verb string, names []string, err error) error {

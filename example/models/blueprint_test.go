@@ -272,6 +272,7 @@ func TestBlueprintSurface(t *testing.T) {
 	assertDropHelpers(t, ctx, orm.DefaultConnection)
 	assertTimePrecision(t, ctx, orm.DefaultConnection)
 	assertIndexForms(t, ctx, orm.DefaultConnection)
+	assertViews(t, ctx, orm.DefaultConnection)
 
 	ok(schema.Create(ctx, "shortcuts", func(b *schema.Blueprint) { b.ID(); b.String("a") }))
 	ok(schema.Table(ctx, "shortcuts", func(b *schema.Blueprint) { b.String("b").Nullable() }))
@@ -376,4 +377,37 @@ func assertIndexForms(t *testing.T, ctx context.Context, conn string) {
 		eq(t, engine+" expression index dropped", must(s.HasIndex(ctx, "accounts", []string{"accounts_email_lower"})), false)
 	}
 	ok(s.DropIfExists(ctx, "accounts"))
+}
+
+// assertViews creates, lists, queries and drops views, and checks the raw
+// statement and select helpers on the same connection.
+func assertViews(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	s := schema.On(conn)
+	ok(s.DropViewIfExists(ctx, "loud_notes"))
+	ok(s.DropIfExists(ctx, "notes"))
+	ok(s.Create(ctx, "notes", func(b *schema.Blueprint) {
+		b.UUIDPrimary()
+		b.String("body")
+		b.Integer("volume")
+	}))
+	inserted := must(orm.StatementOn(ctx, conn, "INSERT INTO notes (id, body, volume) VALUES (?, ?, ?), (?, ?, ?)",
+		"0198c0de-0000-7000-8000-0000000000d1", "whisper", 1, "0198c0de-0000-7000-8000-0000000000d2", "shout", 9))
+	if engine := must(s.DriverName(ctx)); engine != "clickhouse" {
+		eq(t, conn+" statement reports affected rows", inserted, int64(2))
+	}
+	ok(s.CreateView(ctx, "loud_notes", "SELECT body FROM notes WHERE volume > 5"))
+	eq(t, conn+" views", must(s.Views(ctx)), []string{"loud_notes"})
+	eq(t, conn+" hasView", must(s.HasView(ctx, "loud_notes")), true)
+	eq(t, conn+" views are not tables", slices.Contains(must(s.Tables(ctx)), "loud_notes"), false)
+	rows := must(orm.SelectOn(ctx, conn, "SELECT body FROM loud_notes WHERE body <> ?", "nothing"))
+	eq(t, conn+" select through a view", fmt.Sprint(rows[0]["body"]), "shout")
+	ok(s.DropView(ctx, "loud_notes"))
+	eq(t, conn+" dropView", must(s.HasView(ctx, "loud_notes")), false)
+	eq(t, conn+" dropView missing fails", s.DropView(ctx, "loud_notes") != nil, true)
+	ok(s.DropViewIfExists(ctx, "loud_notes"))
+	ok(s.CreateView(ctx, "loud_notes", "SELECT body FROM notes WHERE volume > 5"))
+	ok(s.DropAllViews(ctx))
+	eq(t, conn+" dropAllViews", len(must(s.Views(ctx))), 0)
+	ok(s.Drop(ctx, "notes"))
 }

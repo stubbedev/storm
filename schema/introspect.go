@@ -150,17 +150,40 @@ func (x session) introspect(ctx context.Context, what string, queries map[engine
 	return x.query(ctx, q, args, each)
 }
 
+// pgUserRelation keeps relations an extension owns (PostGIS's
+// spatial_ref_sys and geometry_columns) out of listings, since dropping
+// them fails and they are not the user's schema.
+const pgUserRelation = "NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')"
+
 func (x session) tables(ctx context.Context) ([]string, error) {
 	var out []string
 	err := x.introspect(ctx, "tables", map[engine]string{
 		engineSQLite: "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
 		enginePostgres: `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-			WHERE c.relkind IN ('r', 'p') AND n.nspname = current_schema()
-				AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
-			ORDER BY c.relname`,
+			WHERE c.relkind IN ('r', 'p') AND n.nspname = current_schema() AND ` + pgUserRelation + ` ORDER BY c.relname`,
 		engineMySQL:      "SELECT table_name FROM information_schema.tables WHERE table_schema = database() AND table_type = 'BASE TABLE' ORDER BY table_name",
 		engineDuckDB:     "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name",
-		engineClickHouse: "SELECT name FROM system.tables WHERE database = currentDatabase() ORDER BY name",
+		engineClickHouse: "SELECT name FROM system.tables WHERE database = currentDatabase() AND engine != 'View' ORDER BY name",
+	}, nil, func(r *sql.Rows) error {
+		var n string
+		if err := r.Scan(&n); err != nil {
+			return err
+		}
+		out = append(out, n)
+		return nil
+	})
+	return out, err
+}
+
+func (x session) views(ctx context.Context) ([]string, error) {
+	var out []string
+	err := x.introspect(ctx, "views", map[engine]string{
+		engineSQLite: "SELECT name FROM sqlite_master WHERE type = 'view' ORDER BY name",
+		enginePostgres: `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relkind = 'v' AND n.nspname = current_schema() AND ` + pgUserRelation + ` ORDER BY c.relname`,
+		engineMySQL:      "SELECT table_name FROM information_schema.views WHERE table_schema = database() ORDER BY table_name",
+		engineDuckDB:     "SELECT view_name FROM duckdb_views() WHERE NOT internal AND schema_name = current_schema() ORDER BY view_name",
+		engineClickHouse: "SELECT name FROM system.tables WHERE database = currentDatabase() AND engine = 'View' ORDER BY name",
 	}, nil, func(r *sql.Rows) error {
 		var n string
 		if err := r.Scan(&n); err != nil {

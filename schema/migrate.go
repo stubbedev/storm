@@ -56,6 +56,8 @@ type Migrator struct {
 	// LockTimeout is how old an Isolated lock must be before another run
 	// may take it over (a crashed run never releases it); default one hour.
 	LockTimeout time.Duration
+	// DropViews makes Fresh drop the views too (migrate:fresh --drop-views).
+	DropViews bool
 }
 
 // NewMigrator returns a migrator for ms, or for the registered migrations
@@ -276,6 +278,11 @@ func (m *Migrator) Fresh(ctx context.Context) ([]string, error) {
 		}
 	}
 	for _, c := range conns {
+		if m.DropViews {
+			if err := On(c).DropAllViews(ctx); err != nil {
+				return nil, fmt.Errorf("schema: dropping all views on %q: %w", c, err)
+			}
+		}
 		if err := On(c).DropAllTables(ctx); err != nil {
 			return nil, fmt.Errorf("schema: dropping all tables on %q: %w", c, err)
 		}

@@ -282,9 +282,15 @@ func TestMigrator(t *testing.T) {
 	_, err = m.Refresh(ctx, 0)
 	check(t, err)
 	want(t, "refresh", tables(), "a,b,c,d")
+	check(t, s.CreateView(ctx, "a_view", "SELECT id FROM a"))
+	m.DropViews = true
 	_, err = m.Fresh(ctx)
 	check(t, err)
+	m.DropViews = false
 	want(t, "fresh", tables(), "a,b,c,d")
+	views, err := s.Views(ctx)
+	check(t, err)
+	want(t, "fresh drops views", len(views), 0)
 	back, err = m.Reset(ctx)
 	check(t, err)
 	want(t, "reset", len(back), 4)

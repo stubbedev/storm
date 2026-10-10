@@ -196,6 +196,74 @@ func (s *Builder) WhenTableDoesntHaveColumn(ctx context.Context, table, column s
 	return s.Table(ctx, table, fn)
 }
 
+// Views lists the views on the connection (Schema::getViews).
+func (s *Builder) Views(ctx context.Context) ([]string, error) {
+	x, err := s.sqlOnly(ctx, "", "list views")
+	if err != nil {
+		return nil, err
+	}
+	return x.views(ctx)
+}
+
+func (s *Builder) HasView(ctx context.Context, name string) (bool, error) {
+	views, err := s.Views(ctx)
+	return slices.Contains(views, name), err
+}
+
+// CreateView creates a view over a SELECT written in the engine's SQL.
+func (s *Builder) CreateView(ctx context.Context, name, query string) error {
+	x, err := s.sqlOnly(ctx, name, "create a view")
+	if err != nil {
+		return err
+	}
+	return x.exec(ctx, "CREATE VIEW "+x.g.quote(name)+" AS "+query)
+}
+
+func (s *Builder) DropView(ctx context.Context, name string) error { return s.dropView(ctx, name, "") }
+
+func (s *Builder) DropViewIfExists(ctx context.Context, name string) error {
+	return s.dropView(ctx, name, "IF EXISTS ")
+}
+
+func (s *Builder) dropView(ctx context.Context, name, ifExists string) error {
+	x, err := s.sqlOnly(ctx, name, "drop a view")
+	if err != nil {
+		return err
+	}
+	return x.exec(ctx, "DROP VIEW "+ifExists+x.g.quote(name))
+}
+
+// DropAllViews drops every view on the connection (migrate:fresh
+// --drop-views).
+func (s *Builder) DropAllViews(ctx context.Context) error {
+	x, err := s.sqlOnly(ctx, "", "drop views")
+	if err != nil {
+		return err
+	}
+	views, err := x.views(ctx)
+	if err != nil {
+		return err
+	}
+	for _, v := range views {
+		if err := x.exec(ctx, "DROP VIEW IF EXISTS "+x.g.quote(v)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sqlOnly resolves a SQL connection for an operation document stores have
+// no form of.
+func (s *Builder) sqlOnly(ctx context.Context, table, op string) (session, error) {
+	if ds, ok, err := s.docStore(ctx); err != nil || ok {
+		if err != nil {
+			return session{}, err
+		}
+		return session{}, docUnsupported(ds, table, op, "views are SQL")
+	}
+	return s.session(ctx)
+}
+
 // DropAllTables drops every table on the connection (used by migrate:fresh):
 // with CASCADE on Postgres, children first on DuckDB (which cannot disable
 // foreign keys) along with its sequences, and with foreign key checks off
