@@ -499,7 +499,7 @@ ctx := orm.Sticky(r.Context()) // in middleware, before calling the handler
 AuditLog.Query().Count(ctx)               // runs on "audit"
 Users.Query().On("replica").Get(ctx)      // Model::on()
 
-sqlText, args := Users.Where(Users.Karma.Gt(10)).ToSQLFor(orm.Postgres)
+sqlText, args, err := Users.Where(Users.Karma.Gt(10)).ToSQLFor(orm.Postgres)
 
 // Session state that lives on one connection (FOREIGN_KEY_CHECKS, PRAGMAs):
 conn, err := db.Conn(ctx)
@@ -609,7 +609,7 @@ err = orm.From("countries").Upsert(ctx,
 	[]string{"id"}, // conflict columns
 	"name")         // columns to update; default: every other inserted column
 
-sql, args := orm.From("users").Where("users.karma", orm.Gt, 10).ToSQL()
+sql, args, err := orm.From("users").Where("users.karma", orm.Gt, 10).ToSQL()
 ```
 
 `UpdateOrInsert` checks existence before writing, so it never inserts a
@@ -643,7 +643,10 @@ draft := UserFactory.MakeOne() // unsaved
 
 For what the builders do not cover, `orm.Select` and `orm.Statement` run
 SQL on a connection (`DB::select`, `DB::statement`). Placeholders are `?`
-on every engine and are bound, never interpolated; the statements reach
+on every engine and are bound, never interpolated; a `?` inside a quoted
+string stays text, `??` writes a literal `?` (Postgres's jsonb operator),
+and a placeholder count that differs from the arguments is an error. The
+same rules hold for every `*Raw` builder method. The statements reach
 `orm.Listen`, honour transactions and sticky reads, and refuse on document
 stores.
 
@@ -655,8 +658,8 @@ n, err := orm.StatementOn(ctx, "audit", "DELETE FROM audit_log WHERE at < ?", cu
 ## Debugging
 
 ```go
-sqlText, args := Users.Where(Users.Name.Eq("x")).ToSQL()
-fmt.Println(Users.Where(Users.Name.Eq("O'Brien")).ToRawSQL()) // args inlined
+sqlText, args, err := Users.Where(Users.Name.Eq("x")).ToSQL()
+raw, err := Users.Where(Users.Name.Eq("O'Brien")).ToRawSQL() // args inlined
 
 plan, err := Users.Where(Users.Karma.Gt(10)).Explain(ctx) // []map[string]any
 

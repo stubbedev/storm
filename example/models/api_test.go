@@ -97,7 +97,7 @@ func TestQueryShaping(t *testing.T) {
 		return nil
 	}))
 
-	stmt, args := Users.Where(Users.ID.Eq(1)).ToSQL()
+	stmt, args := rendered(Users.Where(Users.ID.Eq(1)).ToSQL())
 	eq(t, "toSQL", strings.Contains(stmt, "users") && len(args) == 1, true)
 
 	_, err := orm.From("no_such_table").Get(ctx)

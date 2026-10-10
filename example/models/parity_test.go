@@ -368,13 +368,24 @@ func TestRowQueryBuilder(t *testing.T) {
 	}))
 	eq(t, "withKey pages by that column", roleNames, []string{"admin", "editor", "viewer"})
 
-	stmt, args := orm.From("users").Where("users.karma", orm.Gt, 10).ToSQL()
+	stmt, args := rendered(orm.From("users").Where("users.karma", orm.Gt, 10).ToSQL())
 	eq(t, "toSQL", strings.Contains(stmt, "karma") && len(args) == 1, true)
+
+	quoted := must(orm.Select(ctx, "SELECT 'what?' AS q, ? AS v", "five"))
+	eq(t, "a quoted ? is text", fmt.Sprintf("%v %v", quoted[0]["q"], quoted[0]["v"]), "what? five")
+	_, err = orm.Select(ctx, "SELECT 1 WHERE 1 = ?", 1, 2)
+	eq(t, "surplus raw arguments refused", err != nil && strings.Contains(err.Error(), "1 placeholders for 2 arguments"), true)
+	_, err = orm.Select(ctx, "SELECT ?")
+	eq(t, "missing raw arguments refused", err != nil && strings.Contains(err.Error(), "more placeholders"), true)
+	_, _, err = orm.From("users").WhereRaw("karma > ?", 1, 2).ToSQL()
+	eq(t, "builder raw mismatch refused", err != nil, true)
+	escaped, escapedArgs := rendered(orm.From("users").WhereRaw("settings ?? ?", "theme").ToSQL())
+	eq(t, "?? is a literal ?", strings.Contains(escaped, "settings ? ") && len(escapedArgs) == 1, true)
 }
 
 func TestRawSQLRuns(t *testing.T) {
 	ctx := setup(t)
-	raw := Users.Where(
+	raw := must(Users.Where(
 		Users.Name.Eq("Alice"),
 		Users.Name.Ne("O'Brien"),
 		Users.Active.Eq(true),
@@ -385,7 +396,7 @@ func TestRawSQLRuns(t *testing.T) {
 		orm.Raw[User]("karma > ?", int32(3)),
 		orm.Raw[User]("email <> ?", []byte("x@example.com")),
 		orm.Raw[User]("(deleted_at IS NULL OR deleted_at = ?)", nil),
-	).ToRawSQL()
+	).ToRawSQL())
 	c := must(orm.Connection(ctx, orm.DefaultConnection))
 	rows := must(c.DB.QueryContext(ctx, raw))
 	var found int

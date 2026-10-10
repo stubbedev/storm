@@ -598,7 +598,7 @@ func (r RowQuery) Cursor(ctx context.Context) iter.Seq2[map[string]any, error] {
 }
 
 // ToSQL renders the SELECT for the builder's connection, with its arguments.
-func (r RowQuery) ToSQL() (string, []any) {
+func (r RowQuery) ToSQL() (string, []any, error) {
 	return render(dialectOf(r.connName()), func(b *SQL) { r.render(b, nil) })
 }
 

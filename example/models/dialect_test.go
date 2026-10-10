@@ -94,7 +94,7 @@ func TestSQLiteVectors(t *testing.T) {
 	_, err := Events.Query().OrderBy(Events.Vec.Nearest(orm.NewVector3(1, 1, 0), orm.Cosine)).Get(ctx)
 	eq(t, "sqlite refuses other metrics", err != nil, true)
 
-	stmt, _ := Events.Query().OrderBy(Events.Vec.Nearest(orm.NewVector3(1, 1, 0), orm.Cosine)).ToSQLFor(orm.MySQL)
+	stmt, _ := rendered(Events.Query().OrderBy(Events.Vec.Nearest(orm.NewVector3(1, 1, 0), orm.Cosine)).ToSQLFor(orm.MySQL))
 	eq(t, "mysql (HeatWave) distance converts the bound vector", strings.Contains(stmt, "DISTANCE(`events`.`vec`, STRING_TO_VECTOR(?), 'COSINE')"), true)
 }
 
@@ -149,7 +149,7 @@ func assertEvents(t *testing.T, ctx context.Context, conn string) {
 	}
 	eq(t, conn+" random order", len(must(Events.Query().On(conn).InRandomOrder().Get(ctx))), 2)
 
-	raw := Events.Query().On(conn).Where(Events.Active.Eq(true), Events.Body.Like("warn")).ToRawSQL()
+	raw := must(Events.Query().On(conn).Where(Events.Active.Eq(true), Events.Body.Like("warn")).ToRawSQL())
 	c := must(orm.Connection(ctx, conn))
 	rows := must(c.DB.QueryContext(ctx, raw))
 	matched := 0
@@ -181,7 +181,7 @@ func TestMySQLFlavour(t *testing.T) {
 	explicit, known := orm.DialectFor("mariadb")
 	eq(t, "mariadb driver name", known && explicit == orm.MariaDB, true)
 
-	stmt, _ := Events.Query().OrderBy(Events.Vec.Nearest(orm.NewVector3(1, 1, 0), orm.Cosine)).ToSQLFor(orm.MariaDB)
+	stmt, _ := rendered(Events.Query().OrderBy(Events.Vec.Nearest(orm.NewVector3(1, 1, 0), orm.Cosine)).ToSQLFor(orm.MariaDB))
 	eq(t, "mariadb vector distance", strings.Contains(stmt, "VEC_DISTANCE_COSINE(`events`.`vec`, VEC_FromText(?))"), true)
 	if want != "mariadb" {
 		return

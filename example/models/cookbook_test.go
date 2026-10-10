@@ -17,7 +17,7 @@ func TestCookbookSnippets(t *testing.T) {
 	eq(t, "max time", must(Posts.Query().Max(ctx, Posts.CreatedAt)).Format("2006-01-02"), "2026-03-05")
 	alice.Karma++
 	eq(t, "isDirty columns", Users.IsDirty(&alice, Users.Karma, Users.Name), true)
-	sqlText, _ := Users.Where(Users.Karma.Gt(10)).ToSQLFor(orm.Postgres)
+	sqlText, _ := rendered(Users.Where(Users.Karma.Gt(10)).ToSQLFor(orm.Postgres))
 	eq(t, "toSQLFor", strings.Contains(sqlText, `"users"."karma" > $1`), true)
 	eq(t, "fresh", must(Posts.Fresh(ctx, &Post{ID: 1})).Title, "Generics in Go 1.27")
 	ok(UserPosts.SaveMany(ctx, &alice, []Post{{Title: "saved via relation"}}))

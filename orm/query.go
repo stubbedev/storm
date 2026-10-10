@@ -340,18 +340,18 @@ func (q Query[M]) prepared() Query[M] {
 // ---------------------------------------------------------------------------
 
 // ToSQL renders the SELECT for the dialect of the query's connection.
-func (q Query[M]) ToSQL() (string, []any) { return q.ToSQLFor(dialectOf(q.connName())) }
+func (q Query[M]) ToSQL() (string, []any, error) { return q.ToSQLFor(dialectOf(q.connName())) }
 
 // ToSQLFor renders the SELECT for a specific dialect.
-func (q Query[M]) ToSQLFor(d Dialect) (string, []any) {
+func (q Query[M]) ToSQLFor(d Dialect) (string, []any, error) {
 	return render(d, func(b *SQL) { q.renderSelect(b, nil) })
 }
 
 // ToRawSQL renders the SELECT with arguments inlined, for debugging only.
-func (q Query[M]) ToRawSQL() string {
+func (q Query[M]) ToRawSQL() (string, error) {
 	b := &SQL{Dialect: dialectOf(q.connName()), inline: true}
 	q.renderSelect(b, nil)
-	return b.String()
+	return b.String(), b.err
 }
 
 // Subquery turns the query into a single-column subquery, usable with
@@ -525,7 +525,10 @@ func writeRows(ctx context.Context, name string, f frag) (*sql.Rows, error) {
 }
 
 func runRows(ctx context.Context, name string, d Dialect, db DB, f frag) (*sql.Rows, error) {
-	stmt, args := render(d, f)
+	stmt, args, err := render(d, f)
+	if err != nil {
+		return nil, err
+	}
 	start := time.Now()
 	rows, err := db.QueryContext(ctx, stmt, args...)
 	Emit(QueryEvent{Connection: name, SQL: stmt, Args: args, Duration: time.Since(start), Err: err})
@@ -541,7 +544,10 @@ func execOn(ctx context.Context, name string, f frag) (sql.Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	stmt, args := render(c.Dialect, f)
+	stmt, args, err := render(c.Dialect, f)
+	if err != nil {
+		return nil, err
+	}
 	start := time.Now()
 	res, err := c.DB.ExecContext(ctx, stmt, args...)
 	Emit(QueryEvent{Connection: name, SQL: stmt, Args: args, Duration: time.Since(start), Err: err})

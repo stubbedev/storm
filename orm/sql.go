@@ -19,6 +19,13 @@ type SQL struct {
 	values bool              // rendering an INSERT's VALUES rows
 	plain  bool              // unqualified columns (ClickHouse mutations)
 	alias  map[string]string // table -> alias, for self-referencing subqueries
+	err    error             // the first fragment that could not render
+}
+
+func (b *SQL) fail(err error) {
+	if b.err == nil {
+		b.err = err
+	}
 }
 
 // frag is a renderable piece of SQL.
@@ -98,19 +105,38 @@ func (b *SQL) bind(v any) {
 	b.sb.WriteString(b.Dialect.Placeholder(len(b.args)))
 }
 
-// Raw appends a SQL fragment, binding each ? to the next argument.
+// Raw appends a SQL fragment, binding each ? to the next argument. A ?
+// inside a quoted string or identifier is text, ?? is a literal ?, and a
+// placeholder count that differs from len(args) fails the statement.
 func (b *SQL) Raw(sql string, args ...any) {
-	i := 0
-	for {
-		j := strings.IndexByte(sql, '?')
-		if j < 0 || i >= len(args) {
-			b.sb.WriteString(sql)
-			return
+	used := 0
+	var quote byte
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"' || c == '`':
+			quote = c
+		case c == '?' && i+1 < len(sql) && sql[i+1] == '?':
+			b.sb.WriteByte('?')
+			i++
+			continue
+		case c == '?':
+			if used == len(args) {
+				b.fail(fmt.Errorf("orm: raw SQL %q has more placeholders than its %d arguments", sql, len(args)))
+				return
+			}
+			b.Arg(args[used])
+			used++
+			continue
 		}
-		b.sb.WriteString(sql[:j])
-		b.Arg(args[i])
-		i++
-		sql = sql[j+1:]
+		b.sb.WriteByte(c)
+	}
+	if used < len(args) {
+		b.fail(fmt.Errorf("orm: raw SQL %q has %d placeholders for %d arguments", sql, used, len(args)))
 	}
 }
 
@@ -147,10 +173,10 @@ func (b *SQL) withAlias(table, alias string, f frag) {
 func (b *SQL) String() string { return b.sb.String() }
 
 // render produces the final statement for dialect d.
-func render(d Dialect, f frag) (string, []any) {
+func render(d Dialect, f frag) (string, []any, error) {
 	b := &SQL{Dialect: d}
 	f(b)
-	return b.String(), b.args
+	return b.String(), b.args, b.err
 }
 
 func literal(d Dialect, v any) string {

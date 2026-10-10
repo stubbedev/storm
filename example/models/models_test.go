@@ -123,6 +123,12 @@ func ok(err error) {
 	}
 }
 
+// rendered fails the running test when a query does not render.
+func rendered(stmt string, args []any, err error) (string, []any) {
+	ok(err)
+	return stmt, args
+}
+
 // must fails the running test on error.
 func must[T any](v T, err error) T {
 	if err != nil {
@@ -173,7 +179,7 @@ func TestDialects(t *testing.T) {
 		orm.MySQL:    "SELECT `users`.`id`, `users`.`name` FROM `users` WHERE (`users`.`karma` > ?) AND (YEAR(`users`.`created_at`) = ?) AND (`users`.`deleted_at` IS NULL) ORDER BY `users`.`name` ASC LIMIT 18446744073709551615 OFFSET 5 FOR UPDATE",
 	}
 	for d, w := range want {
-		got, args := q.ToSQLFor(d)
+		got, args := rendered(q.ToSQLFor(d))
 		eq(t, d.Name(), got, w)
 		eq(t, d.Name()+" args", args, []any{10, 2026})
 	}
@@ -256,7 +262,7 @@ func TestWhereClauses(t *testing.T) {
 	eq(t, "whereIn subquery", get(Users.Where(Users.ID.InSub(popularAuthors))), []string{"Alice", "Carol"})
 	eq(t, "whereExists", get(Users.Where(orm.Exists[User](Posts.Where(Posts.UserID.EqCol(Users.ID), Posts.Views.Gt(500))))), []string{"Alice"})
 
-	raw := Users.Where(Users.Name.Eq("O'Brien")).ToRawSQL()
+	raw := must(Users.Where(Users.Name.Eq("O'Brien")).ToRawSQL())
 	if !strings.Contains(raw, `name`+quoteChar()+` = 'O''Brien'`) {
 		t.Errorf("ToRawSQL: %s", raw)
 	}
@@ -451,7 +457,7 @@ func TestWrites(t *testing.T) {
 	eq(t, "offset time reads back as the same instant", must(Users.Find(ctx, 6)).CreatedAt.Equal(at), true)
 	eq(t, "offset time equals its UTC form", must(frank.Where(Users.CreatedAt.Eq(at.UTC())).Count(ctx)), int64(1))
 	eq(t, "offset time orders as an instant", must(frank.Where(Users.CreatedAt.Gt(time.Date(2026, 3, 1, 10, 30, 0, 0, time.UTC))).Count(ctx)), int64(0))
-	eq(t, "raw SQL inlines times in UTC", strings.Contains(Users.Where(Users.CreatedAt.Eq(at)).ToRawSQL(), "'2026-03-01 10:00:00'"), true)
+	eq(t, "raw SQL inlines times in UTC", strings.Contains(must(Users.Where(Users.CreatedAt.Eq(at)).ToRawSQL()), "'2026-03-01 10:00:00'"), true)
 
 	eq(t, "mass update", must(Users.Where(Users.CountryID.Eq(2)).Update(ctx, Users.Active.Set(false))), int64(3))
 	eq(t, "increment", must(Posts.Where(Posts.ID.Eq(1)).Increment(ctx, Posts.Views, 10)), int64(1))
