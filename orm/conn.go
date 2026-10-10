@@ -186,10 +186,10 @@ type txState struct {
 	conn  Conn
 	depth int
 	after *[]func(context.Context) // afterCommit callbacks, shared with nested levels
-	// doc marks a document-store transaction, which has no savepoints: a
-	// nested transaction joins it, and its failure (failed) rolls the whole
-	// transaction back.
-	doc    bool
+	// flat marks a transaction without savepoints (document stores,
+	// DuckDB): a nested transaction joins it, and its failure (failed)
+	// rolls the whole transaction back.
+	flat   bool
 	failed bool
 }
 
@@ -199,10 +199,10 @@ type DocTransactor interface {
 	Transaction(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
-// ErrNestedFailed is returned by a document-store transaction whose nested
-// transaction failed: with no savepoints to undo the nested part alone,
-// the whole transaction rolled back.
-var ErrNestedFailed = errors.New("orm: a nested transaction failed, so the whole document-store transaction rolled back")
+// ErrNestedFailed is returned by a transaction without savepoints
+// (document stores, DuckDB) whose nested transaction failed: with nothing
+// to undo the nested part alone, the whole transaction rolled back.
+var ErrNestedFailed = errors.New("orm: a nested transaction failed, so the whole transaction rolled back")
 
 type txKey struct{ conn string }
 
@@ -236,7 +236,7 @@ func TransactionAttemptsOn(ctx context.Context, name string, attempts int, fn fu
 
 func TransactionOnce(ctx context.Context, name string, fn func(ctx context.Context) error) (err error) {
 	if st, ok := ctx.Value(txKey{name}).(*txState); ok {
-		if st.doc {
+		if st.flat {
 			if err := fn(ctx); err != nil {
 				st.failed = true
 				return err
@@ -252,6 +252,9 @@ func TransactionOnce(ctx context.Context, name string, fn func(ctx context.Conte
 	if c.Doc != nil {
 		return docTransaction(ctx, name, c, fn)
 	}
+	if _, ok := c.Dialect.(noTransactions); ok {
+		return &ErrNotTranslatable{Reason: fmt.Sprintf("transactions on connection %q (%s has none)", name, c.Dialect.Name())}
+	}
 	beginner, ok := c.DB.(interface {
 		BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
 	})
@@ -262,11 +265,15 @@ func TransactionOnce(ctx context.Context, name string, fn func(ctx context.Conte
 	if err != nil {
 		return err
 	}
-	st := &txState{conn: Conn{DB: tx, Dialect: c.Dialect}, after: new([]func(context.Context))}
+	_, flat := c.Dialect.(noSavepoints)
+	st := &txState{conn: Conn{DB: tx, Dialect: c.Dialect}, flat: flat, after: new([]func(context.Context))}
 	defer func() {
 		if p := recover(); p != nil {
 			_ = tx.Rollback()
 			panic(p)
+		}
+		if err == nil && st.failed {
+			err = ErrNestedFailed
 		}
 		if err != nil {
 			_ = tx.Rollback()
@@ -288,7 +295,7 @@ func docTransaction(ctx context.Context, name string, c Conn, fn func(ctx contex
 	if !ok {
 		return &ErrNotTranslatable{Reason: fmt.Sprintf("transactions on connection %q (%T has none)", name, c.Doc)}
 	}
-	st := &txState{conn: c, doc: true, after: new([]func(context.Context))}
+	st := &txState{conn: c, flat: true, after: new([]func(context.Context))}
 	err := tr.Transaction(ctx, func(tctx context.Context) error {
 		if err := fn(context.WithValue(tctx, txKey{name}, st)); err != nil {
 			return err
@@ -307,16 +314,24 @@ func docTransaction(ctx context.Context, name string, c Conn, fn func(ctx contex
 	return nil
 }
 
+// noTransactions marks dialects without transactions (ClickHouse), whose
+// driver would accept BEGIN and ROLLBACK without undoing anything.
+type noTransactions interface{ noTransactions() }
+
+// noSavepoints marks dialects whose transactions cannot nest (DuckDB).
+type noSavepoints interface{ noSavepoints() }
+
 // SupportsTransactions reports whether the named connection can run
-// orm.Transaction: every SQL connection, and document stores with their
-// own transactions.
+// orm.Transaction: SQL connections other than ClickHouse, and document
+// stores with their own transactions.
 func SupportsTransactions(ctx context.Context, name string) (bool, error) {
 	c, err := lookup(ctx, name)
 	if err != nil {
 		return false, err
 	}
 	if c.Doc == nil {
-		return true, nil
+		_, none := c.Dialect.(noTransactions)
+		return !none, nil
 	}
 	_, ok := c.Doc.(DocTransactor)
 	return ok, nil

@@ -16,6 +16,8 @@ import (
 
 type duckdbDialect struct{ sqliteDialect }
 
+func (duckdbDialect) noSavepoints() {}
+
 var DuckDB Dialect = duckdbDialect{}
 
 func (duckdbDialect) Name() string { return "duckdb" }
@@ -304,6 +306,7 @@ func (clickhouseDialect) DeletePrefix(b *SQL, table string) {
 // affected rows for mutations.
 func (clickhouseDialect) emulatesConflicts()  {}
 func (clickhouseDialect) uncountedMutations() {}
+func (clickhouseDialect) noTransactions()     {}
 
 // mutationSuffix makes ClickHouse mutations synchronous.
 func (clickhouseDialect) mutationSuffix(b *SQL) {

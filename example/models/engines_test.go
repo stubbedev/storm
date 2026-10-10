@@ -250,6 +250,39 @@ func seedWidgets(t *testing.T) []Widget {
 	}
 }
 
+// assertTransactionModes checks DuckDB's transactions nest by joining the
+// outer one (it has no savepoints) and ClickHouse refuses transactions
+// instead of pretending to roll back.
+func assertTransactionModes(t *testing.T, ctx context.Context, conn string, transactional bool) {
+	t.Helper()
+	tCheck(t, schema.On(conn).DropIfExists(ctx, "tx_rows"))
+	tCheck(t, schema.On(conn).Create(ctx, "tx_rows", func(t *schema.Blueprint) { t.BigInteger("id").Primary() }))
+	defer func() { tCheck(t, schema.On(conn).DropIfExists(ctx, "tx_rows")) }()
+	rows := orm.From("tx_rows").On(conn)
+	eq(t, conn+" supports transactions", must(orm.SupportsTransactions(ctx, conn)), transactional)
+	err := orm.TransactionOn(ctx, conn, func(ctx context.Context) error {
+		ok(rows.Insert(ctx, map[string]any{"id": 1}))
+		return errors.New("roll back")
+	})
+	if !transactional {
+		eq(t, conn+" transaction refused", orm.IsNotTranslatable(err), true)
+		eq(t, conn+" refused transaction never ran", must(rows.Count(ctx)), int64(0))
+		return
+	}
+	eq(t, conn+" rolled back", err != nil && must(rows.Count(ctx)) == 0, true)
+	ok(orm.TransactionOn(ctx, conn, func(ctx context.Context) error {
+		ok(rows.Insert(ctx, map[string]any{"id": 1}))
+		return orm.TransactionOn(ctx, conn, func(ctx context.Context) error { return rows.Insert(ctx, map[string]any{"id": 2}) })
+	}))
+	eq(t, conn+" nested commit", must(rows.Count(ctx)), int64(2))
+	err = orm.TransactionOn(ctx, conn, func(ctx context.Context) error {
+		ok(rows.Insert(ctx, map[string]any{"id": 3}))
+		_ = orm.TransactionOn(ctx, conn, func(context.Context) error { return errors.New("inner fails") })
+		return nil
+	})
+	eq(t, conn+" failed nested transaction rolls back the whole", errors.Is(err, orm.ErrNestedFailed) && must(rows.Count(ctx)) == 2, true)
+}
+
 // assertLimitedMutations checks Limit, Offset and OrderBy narrow updates
 // and deletes to the rows a SELECT would pick, through both builders.
 func assertLimitedMutations(t *testing.T, ctx context.Context, conn string) {
@@ -325,6 +358,7 @@ func TestDuckDB(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	assertLimitedMutations(t, ctx, "duck")
+	assertTransactionModes(t, ctx, "duck", true)
 	createWidgetTable(ctx, t, "duck", func(t *schema.Blueprint) { t.ID() })
 	for i := range seedWidgets(t) {
 		w := seedWidgets(t)[i]
@@ -391,6 +425,7 @@ func TestClickHouse(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	assertLimitedMutations(t, ctx, "ch")
+	assertTransactionModes(t, ctx, "ch", false)
 	createWidgetTable(ctx, t, "ch", func(t *schema.Blueprint) { t.BigInteger("id").Primary() })
 	for i, w := range seedWidgets(t) {
 		w.ID = int64(i + 1) // ClickHouse does not generate integer keys
