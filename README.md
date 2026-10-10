@@ -29,10 +29,12 @@ Users.Query().Sum(ctx, Users.Email)            // string does not satisfy orm.Nu
 Users.Query().With(PostComments)               // a Post relation on a User query
 ```
 
-Supported databases are **SQLite**, **PostgreSQL** and **MySQL / MariaDB**.
-The dialect follows the connection, and the same query renders correctly for
-each. The full test suite runs against all four engines, including the seeder,
-sticky-read and cast tests.
+Supported stores are **SQLite**, **PostgreSQL**, **MySQL**, **MariaDB**,
+**DuckDB** and **ClickHouse** through SQL, and **MongoDB** and **Qdrant**
+through a translation layer — querying, writing, paginating and migrating
+all go through the same typed API. The dialect follows the connection
+(`orm.Open` tells MySQL from MariaDB by asking the server), the same query
+renders correctly for each, and the full test suite runs against all eight.
 
 ## Contents
 
@@ -95,7 +97,7 @@ typed columns (`Users.Email`, `Users.CreatedAt`, ...) and table metadata.
 **2. Declare relations and scopes.**
 
 ```go
-var UserPosts = orm.HasMany(Posts.Table, Users.ID, Posts.UserID,
+var UserPosts = orm.HasMany(Users.ID, Posts.UserID,
 	func(u *User, ps []Post) { u.Posts = ps })
 
 func Active(q orm.Query[User]) orm.Query[User] { return q.Where(Users.Active.Eq(true)) }
@@ -286,14 +288,57 @@ string literal still converts, so `"="` keeps working.
 
 When a model does exist, its typed columns slot into the same builder:
 completion after `Users.` lists exactly the valid columns, the compared
-values are compile-checked, and the join qualifies both sides:
-`orm.From("users").JoinTyped(Countries.Table, Users.CountryID, Countries.ID, orm.Eq)`.
-The typed variants are `WhereCond`, `SelectCols`,
-`JoinTyped`, `LeftJoinTyped`, `OrderByCol` and `OrderByColDesc`.
+and written values are compile-checked, and selected, joined and ordered
+columns render table-qualified. Joins take the joined model's schema and
+typed conditions, exactly as on a model query — `EqCol` only accepts a
+column of the same value type:
 
-It also has `First`, `Pluck`, `Count`, `Exists`, `Join`, `LeftJoin`,
-`Distinct`, `Insert`, `InsertGetID`, `Update`, `UpdateOrInsert` and
-`Delete`; see the cookbook.
+```go
+rows, err := orm.FromTable(Users). // table and connection from the model
+	SelectCols(Users.Name.As("user"), Countries.Name.As("country")).
+	Join(Countries, Countries.ID.EqCol(Users.CountryID)).
+	WhereCond(Users.Karma.Gt(10)).
+	OrderByCol(Users.Name).
+	Get(ctx) // []map[string]any{{"user": "Alice", "country": "Denmark"}, ...}
+
+emails, err := orm.FromTable(Users).PluckCol(ctx, Users.Email) // []string
+err = orm.FromTable(Users).InsertCols(ctx, Users.Name.Set("Ada"), Users.Email.Set("a@x.io"))
+n, err := orm.FromTable(Users).WhereCond(Users.Email.Eq("a@x.io")).
+	UpdateCols(ctx, Users.Name.Set("Ada L"), Users.Karma.SetExpr(orm.Plus(Users.Karma, 1)))
+```
+
+Grouping takes typed aggregates named with `As`, and every page comes back
+length-aware on every engine, document stores included:
+
+```go
+perCountry, err := orm.FromTable(Users).
+	SelectCols(Users.CountryID, orm.Count[User]().As("users"), orm.Sum(Users.Karma).As("karma")).
+	GroupByCols(Users.CountryID).
+	HavingCond(orm.Count[User]().Gt(1)).
+	Get(ctx)
+
+page, err := orm.FromTable(Users).OrderByCol(Users.ID).Paginate(ctx, 20, 2)
+// page.Items, page.Total, page.LastPage, page.From, page.To, page.HasMore
+```
+
+The typed variants are `FromTable`, `WhereCond`, `OrWhereCond`,
+`SelectCols` (with `As` on any column or aggregate), `Join`, `LeftJoin`,
+`RightJoin`, `CrossJoin`, `GroupByCols`, `HavingCond`, `OrderByCol`,
+`OrderByColDesc`, `PluckCol`, `SumCol`/`AvgCol`/`MinCol`/`MaxCol`,
+`InsertCols` and `UpdateCols`. Like their string counterparts,
+`InsertCols` and `UpdateCols` write exactly what they are given — no
+timestamps or events.
+
+It also has `First`, `Pluck`, `Count`, `Exists`, `DoesntExist`,
+`Sum`/`Avg`/`Min`/`Max`, `WhereNotBetween`, `Distinct`, `SelectRaw`,
+`GroupBy`, `Having`, `HavingRaw`, `ForPage`, `Paginate`,
+`SimplePaginate`, `CursorPaginate`, `Chunk`, `ChunkByID`, `Lazy`, `Cursor`, `Insert`,
+`InsertOrIgnore`, `Upsert`, `InsertGetID`, `Update`, `Increment`,
+`Decrement`, `UpdateOrInsert`, `Delete` and `ToSQL`; see the cookbook.
+Column names may be qualified (`"users.country_id"`, `"users.*"`), and
+every method runs on document stores too, except those with no document
+form (joins, grouping, raw SQL, aggregates, expression updates), which
+return `ErrNotTranslatable`.
 
 ## Analytical engines
 
@@ -310,21 +355,35 @@ n, err := orm.From("read_csv('events.csv')").On("lake").
 ```
 
 Auto-increment keys draw from per-table sequences the schema builder
-creates; migrations and the full query surface work.
+creates (and drops with the table); migrations and the full query surface
+work. DuckDB enforces only `NO ACTION`/`RESTRICT` foreign keys, cannot add
+or drop constraints on existing tables, and cannot alter a table other
+tables reference; the schema builder refuses what it cannot express.
 
 **ClickHouse** (`github.com/ClickHouse/clickhouse-go/v2`) speaks the same
 builder with the engine's physics showing through: `Update` runs as
 `ALTER TABLE ... UPDATE`, `Delete` as a lightweight `DELETE FROM` — both
-made synchronous with `mutations_sync` — affected-row counts are always 0,
-and there are no transactions or generated integer keys (use UUID or
-manual keys). Tables get `ENGINE = MergeTree ORDER BY tuple()` unless the
-blueprint sets an engine.
+made synchronous with `mutations_sync`, with affected rows counted before
+the mutation since the driver reports none — and there are no
+transactions or generated integer keys (use UUID or manual keys). With no
+unique constraints to lean on, `Upsert` and `InsertOrIgnore` read which
+keys exist first, insert the new rows and update the rest row by row; a
+concurrent writer can race that read. Tables default to
+`ENGINE = MergeTree` sorted by the primary key; `OrderBy`, `Unsorted`,
+`PartitionBy`, `TTL` and `Setting` shape the storage, and
+`Engine("Memory")` and friends take no sorting key. Plain indexes become
+`bloom_filter` data skipping indexes; unique indexes, foreign keys and
+auto-increment columns are refused.
 
 ## Vector search
 
 `orm.Vector[orm.D3]` (any `Dn` dimension) is a fixed-size float vector
-column. Store it in pgvector (`t.Vector("embedding", 3)` plus
-`CREATE EXTENSION vector`), DuckDB (`float[3]`) or Qdrant, and order by
+column, and its size is part of the type: `orm.NewVector3(x, y, z)` and
+`orm.NewVector[orm.D3](...)` build one from literals (panicking on the wrong
+count), `orm.VectorOf[orm.D3](floats)` checks runtime data, and scanning or
+decoding a value of another size fails. Store it in pgvector
+(`t.Vector("embedding", 3)` plus `CREATE EXTENSION vector`), DuckDB
+(`float[3]`), ClickHouse (`Array(Float64)`) or Qdrant, and order by
 distance for a KNN query:
 
 ```go
@@ -341,8 +400,9 @@ docs, err := Docs.Query().
 ```
 
 Metrics are `orm.L2` (pgvector `<->`), `orm.Cosine` (`<=>`) and
-`orm.InnerProduct` (`<#>`); DuckDB uses `array_distance` and friends, MySQL
-the `DISTANCE()` of HeatWave / MySQL 9, and SQLite computes L2 in SQL over
+`orm.InnerProduct` (`<#>`); DuckDB uses `array_distance` and friends,
+ClickHouse `L2Distance` / `cosineDistance` / `dotProduct`, MySQL the
+`DISTANCE()` of HeatWave, MariaDB 11.7+ `VEC_DISTANCE_*`, and SQLite computes L2 in SQL over
 JSON while refusing the other metrics loudly.
 
 ## Document stores
@@ -367,14 +427,18 @@ err = Events.Query().Where(Events.Kind.Eq("click")).Update(ctx, Events.Kind.Set(
 
 What translates: `Where` (comparisons, `In`, `Between`, null tests,
 `And` / `Or` / `Not`), `OrderBy` on columns, `Limit` / `Offset`, `Select`,
-`Upsert` and `InsertOrIgnore`, and the model lifecycle — `Create`, `Save`
-(dirty columns only), `Delete`, soft deletes, events, `Count`, `Exists`,
-pagination, and `orm.From(...)` table queries. Keys must be UUID, ULID or
-manual (assigned automatically when missing). Every operation reaches
-`orm.Listen` and the query log with a readable rendering of the plan. What
-refuses, with a precise error naming the part (`orm.IsNotTranslatable`):
-joins, unions, `groupBy`, raw fragments, subqueries, aggregates and
-`Increment`.
+`Upsert` and `InsertOrIgnore`, `Increment` / `Decrement` (`$inc` on
+MongoDB), and the model lifecycle — `Create`, `Save` (dirty columns only),
+`Delete`, soft deletes, events, `Count`, `Exists`, length-aware and simple
+pagination, chunking, and `orm.From(...)` table queries. Keys must be
+UUID, ULID or manual (assigned automatically when missing). Every
+operation reaches `orm.Listen` and the query log with a readable rendering
+of the plan. What refuses, with a precise error naming the part
+(`orm.IsNotTranslatable`): joins, unions, `groupBy`, raw fragments,
+subqueries, aggregates, `SetExpr`, and `Increment` on Qdrant, which has no
+atomic payload arithmetic. A custom store implements `orm.DocStore`;
+`UpdateDocs` receives an `orm.DocUpdate` with the fields to set and the
+amounts to add.
 
 **Qdrant** is the vector native: collections are tables, payload fields are
 the columns, and an `orm.Vector` column becomes the collection's vector —
@@ -382,7 +446,6 @@ the columns, and an `orm.Vector` column becomes the collection's vector —
 
 ```go
 store, _ := orm.OpenQdrant("qdrant", "http://localhost:6333")
-store.EnsureCollection(ctx, "documents", 3, orm.Cosine) // in a migration
 
 //orm:table documents connection=qdrant key_type=uuid
 docs, err := Docs.Query().
@@ -390,6 +453,45 @@ docs, err := Docs.Query().
 	Limit(10).
 	Get(ctx)
 ```
+
+On Qdrant a NULL test matches a field that is missing, null or an empty
+array — the filter Qdrant offers for all three. `ILIKE` and `!=` translate
+on MongoDB.
+
+### Migrating document stores
+
+The schema builder and migrator drive MongoDB and Qdrant with the same
+blueprints as SQL, so one migration set covers every store:
+
+```go
+schema.On("mongo").Create(ctx, "events", func(t *schema.Blueprint) {
+	t.UUID("id").Primary()
+	t.String("kind").Index()
+	t.Integer("score").Unsigned()
+	t.Enum("level", "info", "warn").Nullable()
+})
+schema.On("qdrant").Create(ctx, "documents", func(t *schema.Blueprint) {
+	t.UUID("id").Primary()           // the point id
+	t.String("title").Index()        // a keyword payload index
+	t.Vector("vec", 3)
+	t.HnswIndex("vec", orm.Cosine)   // the collection's vector size and metric
+})
+```
+
+On **MongoDB** the declared columns become a `$jsonSchema` validator — types,
+nullability, `Unsigned` (minimum 0) and enum values are enforced on write —
+indexes become MongoDB indexes, and `Table` renames and drops fields in every
+document, changes declarations and manages indexes. On **Qdrant** payloads
+are schemaless: indexes become typed payload indexes, the vector column and
+its `HnswIndex` size the collection, and dropped columns leave every point.
+`Tables`, `GetColumns`, `GetIndexes`, `HasIndex`, `Rename` (MongoDB),
+`DropAllTables` and `Fresh` work too. What a store cannot express is refused
+with a `schema.UnsupportedError`: generated integer keys, defaults, foreign
+keys, unique or multi-field indexes and renames on Qdrant, vector indexes on
+MongoDB. The migrator keeps its log in the store when its connection is one.
+`store.EnsureCollection(ctx, "documents", 3, orm.Cosine)` remains as a
+shortcut outside migrations; it fails if the collection exists with another
+size or metric.
 
 ## Encrypted and hashed columns
 
@@ -446,8 +548,8 @@ Completion after `Users.` lists every column with its type in the popup;
 `Users.Where(Users.` offers exactly the typed columns, and passing the
 wrong value type (`Users.Karma.Gt("ten")`) is a compile error, not a
 runtime one. The same holds inside `orm.From` chains:
-`WhereCond(Users.Karma.Gt(10))` and `SelectCols(Users.Email)` take the
-same typed columns, and `Where("active", orm.Eq, true)` completes the
+`WhereCond(Users.Karma.Gt(10))`, `SelectCols(Users.Email)` and
+`UpdateCols(ctx, Users.Karma.Set(5))` take the same typed columns, and `Where("active", orm.Eq, true)` completes the
 valid operators after `orm.`.
 
 ## Eloquent feature map
@@ -498,7 +600,7 @@ valid operators after `orm.`.
 | `DB::transaction`, nested savepoints, `afterCommit`, deadlock retry | `orm.Transaction` (nests), `orm.AfterCommit`, `orm.RetryingTransaction(ctx, attempts, fn)` |
 | `DB::listen`, `toSql`, `toRawSql`, `explain`, query log | `orm.Listen`, `ToSQL`, `ToRawSQL`, `Explain(ctx)`, `orm.EnableQueryLog` / `QueryLog` / `FlushQueryLog` |
 | Connections, `Model::on()`, read/write split, `sticky` | `orm.Open` / `AddConnection` / `OpenReadWrite`, `connection=` directive, `Query.On(name)`, `orm.Sticky(ctx)` |
-| `DB::table('users')` (no model) | `orm.From("users")`: wheres, joins, orders, `Get` as `[]map[string]any`, `Insert`, `InsertGetID`, `Update`, `UpdateOrInsert`, `Delete` |
+| `DB::table('users')` (no model) | `orm.From("users")` / `orm.FromTable(Users)`: wheres, joins, orders, aggregates, `Get` as `[]map[string]any`, `Insert`, `InsertOrIgnore`, `Upsert`, `InsertGetID`, `Update`, `Increment`, `Decrement`, `UpdateOrInsert`, `Delete` |
 | `Schema::create/table/drop/rename/hasTable/hasColumn(s)/hasIndex` | `schema.Create`, `Table`, `Drop`, `Rename`, `HasTable`, `HasColumns`, `HasIndex` |
 | All Blueprint column types and modifiers | see the cookbook; generated, identity, charset, collation, `after`, `first`, `comment`, `useCurrent`, ... |
 | Indexes (primary, unique, index, fullText, spatial), `renameIndex` | same names; SQLite alterations rebuild the table like Laravel |
@@ -515,11 +617,12 @@ legitimately differs.
 |---|---|
 | SQLite | in-memory or file; JSON1 for JSON columns |
 | Postgres (pgvector) | full parity plus `orm.Vector` columns with HNSW indexes (`t.HnswIndex`) |
-| MySQL 8 / MariaDB | `DISTANCE()` vector ordering (HeatWave); fulltext and spatial indexes |
+| MySQL 8 / 9 | `DISTANCE()` vector ordering (HeatWave); fulltext and spatial indexes |
+| MariaDB | its own dialect: `INSERT ... RETURNING`, `LOCK IN SHARE MODE`, `VEC_DISTANCE_*` vectors (11.7+) |
 | DuckDB | embedded OLAP; `orm.From("read_csv('f.csv')")` queries flat files; auto-increment via sequences |
-| ClickHouse | `Update`/`Delete` are synchronous mutations that report 0 affected rows; no transactions or generated integer keys |
-| MongoDB | document store: the typed builder translates; joins, unions, subqueries and raw SQL refuse with `orm.ErrNotTranslatable`; keys are uuid/ulid/manual |
-| Qdrant | vector store: collections are tables, `Nearest` ordering runs a similarity search; same refusals as MongoDB |
+| ClickHouse | `Update`/`Delete` are synchronous mutations, counted before they run; upserts read the taken keys first; no transactions or generated integer keys |
+| MongoDB | document store: the typed builder translates; joins, unions, subqueries and raw SQL refuse with `orm.ErrNotTranslatable`; keys are uuid/ulid/manual; migrations declare a validator |
+| Qdrant | vector store: collections are tables, `Nearest` ordering runs a similarity search; same refusals as MongoDB; migrations create collections and payload indexes |
 
 ## What Go doesn't allow
 

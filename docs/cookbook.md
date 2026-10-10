@@ -181,7 +181,7 @@ latest := Posts.Where(Posts.UserID.EqCol(Users.ID)).Latest().Limit(1).Subquery(P
 Users.Query().AddSelectAs(Users.LatestPostTitle, orm.IfNull(latest, ""))
 
 Users.Query().
-	Join(Posts.Table, Posts.UserID.EqCol(Users.ID)).
+	Join(Posts, Posts.UserID.EqCol(Users.ID)).
 	WhereOf(Posts.Published.Eq(true)).    // conditions on the joined model
 	GroupBy(Users.ID).
 	Having(orm.Count[User]().Gte(2)).
@@ -220,10 +220,27 @@ err = Posts.Query().ChunkWhile(ctx, func(prev, cur Post) bool { return prev.User
 for p, err := range Posts.Query().With(PostComments).Lazy(ctx, 500) { _, _ = p, err } // lazyById
 for p, err := range Posts.Query().Cursor(ctx) { _, _ = p, err }                       // one query, streamed
 
-page, err := Posts.Query().Latest().Paginate(ctx, 20, 2)   // Items, Total, LastPage, ...
-simple, err := Posts.Query().SimplePaginate(ctx, 20, 2)    // HasMore
+page, err := Posts.Query().Latest().Paginate(ctx, 20, 2)   // Items, Total, LastPage, From, To, HasMore
+simple, err := Posts.Query().SimplePaginate(ctx, 20, 2)    // HasMore, no count query
 cur, err := Posts.Query().OrderBy(Posts.Views.Desc(), Posts.ID.Asc()).CursorPaginate(ctx, 20, cursor)
 next := cur.NextCursor
+```
+
+`Paginate` is length-aware on every engine — SQL, ClickHouse, MongoDB and
+Qdrant alike — and serialises like Laravel's paginator (`data`, `total`,
+`per_page`, `current_page`, `last_page`, `from`, `to`, `has_more`). Row
+queries page the same way and return `Page[map[string]any]`; a grouped or
+distinct row query counts groups or distinct rows. Page and size must be
+at least 1. `CursorPaginate`, `ChunkByID` and `Lazy` page by key instead
+of offset on every engine too; on Qdrant, which can only order by an
+indexed payload field, ordering by the key (or not at all) uses its native
+point-id scroll.
+
+```go
+page, err := orm.From("events").On("mongo").OrderBy("created_at").Paginate(ctx, 50, 3)
+err = orm.FromTable(Users).Chunk(ctx, 500, func(rows []map[string]any) error { return nil })
+for row, err := range orm.FromTable(Users).Lazy(ctx, 500) { _, _ = row, err } // by key column
+for row, err := range orm.From("users").Cursor(ctx) { _, _ = row, err }      // one query, streamed
 ```
 
 ## Inserting and updating
@@ -259,6 +276,7 @@ fallback, err := Users.Query().FindOr(ctx, 99, func() (User, error) { return Use
 
 err = Users.Create(orm.WithoutTimestamps(ctx), &u)
 err = Images.Truncate(ctx)
+err = Images.Query().On("archive").Truncate(ctx) // on another connection; a document store deletes every document
 ```
 
 ## Deleting and soft deletes
@@ -299,42 +317,38 @@ Relations are values, declared once next to your models:
 
 ```go
 var (
-	UserPosts = orm.HasMany(Posts.Table, Users.ID, Posts.UserID,
+	UserPosts = orm.HasMany(Users.ID, Posts.UserID,
 		func(u *User, ps []Post) { u.Posts = ps })
 
-	UserLatestPost = orm.HasOne(Posts.Table, Users.ID, Posts.UserID,
+	UserLatestPost = orm.HasOne(Users.ID, Posts.UserID,
 		func(u *User, p *Post) { u.LatestPost = p }).OfMany(Posts.ID, true) // latestOfMany
 
-	UserCountry = orm.BelongsTo(Countries.Table, Users.CountryID, Countries.ID,
+	UserCountry = orm.BelongsTo(Users.CountryID, Countries.ID,
 		func(u *User, c *Country) { u.Country = c })
 
-	PostAuthor = orm.BelongsTo(Users.Table, Posts.UserID, Users.ID,
+	PostAuthor = orm.BelongsTo(Posts.UserID, Users.ID,
 		func(p *Post, u *User) { p.Author = u }).
 		WithDefault(func(*Post) *User { return &User{Name: "Guest Author"} })
 
 	// Many-to-many through a typed pivot model (role_user).
-	UserRoles = orm.BelongsToMany(Roles.Table, RoleUsers.Table,
-		Users.ID, RoleUsers.UserID, Roles.ID, RoleUsers.RoleID,
+	UserRoles = orm.BelongsToMany(Users.ID, RoleUsers.UserID, Roles.ID, RoleUsers.RoleID,
 		func(u *User, rs []Role) { u.Roles = rs }).
 		WithPivot(func(r *Role, p RoleUser) { r.Pivot = p })
 
-	CountryPosts = orm.HasManyThrough(Posts.Table, Users.Table,
-		Countries.ID, Users.CountryID, Users.ID, Posts.UserID,
+	CountryPosts = orm.HasManyThrough(Countries.ID, Users.CountryID, Users.ID, Posts.UserID,
 		func(c *Country, ps []Post) { c.Posts = ps })
 
 	// Polymorphic.
-	PostComments = orm.MorphMany(Comments.Table, Posts.ID, Comments.CommentableID, Comments.CommentableType,
+	PostComments = orm.MorphMany(Posts.ID, Comments.CommentableID, Comments.CommentableType,
 		func(p *Post, cs []Comment) { p.Comments = cs })
-	UserAvatar = orm.MorphOne(Images.Table, Users.ID, Images.ImageableID, Images.ImageableType,
+	UserAvatar = orm.MorphOne(Users.ID, Images.ImageableID, Images.ImageableType,
 		func(u *User, i *Image) { u.Avatar = i })
 	CommentCommentable = orm.MorphTo(Comments.CommentableID, Comments.CommentableType,
 		func(c *Comment, owner any) { c.Commentable = owner }, // *Post or *Video
 		orm.Target(Posts.ID), orm.Target(Videos.ID))
-	PostTags = orm.MorphToMany(Tags.Table, Taggables.Table,
-		Posts.ID, Taggables.TaggableID, Taggables.TaggableType, Tags.ID, Taggables.TagID,
+	PostTags = orm.MorphToMany(Posts.ID, Taggables.TaggableID, Taggables.TaggableType, Tags.ID, Taggables.TagID,
 		func(p *Post, ts []Tag) { p.Tags = ts })
-	TagPosts = orm.MorphedByMany(Posts.Table, Taggables.Table,
-		Tags.ID, Taggables.TagID, Posts.ID, Taggables.TaggableID, Taggables.TaggableType,
+	TagPosts = orm.MorphedByMany(Tags.ID, Taggables.TagID, Posts.ID, Taggables.TaggableID, Taggables.TaggableType,
 		func(t *Tag, ps []Post) { t.Posts = ps })
 )
 ```
@@ -477,7 +491,16 @@ AuditLog.Query().Count(ctx)               // runs on "audit"
 Users.Query().On("replica").Get(ctx)      // Model::on()
 
 sqlText, args := Users.Where(Users.Karma.Gt(10)).ToSQLFor(orm.Postgres)
+
+// Session state that lives on one connection (FOREIGN_KEY_CHECKS, PRAGMAs):
+conn, err := db.Conn(ctx)
+ctx = orm.WithConn(ctx, orm.DefaultConnection, conn) // every query on ctx uses conn
 ```
+
+`orm.Open` with the `mysql` driver asks the server for its version and picks
+`orm.MySQL` or `orm.MariaDB`; MariaDB has its own dialect (shared locks,
+`INSERT ... RETURNING`, vector functions). `AddConnection(..., orm.MariaDB)`
+or the driver name `mariadb` choose it explicitly.
 
 ## Queries without a model
 
@@ -490,7 +513,7 @@ rows, err := orm.From("users").
 	WhereIn("country_id", 1, 2).
 	WhereNull("deleted_at").
 	WhereRaw("karma > ?", 10).
-	LeftJoin("countries", "users.country_id", orm.Eq, "countries.id").
+	LeftJoin(Countries, Countries.ID.EqCol(Users.CountryID)).
 	OrderBy("name").
 	Limit(10).
 	Get(ctx) // []map[string]any
@@ -512,12 +535,82 @@ over — completion lists the valid columns and the values are compile-checked:
 ```go
 rows, err := orm.From("users").
 	SelectCols(Users.Email).
-	JoinTyped(Countries.Table, Users.CountryID, Countries.ID, orm.Eq).
+	Join(Countries, Countries.ID.EqCol(Users.CountryID)).
 	WhereCond(Users.Active.Eq(true), Users.Karma.Gt(10)).
 	OrderByColDesc(Users.Karma).
 	Limit(10).
 	Get(ctx)
 ```
+
+`orm.FromTable(Users)` takes the table name and its connection from
+the model, so there is no table or `.On(...)` string to mistype. Selected,
+joined and ordered typed columns render table-qualified; when joined
+tables share a column name, `As` tells them apart:
+
+```go
+rows, err := orm.FromTable(Users).
+	SelectCols(Users.Name.As("user"), Countries.Name.As("country")).
+	Join(Countries, Countries.ID.EqCol(Users.CountryID)).
+	OrderByCol(Users.Name).
+	Get(ctx) // rows[0]["user"], rows[0]["country"]
+```
+
+Grouping selects typed aggregates under a name; `HavingCond` filters on
+them portably (Postgres cannot see select aliases in `HAVING`):
+
+```go
+rows, err := orm.FromTable(Users).
+	SelectCols(Users.CountryID, orm.Count[User]().As("users")).
+	GroupByCols(Users.CountryID).
+	HavingCond(orm.Count[User]().Gt(1)).
+	Get(ctx)
+rows, err = orm.From("users").
+	SelectRaw("country_id, COUNT(*) AS n").
+	GroupBy("country_id").
+	HavingRaw("COUNT(*) > ?", 1).
+	Get(ctx)
+```
+
+Typed writes and plucks reuse the model's assignments and columns:
+
+```go
+users := orm.FromTable(Users)
+err = users.InsertCols(ctx, Users.Name.Set("Ada"), Users.Email.Set("ada@example.com"))
+n, err = users.WhereCond(Users.Email.Eq("ada@example.com")).
+	UpdateCols(ctx, Users.Name.Set("Ada L"), Users.Karma.SetExpr(orm.Plus(Users.Karma, 1)))
+emails, err := users.OrderByCol(Users.Email).PluckCol(ctx, Users.Email) // []string
+```
+
+`InsertCols` and `UpdateCols` write exactly what they are given, like
+`Insert` and `Update`: no timestamps, no events. On a document store,
+`SetExpr` assignments and `As` aliases are refused, since neither has a
+document form.
+
+Aggregates, counters and bulk writes round out `DB::table`:
+
+```go
+total, err := orm.From("orders").Sum[int64](ctx, "amount") // the type is the caller's
+karma, err := orm.FromTable(Users).SumCol(ctx, Users.Karma)  // inferred: int
+avg, err := orm.From("users").Avg(ctx, "karma")                    // float64
+n, err := orm.From("posts").Where("id", orm.Eq, 7).Increment(ctx, "views", 1)
+
+err = orm.From("countries").InsertOrIgnore(ctx, map[string]any{"id": 1, "name": "Denmark"})
+err = orm.From("countries").Upsert(ctx,
+	[]map[string]any{{"id": 1, "name": "Danmark"}, {"id": 4, "name": "Finland"}},
+	[]string{"id"}, // conflict columns
+	"name")         // columns to update; default: every other inserted column
+
+sql, args := orm.From("users").Where("users.karma", orm.Gt, 10).ToSQL()
+```
+
+`UpdateOrInsert` checks existence before writing, so it never inserts a
+duplicate on engines that report only changed rows (MySQL). `Count` after
+`Distinct` counts distinct rows. On document stores, `InsertOrIgnore`
+matches on the key column (`WithKey`, default `id`), `Increment` and
+`Decrement` become `$inc` on MongoDB, and aggregates — plus increments on
+Qdrant — return `ErrNotTranslatable`. ClickHouse, which has no unique
+constraints, emulates `InsertOrIgnore` and `Upsert` by reading the taken
+keys first.
 
 ## Factories
 
@@ -587,7 +680,7 @@ err = schema.Table(ctx, "flights", func(t *schema.Blueprint) {
 	t.RenameColumn("notes", "remarks")
 	t.DropColumn("ref")
 	t.RenameIndex("flights_code_unique", "flights_code_uq")
-	t.DropForeign("airline_id")
+	t.DropForeignOn("airline_id")
 	t.ForeignID("airline_id").Nullable().Change()
 	t.Foreign("airline_id").References("id").On("carriers").NullOnDelete()
 })
@@ -611,20 +704,41 @@ err = schema.Table(ctx, "flights", func(t *schema.Blueprint) {
 (each with `.Name()`, `.Algorithm()`, `.Language()`), `RenameIndex`, `Drop*`,
 `Foreign(...).References(...).On(...)` with `CascadeOnDelete`, `NullOnDelete`,
 `RestrictOnDelete`, `NoActionOnDelete`, the `*OnUpdate` variants, `Deferrable`
-and `InitiallyDeferred`. Also `DropConstrainedForeignID` and `DropForeignIDFor`.
+and `InitiallyDeferred`. Also `DropConstrainedForeignID`, `DropForeignIDFor` and
+`DropConstrainedForeignIDFor`. Drops take a name (`DropIndex("posts_ref_idx")`,
+`DropUnique`, `DropFullText`, `DropSpatialIndex`, `DropForeign`) or the columns the
+index was declared on (`DropIndexOn("user_id", "created_at")`, `DropUniqueOn`, ...),
+as Laravel does with a string or an array.
 
-**Table options:** `Engine`, `Charset`, `Collation`, `Comment`, `Temporary`.
+**Table options:** `Engine`, `Charset`, `Collation` (MySQL), `Comment`, `Temporary`,
+and for ClickHouse MergeTree tables `OrderBy`, `Unsorted`, `PartitionBy`, `TTL` and
+`Setting`. The primary key is the ClickHouse sorting key unless `OrderBy` sets one.
+
+Anything an engine cannot express fails with a `*schema.UnsupportedError` naming
+the engine and the operation, before anything runs: `Set` outside MySQL, unique
+indexes, foreign keys and auto-increment columns on ClickHouse, `NullOnDelete` and
+`CascadeOnDelete` on DuckDB, and so on.
 
 **Facade:** `Create`, `CreateIfNotExists`, `Table`, `Drop`, `DropIfExists`,
 `DropColumns`, `Rename`, `HasTable`, `HasColumn(s)`, `HasIndex`, `Tables`, `Columns`,
 `GetColumns`, `GetIndexes`, `GetForeignKeys`, `GetColumnType`, `WhenTableHasColumn`,
-`WhenTableDoesntHaveColumn`, `DropAllTables`, `Enable/DisableForeignKeyConstraints`,
-`WithoutForeignKeyConstraints`, `DriverName` and `Pretend`. Use `schema.On("conn")`
-for other connections.
+`WhenTableDoesntHaveColumn`, `DropAllTables`, `WithoutForeignKeyConstraints`,
+`DriverName` and `Pretend`. Use `schema.On("conn")` for other connections; a
+document-store connection (MongoDB, Qdrant) is an error.
+
+`WithoutForeignKeyConstraints` holds one connection for SQLite and MySQL, so the
+disabled checks never leak into the pool; schema calls on its ctx use that
+connection, plain orm queries do not. On Postgres it runs a transaction with
+`SET CONSTRAINTS ALL DEFERRED`, which only defers `Deferrable()` constraints.
 
 SQLite can't `ALTER` columns, primary keys or foreign keys in place. Like
 Laravel, `Table` rebuilds the table for those changes, keeping data, column
-order, CHECK constraints, generated columns and indexes.
+order, CHECK constraints, generated columns, indexes and the AUTOINCREMENT
+counter. Column renames run first as `ALTER TABLE ... RENAME COLUMN`, so SQLite
+rewrites every reference to them. The rebuild runs atomically with foreign keys
+off and checks them before committing; inside a transaction (a migration) SQLite
+cannot turn foreign keys off, so with enforcement on such a migration needs
+`NoTransaction: true`.
 
 ## Migrations
 
@@ -653,10 +767,19 @@ go run ./cmd/migrate make:model LineItem -dir models
 go run ./cmd/migrate db:seed [-class Users]
 ```
 
-Migrations run inside a transaction on SQLite and Postgres, so a failed
+Migrations run inside a transaction on SQLite, Postgres and DuckDB, so a failed
 migration leaves nothing behind. A migration with `Connection: "audit"` runs
-on that connection. `Migrator` exposes the same operations programmatically,
-for example to migrate in tests.
+on that connection — a MongoDB or Qdrant one included (see the README's
+"Migrating document stores"); a migrator whose own connection is a document
+store keeps its log there. `Migrator` exposes the same operations
+programmatically, for example to migrate in tests.
+
+Within one `Table` call, index, foreign key and primary key drops run before
+column changes, so a column can be dropped or changed in the same call that
+drops what covers it. `First` / `After` position columns added to an
+existing MySQL or MariaDB table and are refused elsewhere (a new table's
+columns are in declaration order); an auto-increment column is always the
+primary key, so declaring another one beside it is refused.
 
 ## Seeders
 
