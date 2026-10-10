@@ -333,6 +333,20 @@ func TestEagerLoading(t *testing.T) {
 	eq(t, "morphOne", alice.Avatar.URL, "alice.png")
 	eq(t, "morphOne nil", bob.Avatar == nil, true)
 
+	perParent := func(offset int) []User {
+		return must(Users.Query().Where(Users.Active.Eq(true)).OrderBy(Users.ID.Asc()).
+			With(UserPosts, func(q orm.Query[Post]) orm.Query[Post] { return q.OrderBy(Posts.Views.Desc()).Limit(1).Offset(offset) }).
+			Get(ctx))
+	}
+	for i, u := range perParent(0) {
+		all := must(Posts.Where(Posts.UserID.Eq(u.ID)).OrderBy(Posts.Views.Desc()).Pluck(ctx, Posts.Title))
+		eq(t, u.Name+": eager limit applies per parent", titles(u.Posts), all[:min(1, len(all))])
+		second := perParent(1)[i]
+		eq(t, u.Name+": eager offset applies per parent", titles(second.Posts), all[min(1, len(all)):min(2, len(all))])
+	}
+	_, err := Users.Query().With(UserRoles, func(q orm.Query[Role]) orm.Query[Role] { return q.Limit(1) }).Get(ctx)
+	eq(t, "many-to-many eager limit refused", err != nil && strings.Contains(err.Error(), "cannot apply per parent"), true)
+
 	posts := must(Posts.Query().OrderBy(Posts.ID.Asc()).With(PostAuthor).With(PostTags).Get(ctx))
 	eq(t, "belongsTo default (orphan)", posts[6].Author.Name, "Guest Author")
 	eq(t, "belongsTo default (trashed owner)", posts[5].Author.Name, "Guest Author")

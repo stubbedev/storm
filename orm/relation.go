@@ -2,6 +2,7 @@ package orm
 
 import (
 	"context"
+	"fmt"
 	"slices"
 )
 
@@ -149,7 +150,11 @@ func (h hasBase[M, R, K]) load(ctx context.Context, conn string, parents []M, sc
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	children, err := scope(h.constrain(relQuery(h.related, conn).Where(h.foreign.In(keys...)))).Get(ctx)
+	q := scope(h.constrain(relQuery(h.related, conn).Where(h.foreign.In(keys...))))
+	if q.limit > 0 || q.offset > 0 {
+		q.perParent = h.foreign
+	}
+	children, err := q.Get(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -530,7 +535,11 @@ func (r *BelongsToManyRel[M, R, P, K, RK]) eagerLoad(ctx context.Context, conn s
 	}
 	out := map[K][]R{}
 	if len(rks) > 0 {
-		related, err := scope(relQuery(r.related, conn).Where(r.relatedKey.In(rks...)).Scope(r.scopes...)).Get(ctx)
+		q := scope(relQuery(r.related, conn).Where(r.relatedKey.In(rks...)).Scope(r.scopes...))
+		if err := sharedRowsLimit(q, r.related.Name); err != nil {
+			return err
+		}
+		related, err := q.Get(ctx)
 		if err != nil {
 			return err
 		}
@@ -720,7 +729,11 @@ func (h throughBase[M, T, R, K, TK]) load(ctx context.Context, conn string, pare
 		}
 		parentsOf[tk] = append(parentsOf[tk], h.firstKey.Get(&throughs[i]))
 	}
-	related, err := scope(relQuery(h.related, conn).Where(h.secondKey.In(tks...))).Get(ctx)
+	q := scope(relQuery(h.related, conn).Where(h.secondKey.In(tks...)))
+	if err := sharedRowsLimit(q, h.related.Name); err != nil {
+		return nil, err
+	}
+	related, err := q.Get(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -925,6 +938,16 @@ func (r *MorphToRel[M, K]) HasMorph[R any](key Column[R, K], scopes ...func(Quer
 }
 
 // ---------------------------------------------------------------------------
+
+// sharedRowsLimit refuses a limit in the eager-load scope of a relation
+// whose related rows are shared between parents (many-to-many, through):
+// one query cannot apply it per parent.
+func sharedRowsLimit[R any](q Query[R], table string) error {
+	if q.limit == 0 && q.offset == 0 {
+		return nil
+	}
+	return fmt.Errorf("orm: eager loading %s: a Limit or Offset in this relation's scope cannot apply per parent; load each parent's %s with Of instead", table, table)
+}
 
 func relQuery[R any](t *Table[R], conn string) Query[R] {
 	q := t.Query()

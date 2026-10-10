@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,8 +36,9 @@ type Query[M any] struct {
 	trashed    trashedMode
 	without    []string // removed global scopes
 	withoutAll bool
-	scoped     bool  // global scopes already applied
-	err        error // the first invalid builder call, reported when the query runs
+	scoped     bool    // global scopes already applied
+	err        error   // the first invalid builder call, reported when the query runs
+	perParent  AnyExpr // set by eager loads: limit and offset apply per value of it
 }
 
 type selectAs struct {
@@ -411,6 +413,10 @@ func (q Query[M]) renderBody(b *SQL, list frag) {
 	if q.err != nil {
 		b.fail(q.err)
 	}
+	if q.perParent != nil {
+		q.renderPerParent(b)
+		return
+	}
 	b.Write("SELECT ")
 	if q.distinct {
 		b.Write("DISTINCT ")
@@ -484,6 +490,68 @@ func unionResult(b *SQL, union bool, f frag) {
 	b.plain = b.plain || union
 	f(b)
 	b.plain = plain
+}
+
+// renderPerParent applies limit and offset to each parent's rows, not to
+// all of them: the rows are numbered per q.perParent value in q's order
+// (or by key) and filtered on that number.
+func (q Query[M]) renderPerParent(b *SQL) {
+	const row = "per_parent_row"
+	inner := q
+	inner.perParent, inner.orders, inner.limit, inner.offset = nil, nil, 0, 0
+	orders := q.orders
+	if len(orders) == 0 {
+		orders = []Order[M]{q.table.keyOrder()}
+	}
+	writeOrders := func(b *SQL) {
+		for i, o := range orders {
+			if i > 0 {
+				b.Write(", ")
+			}
+			o.f(b)
+		}
+	}
+	b.Write("SELECT ")
+	for i, c := range q.persistedColumns() {
+		if i > 0 {
+			b.Write(", ")
+		}
+		b.Col(q.table.Name, c)
+	}
+	for _, e := range q.extras {
+		b.Write(", ")
+		b.Ident(e.dest)
+	}
+	b.Write(" FROM (")
+	inner.renderBody(b, func(b *SQL) {
+		inner.renderColumns(b)
+		b.Write(", ROW_NUMBER() OVER (PARTITION BY ")
+		q.perParent.build(b)
+		b.Write(" ORDER BY ")
+		writeOrders(b)
+		b.Write(") AS ")
+		b.Ident(row)
+	})
+	b.Write(") AS ")
+	b.Ident(q.table.Name)
+	b.Write(" WHERE ")
+	b.Ident(row)
+	b.Write(" > ", strconv.Itoa(q.offset))
+	if q.limit > 0 {
+		b.Write(" AND ")
+		b.Ident(row)
+		b.Write(" <= ", strconv.Itoa(q.offset+q.limit))
+	}
+	b.Write(" ORDER BY ")
+	writeOrders(b)
+}
+
+// persistedColumns are the columns the query selects from its table.
+func (q Query[M]) persistedColumns() []string {
+	if q.selects == nil {
+		return q.table.Columns
+	}
+	return names(q.selects)
 }
 
 func (q Query[M]) renderColumns(b *SQL) {

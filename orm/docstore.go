@@ -133,6 +133,9 @@ func (q Query[M]) plan() (Plan, error) {
 	if len(q.extras) > 0 {
 		return notSupported("addSelect aggregates (withCount and friends)")
 	}
+	if q.perParent != nil {
+		return notSupported("a Limit or Offset per parent in an eager load")
+	}
 	if len(q.where) > 0 {
 		ir := And(q.where...).ir
 		if ir == nil {
