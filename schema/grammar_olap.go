@@ -80,6 +80,9 @@ func floatType(c *Column, single, double string) string {
 // the type in Nullable(); ClickHouse generates no keys, so auto-increment
 // columns are refused (use uuid, ulid or manual keys, as the orm requires).
 func (g grammar) clickhouseType(c *Column) (string, error) {
+	if err := checkType(c); err != nil {
+		return "", err
+	}
 	table := c.bp.table
 	if c.IsAutoIncrement {
 		return "", g.unsupported(table, "create auto-incrementing column "+c.Name,
@@ -115,8 +118,11 @@ func (g grammar) clickhouseType(c *Column) (string, error) {
 		t = "String"
 	case TypeDateTime, TypeDateTimeTz:
 		t = "DateTime"
+		if c.Precision > 0 {
+			t = "DateTime64(" + n(c.Precision) + ")"
+		}
 	case TypeTimestamp, TypeTimestampTz:
-		t = "DateTime64(3)"
+		t = "DateTime64(" + n(cmp.Or(c.Precision, 3)) + ")"
 	case TypeJSON, TypeJSONB, TypeBinary, TypeUUID, TypeULID, TypeMACAddress, TypeGeometry, TypeGeography:
 		t = "String"
 	case TypeIPAddress:

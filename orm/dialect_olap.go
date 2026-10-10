@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -254,6 +255,35 @@ func (clickhouseDialect) FullText(b *SQL, exprs []AnyExpr, term string) {
 
 func (clickhouseDialect) Truncate(table string) []string {
 	return []string{"TRUNCATE TABLE " + clickhouseDialect{}.Quote(table)}
+}
+
+// renderArg writes times with their full fraction: the driver binds a
+// time.Time at whole seconds, dropping what a DateTime64 column stores.
+// In an INSERT's VALUES the time is a string the insert settings parse
+// into either column type; elsewhere it is a DateTime64 expression, which
+// compares and assigns to both. Either way the text comes from the time
+// value, never from input.
+func (clickhouseDialect) renderArg(b *SQL, v any) bool {
+	t, ok := v.(time.Time)
+	if p, isPtr := v.(*time.Time); isPtr && p != nil {
+		t, ok = *p, true
+	}
+	if !ok {
+		return false
+	}
+	text := t.UTC().Format("2006-01-02 15:04:05.000000000")
+	if b.values {
+		b.Write("'", text, "'")
+	} else {
+		b.Write("toDateTime64('", text, "', 9, 'UTC')")
+	}
+	return true
+}
+
+// insertSettings lets the VALUES time strings carry fractional seconds
+// into DateTime columns too (which drop them).
+func (clickhouseDialect) insertSettings() string {
+	return "SETTINGS date_time_input_format = 'best_effort'"
 }
 
 func (clickhouseDialect) UpdatePrefix(b *SQL, table string) {

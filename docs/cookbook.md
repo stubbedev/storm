@@ -783,6 +783,13 @@ on that connection — a MongoDB or Qdrant one included (see the README's
 store keeps its log there. `Migrator` exposes the same operations
 programmatically, for example to migrate in tests.
 
+Time columns take an optional precision, the fractional second digits
+stored: `t.Timestamp("at", 6)`, `t.Timestamps(3)`, `t.DateTime("seen",
+6).UseCurrent()` (MySQL's default becomes `CURRENT_TIMESTAMP(6)`). The
+default is whole seconds, as in Laravel; precision runs from 0 to 6, and
+a microsecond time stored in a precision-6 column reads back unchanged on
+every engine.
+
 `migrate -isolated` (`Migrator.Isolated`) holds a lock row in
 `migrations_lock` while it runs, so several instances deploying at once
 migrate exactly once; the others report the lock and exit cleanly. A lock

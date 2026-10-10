@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stubbedev/storm/orm"
 	"github.com/stubbedev/storm/schema"
@@ -269,6 +270,7 @@ func TestBlueprintSurface(t *testing.T) {
 	assertBlueprintSurface(t, ctx, orm.DefaultConnection)
 	assertForeignKeys(t, ctx, orm.DefaultConnection)
 	assertDropHelpers(t, ctx, orm.DefaultConnection)
+	assertTimePrecision(t, ctx, orm.DefaultConnection)
 
 	ok(schema.Create(ctx, "shortcuts", func(b *schema.Blueprint) { b.ID(); b.String("a") }))
 	ok(schema.Table(ctx, "shortcuts", func(b *schema.Blueprint) { b.String("b").Nullable() }))
@@ -277,4 +279,56 @@ func TestBlueprintSurface(t *testing.T) {
 	eq(t, "hasTable shortcut", must(schema.HasTable(ctx, "shortcuts_renamed")), true)
 	ok(schema.Drop(ctx, "shortcuts_renamed"))
 	ok(schema.DropIfExists(ctx, "shortcuts_renamed"))
+}
+
+// Stamp holds a fine-grained time, for the precision round trip.
+type Stamp struct {
+	orm.Model
+	ID string    `db:"id"`
+	At time.Time `db:"at"`
+}
+
+var stampTable = &orm.Table[Stamp]{
+	Name:       "stamps",
+	PrimaryKey: "id",
+	KeyType:    orm.KeyUUID,
+	Columns:    []string{"id", "at"},
+	Ptr: func(m *Stamp, column string) any {
+		switch column {
+		case "id":
+			return &m.ID
+		case "at":
+			return &m.At
+		}
+		return nil
+	},
+	State: func(m *Stamp) *orm.Model { return &m.Model },
+}
+
+var stampAt = orm.NewColumn(stampTable, "at", func(m *Stamp) *time.Time { return &m.At })
+
+// assertTimePrecision stores a microsecond time in a precision-6 column and
+// reads it back unchanged, with a precision-6 current-time default
+// alongside; precision past microseconds is refused.
+func assertTimePrecision(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	s := schema.On(conn)
+	ok(s.DropIfExists(ctx, "stamps"))
+	ok(s.Create(ctx, "stamps", func(b *schema.Blueprint) {
+		b.UUIDPrimary()
+		b.Timestamp("at", 6)
+		b.DateTime("noted", 6).UseCurrent()
+	}))
+	want := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
+	stamp := Stamp{At: want}
+	ok(stampTable.Query().On(conn).Create(ctx, &stamp))
+	got := must(stampTable.Query().On(conn).Value(ctx, stampAt))
+	eq(t, conn+" microseconds survive", got.UTC().Equal(want), true)
+	eq(t, conn+" microseconds filter", must(stampTable.Query().On(conn).Where(stampAt.Eq(want)).Count(ctx)), int64(1))
+	later := want.Add(time.Hour + 654321*time.Microsecond)
+	must(stampTable.Query().On(conn).Where(stampAt.Eq(want)).Update(ctx, stampAt.Set(later)))
+	eq(t, conn+" microseconds update", must(stampTable.Query().On(conn).Value(ctx, stampAt)).UTC().Equal(later), true)
+	ok(s.Drop(ctx, "stamps"))
+	err := s.Create(ctx, "stamps", func(b *schema.Blueprint) { b.UUIDPrimary(); b.Timestamp("at", 7) })
+	eq(t, conn+" precision past microseconds refused", err != nil && strings.Contains(err.Error(), "0 to 6"), true)
 }

@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+// insertSettings marks dialects whose INSERT statements carry settings
+// (ClickHouse parses the VALUES times with them).
+type insertSettings interface{ insertSettings() string }
+
 // writeInsert renders rows, each aligned to cols, as one INSERT into table.
 func writeInsert(b *SQL, verb, table string, cols []string, rows [][]colSet) {
 	b.Write(verb, " INTO ")
@@ -20,7 +24,13 @@ func writeInsert(b *SQL, verb, table string, cols []string, rows [][]colSet) {
 		}
 		b.Ident(c)
 	}
-	b.Write(") VALUES ")
+	b.Write(") ")
+	if s, ok := b.Dialect.(insertSettings); ok {
+		b.Write(s.insertSettings(), " ")
+	}
+	b.Write("VALUES ")
+	b.values = true
+	defer func() { b.values = false }()
 	for r, row := range rows {
 		if r > 0 {
 			b.Write(", ")

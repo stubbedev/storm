@@ -16,6 +16,7 @@ type SQL struct {
 	sb     strings.Builder
 	args   []any
 	inline bool              // ToRawSQL: write literals instead of placeholders
+	values bool              // rendering an INSERT's VALUES rows
 	plain  bool              // unqualified columns (ClickHouse mutations)
 	alias  map[string]string // table -> alias, for self-referencing subqueries
 }
@@ -48,20 +49,28 @@ func (b *SQL) Ident(name string) {
 	}
 }
 
-// vectorArgs marks dialects whose vector columns take a vector built from
-// its text form (MariaDB's VEC_FromText, MySQL's STRING_TO_VECTOR).
-type vectorArgs interface{ vectorFromText() string }
+// argRenderer marks dialects that render some argument values themselves
+// rather than binding them as they are: vectors built from their text form
+// on MySQL and MariaDB, exact-precision times on ClickHouse.
+type argRenderer interface{ renderArg(b *SQL, v any) bool }
 
 // Arg appends a bound argument using the dialect's placeholder syntax.
 func (b *SQL) Arg(v any) {
-	va, wraps := b.Dialect.(vectorArgs)
-	if _, isVector := vectorOf(v); wraps && isVector {
-		b.sb.WriteString(va.vectorFromText() + "(")
-		b.bind(v)
-		b.sb.WriteString(")")
+	if r, ok := b.Dialect.(argRenderer); ok && r.renderArg(b, v) {
 		return
 	}
 	b.bind(v)
+}
+
+// wrapVector binds v inside fn(...) when it is a vector value.
+func wrapVector(b *SQL, v any, fn string) bool {
+	if _, ok := vectorOf(v); !ok {
+		return false
+	}
+	b.sb.WriteString(fn + "(")
+	b.bind(v)
+	b.sb.WriteString(")")
+	return true
 }
 
 func (b *SQL) bind(v any) {

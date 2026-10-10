@@ -200,6 +200,7 @@ func TestDuckDB(t *testing.T) {
 	assertBlueprintSurface(t, ctx, "duck")
 	assertForeignKeys(t, ctx, "duck")
 	assertDropHelpers(t, ctx, "duck")
+	assertTimePrecision(t, ctx, "duck")
 
 	// Flat files: DuckDB reads CSV straight from the builder.
 	csv := t.TempDir() + "/flat.csv"
@@ -298,6 +299,7 @@ func TestClickHouse(t *testing.T) {
 	assertBlueprintSurface(t, ctx, "ch")
 	assertForeignKeys(t, ctx, "ch")
 	assertDropHelpers(t, ctx, "ch")
+	assertTimePrecision(t, ctx, "ch")
 	refusesExampleSchema(ctx, t, "ch", "clickhouse", "create_countries_table")
 }
 

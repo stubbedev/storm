@@ -277,14 +277,40 @@ func (b *Blueprint) Float(name string, precision ...int) *Column {
 
 func (b *Blueprint) Double(name string) *Column { return b.add(name, TypeDouble) }
 
-func (b *Blueprint) Date(name string) *Column        { return b.add(name, TypeDate) }
-func (b *Blueprint) Time(name string) *Column        { return b.add(name, TypeTime) }
-func (b *Blueprint) TimeTz(name string) *Column      { return b.add(name, TypeTimeTz) }
-func (b *Blueprint) DateTime(name string) *Column    { return b.add(name, TypeDateTime) }
-func (b *Blueprint) DateTimeTz(name string) *Column  { return b.add(name, TypeDateTimeTz) }
-func (b *Blueprint) Timestamp(name string) *Column   { return b.add(name, TypeTimestamp) }
-func (b *Blueprint) TimestampTz(name string) *Column { return b.add(name, TypeTimestampTz) }
-func (b *Blueprint) Year(name string) *Column        { return b.add(name, TypeYear) }
+func (b *Blueprint) Date(name string) *Column { return b.add(name, TypeDate) }
+
+// Time, DateTime and Timestamp columns take an optional precision: the
+// fractional second digits stored, 0 (the default) to 6 (microseconds).
+func (b *Blueprint) Time(name string, precision ...int) *Column {
+	return b.timed(name, TypeTime, precision)
+}
+
+func (b *Blueprint) TimeTz(name string, precision ...int) *Column {
+	return b.timed(name, TypeTimeTz, precision)
+}
+
+func (b *Blueprint) DateTime(name string, precision ...int) *Column {
+	return b.timed(name, TypeDateTime, precision)
+}
+
+func (b *Blueprint) DateTimeTz(name string, precision ...int) *Column {
+	return b.timed(name, TypeDateTimeTz, precision)
+}
+
+func (b *Blueprint) Timestamp(name string, precision ...int) *Column {
+	return b.timed(name, TypeTimestamp, precision)
+}
+
+func (b *Blueprint) TimestampTz(name string, precision ...int) *Column {
+	return b.timed(name, TypeTimestampTz, precision)
+}
+
+func (b *Blueprint) timed(name, typ string, precision []int) *Column {
+	c := b.add(name, typ)
+	c.Precision = first(precision, 0)
+	return c
+}
+func (b *Blueprint) Year(name string) *Column { return b.add(name, TypeYear) }
 
 func (b *Blueprint) JSON(name string) *Column   { return b.add(name, TypeJSON) }
 func (b *Blueprint) JSONB(name string) *Column  { return b.add(name, TypeJSONB) }
@@ -385,23 +411,23 @@ func (b *Blueprint) keyColumn(table, primaryKey string, column []string) string 
 }
 
 // Timestamps adds nullable created_at and updated_at.
-func (b *Blueprint) Timestamps() {
-	b.Timestamp("created_at").Nullable()
-	b.Timestamp("updated_at").Nullable()
+func (b *Blueprint) Timestamps(precision ...int) {
+	b.Timestamp("created_at", precision...).Nullable()
+	b.Timestamp("updated_at", precision...).Nullable()
 }
 
-func (b *Blueprint) TimestampsTz() {
-	b.TimestampTz("created_at").Nullable()
-	b.TimestampTz("updated_at").Nullable()
+func (b *Blueprint) TimestampsTz(precision ...int) {
+	b.TimestampTz("created_at", precision...).Nullable()
+	b.TimestampTz("updated_at", precision...).Nullable()
 }
 
 // NullableTimestamps is an alias of Timestamps.
-func (b *Blueprint) NullableTimestamps() { b.Timestamps() }
+func (b *Blueprint) NullableTimestamps(precision ...int) { b.Timestamps(precision...) }
 
 // Datetimes adds nullable created_at and updated_at datetime columns.
-func (b *Blueprint) Datetimes() {
-	b.DateTime("created_at").Nullable()
-	b.DateTime("updated_at").Nullable()
+func (b *Blueprint) Datetimes(precision ...int) {
+	b.DateTime("created_at", precision...).Nullable()
+	b.DateTime("updated_at", precision...).Nullable()
 }
 
 // SoftDeletes adds a nullable deleted_at.

@@ -146,8 +146,8 @@ func (g grammar) transactionalDDL() bool {
 func identity(c *Column) bool { return c.Identity != "" || c.IsAutoIncrement && c.StartingValue != 0 }
 
 func (g grammar) typeOf(c *Column) (string, error) {
-	if (c.Type == TypeEnum || c.Type == TypeSet) && len(c.Allowed) == 0 {
-		return "", fmt.Errorf("schema: %s column %s.%s has no allowed values", c.Type, c.bp.table, c.Name)
+	if err := checkType(c); err != nil {
+		return "", err
 	}
 	switch g.engine {
 	case engineDuckDB:
@@ -195,18 +195,19 @@ func (g grammar) typeOf(c *Column) (string, error) {
 		return g.pick("double", "double precision", "double"), nil
 	case TypeDate:
 		return "date", nil
-	case TypeTime:
-		return g.pick("time", "time(0) without time zone", "time"), nil
-	case TypeTimeTz:
-		return g.pick("time", "time(0) with time zone", "time"), nil
-	case TypeDateTime:
-		return g.pick("datetime", "timestamp(0) without time zone", "datetime"), nil
-	case TypeDateTimeTz:
-		return g.pick("datetime", "timestamp(0) with time zone", "datetime"), nil
-	case TypeTimestamp:
-		return g.pick("datetime", "timestamp(0) without time zone", "timestamp"), nil
-	case TypeTimestampTz:
-		return g.pick("datetime", "timestamp(0) with time zone", "timestamp"), nil
+	case TypeTime, TypeTimeTz, TypeDateTime, TypeDateTimeTz, TypeTimestamp, TypeTimestampTz:
+		p, mysqlP := n(c.Precision), ""
+		if c.Precision > 0 {
+			mysqlP = "(" + p + ")"
+		}
+		return map[string]string{
+			TypeTime:        g.pick("time", "time("+p+") without time zone", "time"+mysqlP),
+			TypeTimeTz:      g.pick("time", "time("+p+") with time zone", "time"+mysqlP),
+			TypeDateTime:    g.pick("datetime", "timestamp("+p+") without time zone", "datetime"+mysqlP),
+			TypeDateTimeTz:  g.pick("datetime", "timestamp("+p+") with time zone", "datetime"+mysqlP),
+			TypeTimestamp:   g.pick("datetime", "timestamp("+p+") without time zone", "timestamp"+mysqlP),
+			TypeTimestampTz: g.pick("datetime", "timestamp("+p+") with time zone", "timestamp"+mysqlP),
+		}[c.Type], nil
 	case TypeYear:
 		return g.pick("integer", "integer", "year"), nil
 	case TypeJSON:
@@ -293,13 +294,42 @@ func (g grammar) defaultValue(c *Column) string {
 	if _, ok := c.DefaultValue.(currentTimestamp); !ok {
 		return g.literal(c.DefaultValue)
 	}
-	if g.engine != engineClickHouse {
-		return "CURRENT_TIMESTAMP"
-	}
-	if c.Type == TypeTimestamp || c.Type == TypeTimestampTz {
+	return g.currentTime(c)
+}
+
+// currentTime is the engine's current time at c's precision: MySQL needs
+// CURRENT_TIMESTAMP(p) for a column with fractional seconds.
+func (g grammar) currentTime(c *Column) string {
+	switch {
+	case g.engine == engineClickHouse && c.Precision > 0:
+		return "now64(" + strconv.Itoa(c.Precision) + ")"
+	case g.engine == engineClickHouse && (c.Type == TypeTimestamp || c.Type == TypeTimestampTz):
 		return "now64(3)"
+	case g.engine == engineClickHouse:
+		return "now()"
+	case g.mysqlFamily() && c.Precision > 0:
+		return "CURRENT_TIMESTAMP(" + strconv.Itoa(c.Precision) + ")"
 	}
-	return "now()"
+	return "CURRENT_TIMESTAMP"
+}
+
+// checkType rejects column definitions no engine can store.
+func checkType(c *Column) error {
+	if (c.Type == TypeEnum || c.Type == TypeSet) && len(c.Allowed) == 0 {
+		return fmt.Errorf("schema: %s column %s.%s has no allowed values", c.Type, c.bp.table, c.Name)
+	}
+	if isTime(c.Type) && (c.Precision < 0 || c.Precision > 6) {
+		return fmt.Errorf("schema: %s column %s.%s has precision %d; fractional seconds go from 0 to 6 digits", c.Type, c.bp.table, c.Name, c.Precision)
+	}
+	return nil
+}
+
+func isTime(t string) bool {
+	switch t {
+	case TypeTime, TypeTimeTz, TypeDateTime, TypeDateTimeTz, TypeTimestamp, TypeTimestampTz:
+		return true
+	}
+	return false
 }
 
 func checkName(table, column string) string { return table + "_" + column + "_check" }
@@ -397,7 +427,7 @@ func (g grammar) columnDef(c *Column, nullability bool) (string, error) {
 		w(" DEFAULT ", g.defaultValue(c))
 	}
 	if c.OnUpdateNow {
-		w(" ON UPDATE CURRENT_TIMESTAMP")
+		w(" ON UPDATE ", g.currentTime(c))
 	}
 	if c.Type == TypeEnum && (g.engine == enginePostgres || g.engine == engineSQLite) {
 		w(" ", g.enumCheck(table, c))
