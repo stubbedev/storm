@@ -168,6 +168,11 @@ func TestRelationOptions(t *testing.T) {
 	post.Title = "touched"
 	ok(Posts.Save(ctx, &post))
 	eq(t, "touches", must(Users.Find(ctx, 2)).UpdatedAt.After(before), true)
+	touched := must(Users.Find(ctx, 2)).UpdatedAt
+	post.Title = "quietly"
+	ok(Posts.Save(orm.WithoutTimestamps(ctx), &post))
+	eq(t, "no touch without timestamps", must(Users.Find(ctx, 2)).UpdatedAt.Equal(touched), true)
+	eq(t, "saved without timestamps", must(Posts.Find(ctx, post.ID)).Title, "quietly")
 }
 
 type blockWrites struct{}

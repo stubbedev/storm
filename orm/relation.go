@@ -403,12 +403,16 @@ func (r *BelongsToRel[M, R, K]) Dissociate(child *M) {
 // Is matches children of owner (whereBelongsTo).
 func (r *BelongsToRel[M, R, K]) Is(owner *R) Cond[M] { return r.foreign.Eq(r.owner.Get(owner)) }
 
-// Touches makes saving or deleting a child update the owner's updated-at ($touches).
+// Touches makes saving or deleting a child update the owner's updated-at
+// ($touches), except under WithoutTimestamps.
 func (r *BelongsToRel[M, R, K]) Touches() {
 	if r.related.UpdatedAt == "" {
 		return
 	}
 	touch := func(ctx context.Context, m *M) error {
+		if !timestamps(ctx) {
+			return nil
+		}
 		_, err := r.related.Query().Where(r.owner.Eq(r.foreign.Get(m))).Update(ctx)
 		return err
 	}
