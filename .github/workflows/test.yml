@@ -14,8 +14,10 @@ jobs:
           go-version: "1.27"
       - name: Install just
         run: |
-          curl -sSL https://github.com/casey/just/releases/latest/download/just-x86_64-unknown-linux-musl.tar.gz \
-            | tar -xz -C /usr/local/bin just
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz \
+            | tar -xz -C "$HOME/.local/bin" just
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Start databases
         run: docker compose up -d --wait
       - name: Vet
