@@ -79,7 +79,7 @@ func BenchmarkPlanCompile(b *testing.B) {
 func BenchmarkPlanKNN(b *testing.B) {
 	q := benchDocs.Query().
 		Where(benchDocs.Title.Like("hello")).
-		OrderBy(benchDocs.Vec.Nearest(NewVector3(1, 0, 0), Cosine)).
+		OrderBy(Nearest(benchDocs.Vec, NewVector3(1, 0, 0), Cosine)).
 		Limit(10)
 	b.ReportAllocs()
 	for b.Loop() {

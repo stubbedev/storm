@@ -89,12 +89,12 @@ func TestSQLiteVectors(t *testing.T) {
 	for i, v := range []orm.Vector[orm.D3]{orm.NewVector3(0, 5, 0), orm.NewVector3(1, 0, 0), orm.NewVector3(3, 4, 0)} {
 		ok(Events.Create(ctx, &Event{ID: int64(i + 1), At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Vec: v}))
 	}
-	near := must(Events.Query().OrderBy(Events.Vec.Nearest(orm.NewVector3(1, 1, 0), orm.L2)).Pluck(ctx, Events.ID))
+	near := must(Events.Query().OrderBy(orm.Nearest(Events.Vec, orm.NewVector3(1, 1, 0), orm.L2)).Pluck(ctx, Events.ID))
 	eq(t, "sqlite l2 order", near, []int64{2, 3, 1})
-	_, err := Events.Query().OrderBy(Events.Vec.Nearest(orm.NewVector3(1, 1, 0), orm.Cosine)).Get(ctx)
+	_, err := Events.Query().OrderBy(orm.Nearest(Events.Vec, orm.NewVector3(1, 1, 0), orm.Cosine)).Get(ctx)
 	eq(t, "sqlite refuses other metrics", err != nil, true)
 
-	stmt, _ := rendered(Events.Query().OrderBy(Events.Vec.Nearest(orm.NewVector3(1, 1, 0), orm.Cosine)).ToSQLFor(orm.MySQL))
+	stmt, _ := rendered(Events.Query().OrderBy(orm.Nearest(Events.Vec, orm.NewVector3(1, 1, 0), orm.Cosine)).ToSQLFor(orm.MySQL))
 	eq(t, "mysql (HeatWave) distance converts the bound vector", strings.Contains(stmt, "DISTANCE(`events`.`vec`, STRING_TO_VECTOR(?), 'COSINE')"), true)
 }
 
@@ -144,7 +144,7 @@ func assertEvents(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" full text", ids(orm.FullTextMatch("STORM", Events.Body)), []int64{1})
 
 	for _, m := range []orm.VectorMetric{orm.L2, orm.Cosine, orm.InnerProduct} {
-		nearest := must(Events.Query().On(conn).OrderBy(Events.Vec.Nearest(orm.NewVector3(0.9, 0.1, 0), m)).Pluck(ctx, Events.ID))
+		nearest := must(Events.Query().On(conn).OrderBy(orm.Nearest(Events.Vec, orm.NewVector3(0.9, 0.1, 0), m)).Pluck(ctx, Events.ID))
 		eq(t, fmt.Sprintf("%s nearest by metric %d", conn, m), nearest, []int64{1, 2})
 	}
 	eq(t, conn+" random order", len(must(Events.Query().On(conn).InRandomOrder().Get(ctx))), 2)
@@ -181,7 +181,7 @@ func TestMySQLFlavour(t *testing.T) {
 	explicit, known := orm.DialectFor("mariadb")
 	eq(t, "mariadb driver name", known && explicit == orm.MariaDB, true)
 
-	stmt, _ := rendered(Events.Query().OrderBy(Events.Vec.Nearest(orm.NewVector3(1, 1, 0), orm.Cosine)).ToSQLFor(orm.MariaDB))
+	stmt, _ := rendered(Events.Query().OrderBy(orm.Nearest(Events.Vec, orm.NewVector3(1, 1, 0), orm.Cosine)).ToSQLFor(orm.MariaDB))
 	eq(t, "mariadb vector distance", strings.Contains(stmt, "VEC_DISTANCE_COSINE(`events`.`vec`, VEC_FromText(?))"), true)
 	if want != "mariadb" {
 		return
@@ -203,10 +203,10 @@ func TestMySQLFlavour(t *testing.T) {
 	near := must(Docs.Query().Where(Docs.Title.Eq("near")).First(ctx))
 	eq(t, "mariadb vectors read back", near.Vec.String(), "[1,0,0]")
 	for _, m := range []orm.VectorMetric{orm.L2, orm.Cosine} {
-		titles := must(Docs.Query().OrderBy(Docs.Vec.Nearest(orm.NewVector3(0.9, 0.1, 0), m)).Pluck(ctx, Docs.Title))
+		titles := must(Docs.Query().OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(0.9, 0.1, 0), m)).Pluck(ctx, Docs.Title))
 		eq(t, fmt.Sprintf("mariadb nearest by metric %d", m), titles[0], "near")
 	}
-	_, err := Docs.Query().OrderBy(Docs.Vec.Nearest(orm.NewVector3(1, 0, 0), orm.InnerProduct)).Get(ctx)
+	_, err := Docs.Query().OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(1, 0, 0), orm.InnerProduct)).Get(ctx)
 	eq(t, "mariadb has no inner product", err != nil, true)
 	err = schema.Table(ctx, "documents", func(t *schema.Blueprint) { t.HnswIndex("vec", orm.InnerProduct) })
 	_, refused := errors.AsType[*schema.UnsupportedError](err)

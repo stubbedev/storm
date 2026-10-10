@@ -271,18 +271,14 @@ func (v *Vector[N]) UnmarshalJSON(b []byte) error {
 	return v.set(fs)
 }
 
-// Nearest orders rows by distance from v under the metric (pgvector's
-// nearest-neighbours, DuckDB's array_distance, a Qdrant search). Combined
-// with Limit it is a KNN query.
-func (s Scalar[M, V]) Nearest(v V, metric VectorMetric) Order[M] {
-	o := Order[M]{f: func(b *SQL) { b.Dialect.VectorDistance(b, s, v, metric) }}
-	if s.col != "" {
-		if vv, ok := any(v).(interface {
-			Floats() []float64
-			Value() (driver.Value, error)
-		}); ok {
-			o.vec = &VectorOrder{Column: s.col, Floats: vv.Floats(), Metric: metric}
-		}
+// Nearest orders rows by distance of the vector expression e from v under
+// the metric (pgvector's nearest-neighbours, DuckDB's array_distance, a
+// Qdrant search): orm.Nearest(Docs.Vec, q, orm.Cosine). Only a vector of
+// e's own dimension compiles. Combined with Limit it is a KNN query.
+func Nearest[M any, N Dimension](e Expr[M, Vector[N]], v Vector[N], metric VectorMetric) Order[M] {
+	o := Order[M]{f: func(b *SQL) { b.Dialect.VectorDistance(b, e, v, metric) }}
+	if c, ok := e.(interface{ docColumn() string }); ok && c.docColumn() != "" {
+		o.vec = &VectorOrder{Column: c.docColumn(), Floats: v.Floats(), Metric: metric}
 	}
 	return o
 }

@@ -401,7 +401,7 @@ type Doc struct {
 }
 
 docs, err := Docs.Query().
-	OrderBy(Docs.Embedding.Nearest(orm.NewVector3(0.2, 0.1, 0.9), orm.Cosine)).
+	OrderBy(orm.Nearest(Docs.Embedding, orm.NewVector3(0.2, 0.1, 0.9), orm.Cosine)).
 	Limit(10).
 	Get(ctx)
 ```
@@ -466,7 +466,7 @@ store, _ := orm.OpenQdrant("qdrant", "http://localhost:6333")
 
 //orm:table documents connection=qdrant key_type=uuid
 docs, err := Docs.Query().
-	OrderBy(Docs.Vec.Nearest(orm.NewVector3(1, 0, 0), orm.Cosine)).
+	OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(1, 0, 0), orm.Cosine)).
 	Limit(10).
 	Get(ctx)
 ```

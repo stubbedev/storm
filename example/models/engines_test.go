@@ -563,7 +563,7 @@ func TestDuckDB(t *testing.T) {
 		ok(Docs.Query().On("duck").Create(ctx, &d))
 	}
 	found := must(Docs.Query().On("duck").
-		OrderBy(Docs.Vec.Nearest(orm.NewVector[orm.D3](1, 0, 0), orm.L2)).
+		OrderBy(orm.Nearest(Docs.Vec, orm.NewVector[orm.D3](1, 0, 0), orm.L2)).
 		Limit(1).Get(ctx))
 	eq(t, "nearest", found[0].Title, "near")
 
@@ -972,7 +972,7 @@ func TestQdrant(t *testing.T) {
 
 	// Nearest-neighbour search: same builder, vector order.
 	found := must(Docs.Query().On("qdrant").
-		OrderBy(Docs.Vec.Nearest(orm.NewVector[orm.D3](1, 0, 0), orm.Cosine)).
+		OrderBy(orm.Nearest(Docs.Vec, orm.NewVector[orm.D3](1, 0, 0), orm.Cosine)).
 		Limit(2).Get(ctx))
 	eq(t, "knn count", len(found), 2)
 	eq(t, "nearest first", found[0].Title, "near")
@@ -1026,7 +1026,7 @@ func TestQdrant(t *testing.T) {
 		ids[i] = extra[i].ID
 	}
 	ok(Docs.Query().On("qdrant").Insert(ctx, extra...))
-	all := must(Docs.Query().On("qdrant").OrderBy(Docs.Vec.Nearest(orm.NewVector3(1, 0, 0), orm.Cosine)).Get(ctx))
+	all := must(Docs.Query().On("qdrant").OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(1, 0, 0), orm.Cosine)).Get(ctx))
 	eq(t, "unlimited nearest returns every match", int64(len(all)), before+300)
 	eq(t, "extra cleanup", must(Docs.Query().On("qdrant").WhereKey(ids...).Delete(ctx)), int64(300))
 
@@ -1051,7 +1051,7 @@ func TestQdrant(t *testing.T) {
 	moved := must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("far")).First(ctx))
 	moved.Vec = orm.NewVector3(0, 0, 1)
 	ok(Docs.Query().On("qdrant").Save(ctx, &moved))
-	nearest := must(Docs.Query().On("qdrant").OrderBy(Docs.Vec.Nearest(orm.NewVector3(0, 0, 1), orm.Cosine)).Limit(1).Get(ctx))
+	nearest := must(Docs.Query().On("qdrant").OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(0, 0, 1), orm.Cosine)).Limit(1).Get(ctx))
 	eq(t, "saving a vector moves the point", nearest[0].ID, moved.ID)
 	assertDocMigrations(t, ctx, "qdrant")
 	ok(store.DropCollection(ctx, "notes"))
@@ -1106,7 +1106,7 @@ func TestPgVector(t *testing.T) {
 		ok(Docs.Query().Create(ctx, &d))
 	}
 	found := must(Docs.Query().
-		OrderBy(Docs.Vec.Nearest(orm.NewVector[orm.D3](1, 0, 0), orm.L2)).
+		OrderBy(orm.Nearest(Docs.Vec, orm.NewVector[orm.D3](1, 0, 0), orm.L2)).
 		Limit(1).Get(ctx))
 	eq(t, "knn", found[0].Title, "near")
 	eq(t, "vectors round-trip", must(Docs.Query().Where(Docs.Title.Eq("far")).First(ctx)).Vec.String(), "[10,10,10]")
