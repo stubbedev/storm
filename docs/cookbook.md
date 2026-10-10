@@ -36,8 +36,8 @@ Postgres, MySQL and MariaDB.
 
 ```go
 import (
-	"github.com/stubbedev/eloquent-go/orm"
-	"github.com/stubbedev/eloquent-go/schema"
+	"github.com/stubbedev/storm/orm"
+	"github.com/stubbedev/storm/schema"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -817,6 +817,6 @@ docker compose up -d --wait   # Postgres 17 :54329, MySQL 8.4 :33069, MariaDB 11
 just test-all
 ```
 
-Each service creates two empty databases, `eloquent` and `eloquent_audit`.
-Point the suite at any server with `ELOQUENT_TEST_DRIVER`, `ELOQUENT_TEST_DSN`
-and `ELOQUENT_TEST_AUDIT_DSN`.
+Each service creates two empty databases, `storm` and `storm_audit`.
+Point the suite at any server with `STORM_TEST_DRIVER`, `STORM_TEST_DSN`
+and `STORM_TEST_AUDIT_DSN`.

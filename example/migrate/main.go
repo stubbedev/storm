@@ -22,9 +22,9 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
-	_ "github.com/stubbedev/eloquent-go/example/migrations"
-	"github.com/stubbedev/eloquent-go/orm"
-	"github.com/stubbedev/eloquent-go/schema"
+	_ "github.com/stubbedev/storm/example/migrations"
+	"github.com/stubbedev/storm/orm"
+	"github.com/stubbedev/storm/schema"
 )
 
 func main() {

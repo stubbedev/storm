@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stubbedev/eloquent-go/orm"
-	"github.com/stubbedev/eloquent-go/schema"
+	"github.com/stubbedev/storm/orm"
+	"github.com/stubbedev/storm/schema"
 )
 
 // Event exercises the dialect-specific functions of the analytical

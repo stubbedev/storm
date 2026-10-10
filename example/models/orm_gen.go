@@ -3,7 +3,7 @@
 package models
 
 import (
-	"github.com/stubbedev/eloquent-go/orm"
+	"github.com/stubbedev/storm/orm"
 	"time"
 )
 

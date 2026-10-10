@@ -95,7 +95,7 @@ func splitRenames(cmds []*command) (renames, rest []*command) {
 // savepoint runs fn atomically; outside a transaction the savepoint is the
 // transaction.
 func (x session) savepoint(ctx context.Context, fn func() error) error {
-	const name = "eloquent_rebuild"
+	const name = "storm_rebuild"
 	if err := x.exec(ctx, "SAVEPOINT "+name); err != nil {
 		return err
 	}

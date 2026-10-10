@@ -12,9 +12,9 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
-	. "github.com/stubbedev/eloquent-go/example/models"
-	"github.com/stubbedev/eloquent-go/orm"
-	"github.com/stubbedev/eloquent-go/schema"
+	. "github.com/stubbedev/storm/example/models"
+	"github.com/stubbedev/storm/orm"
+	"github.com/stubbedev/storm/schema"
 )
 
 func TestInsertGetID(t *testing.T) {

@@ -1,26 +1,27 @@
-# Test databases for the eloquent-go suite. Start them, then run the tests
+# Test databases for the storm suite. Start them, then run the tests
 # against each engine:
 #
 #   docker compose up -d --wait
 #   just test-all        # sqlite + postgres + mysql + mariadb + duckdb
 #                        # + clickhouse + mongo + qdrant
 #
-# Each engine gets two empty databases: "eloquent" (default connection) and
-# "eloquent_audit" (the example's second connection).
+# Each engine gets two empty databases: "storm" (default connection) and
+# "storm_audit" (the example's second connection).
+name: storm
 services:
   postgres:
     # pgvector's image is stock Postgres plus the vector extension.
     image: pgvector/pgvector:pg17
     environment:
-      POSTGRES_USER: eloquent
-      POSTGRES_PASSWORD: eloquent
-      POSTGRES_DB: eloquent
+      POSTGRES_USER: storm
+      POSTGRES_PASSWORD: storm
+      POSTGRES_DB: storm
     ports: ["127.0.0.1:54329:5432"]
     volumes:
       - ./testdata/docker/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     tmpfs: [/var/lib/postgresql/data]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U eloquent -d eloquent_audit"]
+      test: ["CMD-SHELL", "pg_isready -U storm -d storm_audit"]
       interval: 2s
       timeout: 5s
       retries: 30
@@ -28,16 +29,16 @@ services:
   mysql:
     image: mysql:8.4
     environment:
-      MYSQL_ROOT_PASSWORD: eloquent
-      MYSQL_USER: eloquent
-      MYSQL_PASSWORD: eloquent
-      MYSQL_DATABASE: eloquent
+      MYSQL_ROOT_PASSWORD: storm
+      MYSQL_USER: storm
+      MYSQL_PASSWORD: storm
+      MYSQL_DATABASE: storm
     ports: ["127.0.0.1:33069:3306"]
     volumes:
       - ./testdata/docker/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     tmpfs: [/var/lib/mysql]
     healthcheck:
-      test: ["CMD-SHELL", "mysql -ueloquent -peloquent -h127.0.0.1 -e 'SELECT 1' eloquent_audit"]
+      test: ["CMD-SHELL", "mysql -ustorm -pstorm -h127.0.0.1 -e 'SELECT 1' storm_audit"]
       interval: 2s
       timeout: 5s
       retries: 60
@@ -45,10 +46,10 @@ services:
   mariadb:
     image: mariadb:11.4
     environment:
-      MARIADB_ROOT_PASSWORD: eloquent
-      MARIADB_USER: eloquent
-      MARIADB_PASSWORD: eloquent
-      MARIADB_DATABASE: eloquent
+      MARIADB_ROOT_PASSWORD: storm
+      MARIADB_USER: storm
+      MARIADB_PASSWORD: storm
+      MARIADB_DATABASE: storm
     ports: ["127.0.0.1:33070:3306"]
     volumes:
       - ./testdata/docker/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -62,7 +63,7 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:25.9-alpine
     environment:
-      CLICKHOUSE_PASSWORD: eloquent
+      CLICKHOUSE_PASSWORD: storm
     volumes:
       - ./testdata/docker/clickhouse-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports: ["127.0.0.1:19000:9000", "127.0.0.1:18123:8123"]

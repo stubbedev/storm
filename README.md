@@ -1,4 +1,4 @@
-# eloquent-go
+# storm
 
 An Eloquent-style ORM, schema builder and migrator for Go, built on Go 1.27
 generic methods and fully type-checked.
@@ -57,7 +57,7 @@ renders correctly for each, and the full test suite runs against all eight.
 Go 1.27 or newer is required, because the API relies on generic methods.
 
 ```sh
-go get github.com/stubbedev/eloquent-go
+go get github.com/stubbedev/storm
 ```
 
 Bring your own `database/sql` driver: `modernc.org/sqlite` (or any SQLite
@@ -72,7 +72,7 @@ plus a directive. The directive options mirror Laravel 13's `#[Table]` /
 ```go
 package models
 
-//go:generate go run github.com/stubbedev/eloquent-go/cmd/ormgen
+//go:generate go run github.com/stubbedev/storm/cmd/ormgen
 
 //orm:table users soft_deletes
 type User struct {
@@ -234,8 +234,8 @@ tests can set up their database without shelling out:
 
 ```go
 import (
-	"github.com/stubbedev/eloquent-go/orm"
-	"github.com/stubbedev/eloquent-go/schema"
+	"github.com/stubbedev/storm/orm"
+	"github.com/stubbedev/storm/schema"
 
 	_ "yourapp/migrations" // init() calls schema.Register
 	_ "yourapp/seeders"    // init() calls schema.RegisterSeeder
@@ -554,7 +554,7 @@ valid operators after `orm.`.
 
 ## Eloquent feature map
 
-| Eloquent | eloquent-go |
+| Eloquent | storm |
 |---|---|
 | `User::query()`, `User::where(...)` | `Users.Query()`, `Users.Where(...)` |
 | `where`, `orWhere`, `whereNot`, nested closures | `Where`, `OrWhere`, `WhereNot`, `orm.And` / `orm.Or` |

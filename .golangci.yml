@@ -62,6 +62,6 @@ formatters:
       sections:
         - standard
         - default
-        - prefix(github.com/stubbedev/eloquent-go)
+        - prefix(github.com/stubbedev/storm)
   exclusions:
     generated: lax

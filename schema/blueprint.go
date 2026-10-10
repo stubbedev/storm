@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/stubbedev/eloquent-go/orm"
+	"github.com/stubbedev/storm/orm"
 )
 
 // Blueprint collects column definitions and commands for one table.

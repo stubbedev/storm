@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stubbedev/eloquent-go/orm"
-	"github.com/stubbedev/eloquent-go/schema"
+	"github.com/stubbedev/storm/orm"
+	"github.com/stubbedev/storm/schema"
 )
 
 // probe is one blueprint feature: def declares it on a fresh table, col is

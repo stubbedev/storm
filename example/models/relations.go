@@ -1,6 +1,6 @@
 package models
 
-import "github.com/stubbedev/eloquent-go/orm"
+import "github.com/stubbedev/storm/orm"
 
 // Relations — the equivalent of Eloquent's relationship methods.
 var (

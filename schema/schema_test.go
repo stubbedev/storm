@@ -18,13 +18,13 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
-	"github.com/stubbedev/eloquent-go/orm"
+	"github.com/stubbedev/storm/orm"
 )
 
-// Like the model tests, these run on SQLite unless ELOQUENT_TEST_DRIVER and
-// ELOQUENT_TEST_DSN point at another engine (see compose.yaml and Makefile).
+// Like the model tests, these run on SQLite unless STORM_TEST_DRIVER and
+// STORM_TEST_DSN point at another engine (see compose.yaml and Makefile).
 var (
-	driver   = os.Getenv("ELOQUENT_TEST_DRIVER")
+	driver   = os.Getenv("STORM_TEST_DRIVER")
 	openOnce sync.Once
 )
 
@@ -42,7 +42,7 @@ func setup(t *testing.T) (context.Context, *Builder) {
 		return ctx, Default()
 	}
 	openOnce.Do(func() {
-		if _, err := orm.Open(orm.DefaultConnection, driver, os.Getenv("ELOQUENT_TEST_DSN")); err != nil {
+		if _, err := orm.Open(orm.DefaultConnection, driver, os.Getenv("STORM_TEST_DSN")); err != nil {
 			t.Fatal(err)
 		}
 	})

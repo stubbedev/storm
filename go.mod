@@ -1,4 +1,4 @@
-module github.com/stubbedev/eloquent-go
+module github.com/stubbedev/storm
 
 go 1.27
 

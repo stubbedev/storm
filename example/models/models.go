@@ -5,10 +5,10 @@ package models
 import (
 	"time"
 
-	"github.com/stubbedev/eloquent-go/orm"
+	"github.com/stubbedev/storm/orm"
 )
 
-//go:generate go run github.com/stubbedev/eloquent-go/cmd/ormgen
+//go:generate go run github.com/stubbedev/storm/cmd/ormgen
 
 //orm:table countries
 type Country struct {

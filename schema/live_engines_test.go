@@ -13,7 +13,7 @@ import (
 	_ "github.com/ClickHouse/clickhouse-go/v2"
 	_ "github.com/marcboeker/go-duckdb/v2"
 
-	"github.com/stubbedev/eloquent-go/orm"
+	"github.com/stubbedev/storm/orm"
 )
 
 // execOn runs a raw statement (with ? placeholders) on conn.
@@ -342,9 +342,9 @@ func TestDuckDBSchema(t *testing.T) {
 }
 
 func TestClickHouseSchema(t *testing.T) {
-	dsn := os.Getenv("ELOQUENT_TEST_CLICKHOUSE")
+	dsn := os.Getenv("STORM_TEST_CLICKHOUSE")
 	if dsn == "" {
-		t.Skip("set ELOQUENT_TEST_CLICKHOUSE to a disposable database to run")
+		t.Skip("set STORM_TEST_CLICKHOUSE to a disposable database to run")
 	}
 	ctx := context.Background()
 	db, err := orm.Open("ch-schema", "clickhouse", dsn)

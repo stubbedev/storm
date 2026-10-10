@@ -9,7 +9,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/stubbedev/eloquent-go/orm"
+	"github.com/stubbedev/storm/orm"
 )
 
 // Builder runs schema operations on one connection (the Schema facade).

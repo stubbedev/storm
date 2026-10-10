@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/stubbedev/eloquent-go/orm"
+	"github.com/stubbedev/storm/orm"
 )
 
 // docStore resolves the builder's connection to a document store's schema

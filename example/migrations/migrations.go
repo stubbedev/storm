@@ -13,7 +13,7 @@ package migrations
 import (
 	"context"
 
-	"github.com/stubbedev/eloquent-go/schema"
+	"github.com/stubbedev/storm/schema"
 )
 
 type B = schema.Blueprint

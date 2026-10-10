@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	. "github.com/stubbedev/eloquent-go/example/models"
-	"github.com/stubbedev/eloquent-go/orm"
+	. "github.com/stubbedev/storm/example/models"
+	"github.com/stubbedev/storm/orm"
 )
 
 func TestScalarExpressions(t *testing.T) {

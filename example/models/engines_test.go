@@ -15,9 +15,9 @@ import (
 	_ "github.com/marcboeker/go-duckdb/v2"
 	_ "modernc.org/sqlite"
 
-	. "github.com/stubbedev/eloquent-go/example/models"
-	"github.com/stubbedev/eloquent-go/orm"
-	"github.com/stubbedev/eloquent-go/schema"
+	. "github.com/stubbedev/storm/example/models"
+	"github.com/stubbedev/storm/orm"
+	"github.com/stubbedev/storm/schema"
 )
 
 // ---------------------------------------------------------------------------
@@ -241,11 +241,11 @@ func refusesExampleSchema(ctx context.Context, t *testing.T, conn, engine, migra
 
 func TestClickHouse(t *testing.T) {
 	current = t
-	if os.Getenv("ELOQUENT_TEST_CLICKHOUSE") == "" {
-		t.Skip("set ELOQUENT_TEST_CLICKHOUSE=clickhouse://default:eloquent@127.0.0.1:19000/eloquent?dial_timeout=5s to run")
+	if os.Getenv("STORM_TEST_CLICKHOUSE") == "" {
+		t.Skip("set STORM_TEST_CLICKHOUSE=clickhouse://default:storm@127.0.0.1:19000/storm?dial_timeout=5s to run")
 	}
 	ctx := context.Background()
-	db, err := orm.Open("ch", "clickhouse", os.Getenv("ELOQUENT_TEST_CLICKHOUSE"))
+	db, err := orm.Open("ch", "clickhouse", os.Getenv("STORM_TEST_CLICKHOUSE"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,11 +303,11 @@ func TestClickHouse(t *testing.T) {
 
 func TestMongo(t *testing.T) {
 	current = t
-	if os.Getenv("ELOQUENT_TEST_MONGO") == "" {
-		t.Skip("set ELOQUENT_TEST_MONGO=mongodb://127.0.0.1:17017 to run")
+	if os.Getenv("STORM_TEST_MONGO") == "" {
+		t.Skip("set STORM_TEST_MONGO=mongodb://127.0.0.1:17017 to run")
 	}
 	ctx := context.Background()
-	store, err := orm.OpenMongo("mongo", os.Getenv("ELOQUENT_TEST_MONGO"), "eloquent"+strings.ToLower(strconv.FormatInt(time.Now().UnixNano()%100000, 10)))
+	store, err := orm.OpenMongo("mongo", os.Getenv("STORM_TEST_MONGO"), "storm"+strings.ToLower(strconv.FormatInt(time.Now().UnixNano()%100000, 10)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,11 +494,11 @@ func assertDocPagination(t *testing.T, ctx context.Context, conn string, total i
 
 func TestQdrant(t *testing.T) {
 	current = t
-	if os.Getenv("ELOQUENT_TEST_QDRANT") == "" {
-		t.Skip("set ELOQUENT_TEST_QDRANT=http://127.0.0.1:16333 to run")
+	if os.Getenv("STORM_TEST_QDRANT") == "" {
+		t.Skip("set STORM_TEST_QDRANT=http://127.0.0.1:16333 to run")
 	}
 	ctx := context.Background()
-	store, err := orm.OpenQdrant("qdrant", os.Getenv("ELOQUENT_TEST_QDRANT"))
+	store, err := orm.OpenQdrant("qdrant", os.Getenv("STORM_TEST_QDRANT"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestQdrant(t *testing.T) {
 
 	_, err = orm.From("missing_collection").On("qdrant").Get(ctx)
 	eq(t, "http errors name the request", err != nil && strings.Contains(err.Error(), "/collections/missing_collection/points/scroll: 404"), true)
-	keyed, err := orm.OpenQdrant("qdrant_keyed", os.Getenv("ELOQUENT_TEST_QDRANT"))
+	keyed, err := orm.OpenQdrant("qdrant_keyed", os.Getenv("STORM_TEST_QDRANT"))
 	ok(err)
 	keyed.WithKey("code")
 	ok(keyed.EnsureCollection(ctx, "keyed", 3, orm.L2))

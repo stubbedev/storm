@@ -11,7 +11,7 @@ import (
 	"sync"
 	"text/template"
 
-	"github.com/stubbedev/eloquent-go/orm"
+	"github.com/stubbedev/storm/orm"
 )
 
 // Seeder populates tables after migrations run (Eloquent seeders). Run
@@ -116,7 +116,7 @@ var seederTmpl = template.Must(template.New("").Parse(`package {{.Package}}
 import (
 	"context"
 
-	"github.com/stubbedev/eloquent-go/schema"
+	"github.com/stubbedev/storm/schema"
 )
 
 func init() {
@@ -154,7 +154,7 @@ var modelTmpl = template.Must(template.New("").Parse(`package {{.Package}}
 import (
 	"time"
 
-	"github.com/stubbedev/eloquent-go/orm"
+	"github.com/stubbedev/storm/orm"
 )
 
 //orm:table {{.Table}}

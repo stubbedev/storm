@@ -13,7 +13,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/stubbedev/eloquent-go/orm"
+	"github.com/stubbedev/storm/orm"
 )
 
 // Run implements an artisan-style migration CLI. A project's cmd/migrate is:
@@ -178,7 +178,7 @@ var (
 import (
 	"context"
 
-	"github.com/stubbedev/eloquent-go/schema"
+	"github.com/stubbedev/storm/schema"
 )
 
 func init() {

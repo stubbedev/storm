@@ -1,1 +1,1 @@
-CREATE DATABASE eloquent_audit OWNER eloquent;
+CREATE DATABASE storm_audit OWNER storm;

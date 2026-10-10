@@ -55,7 +55,7 @@ import (
 	"text/template"
 )
 
-const ormImport = "github.com/stubbedev/eloquent-go/orm"
+const ormImport = "github.com/stubbedev/storm/orm"
 
 type model struct {
 	Struct, Table, Schema, Var string

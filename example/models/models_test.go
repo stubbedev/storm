@@ -15,10 +15,10 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
-	_ "github.com/stubbedev/eloquent-go/example/migrations"
-	. "github.com/stubbedev/eloquent-go/example/models"
-	"github.com/stubbedev/eloquent-go/orm"
-	"github.com/stubbedev/eloquent-go/schema"
+	_ "github.com/stubbedev/storm/example/migrations"
+	. "github.com/stubbedev/storm/example/models"
+	"github.com/stubbedev/storm/orm"
+	"github.com/stubbedev/storm/schema"
 )
 
 const seed = `
@@ -51,11 +51,11 @@ INSERT INTO images (id, imageable_id, imageable_type, url) VALUES (1, 1, 'users'
 
 // The suite runs on SQLite by default. Point it at another engine with
 //
-//	ELOQUENT_TEST_DRIVER=pgx ELOQUENT_TEST_DSN=... ELOQUENT_TEST_AUDIT_DSN=... go test ./...
+//	STORM_TEST_DRIVER=pgx STORM_TEST_DSN=... STORM_TEST_AUDIT_DSN=... go test ./...
 //
 // (driver "pgx" or "mysql"; both DSNs must be empty, disposable databases).
 var (
-	driver   = os.Getenv("ELOQUENT_TEST_DRIVER")
+	driver   = os.Getenv("STORM_TEST_DRIVER")
 	openOnce sync.Once
 	mainDB   *sql.DB
 )
@@ -80,10 +80,10 @@ func setup(t *testing.T) context.Context {
 	} else {
 		openOnce.Do(func() {
 			var err error
-			if mainDB, err = orm.Open(orm.DefaultConnection, driver, os.Getenv("ELOQUENT_TEST_DSN")); err != nil {
+			if mainDB, err = orm.Open(orm.DefaultConnection, driver, os.Getenv("STORM_TEST_DSN")); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = orm.Open("audit", driver, os.Getenv("ELOQUENT_TEST_AUDIT_DSN")); err != nil {
+			if _, err = orm.Open("audit", driver, os.Getenv("STORM_TEST_AUDIT_DSN")); err != nil {
 				t.Fatal(err)
 			}
 		})

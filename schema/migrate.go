@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/stubbedev/eloquent-go/orm"
+	"github.com/stubbedev/storm/orm"
 )
 
 // Migration is one reversible schema change. Name orders migrations; use the
