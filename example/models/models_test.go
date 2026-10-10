@@ -691,6 +691,46 @@ func TestEventsAndScopes(t *testing.T) {
 
 func TestPaginationAndIteration(t *testing.T) {
 	ctx := setup(t)
+	for _, name := range []string{"Nil One", "Nil Two"} {
+		ok(Users.Create(ctx, &User{Name: name, Email: strings.ReplaceAll(strings.ToLower(name), " ", ".") + "@example.com"}))
+	}
+	total := must(Users.Query().WithTrashed().Count(ctx))
+	eq(t, "users without a country", must(Users.Where(Users.CountryID.IsNull()).Count(ctx)), int64(2))
+	for _, desc := range []bool{false, true} {
+		order := Users.CountryID.Asc()
+		if desc {
+			order = Users.CountryID.Desc()
+		}
+		seen := map[int64]bool{}
+		for cursor, pages := "", 0; ; pages++ {
+			if pages > int(total) {
+				t.Fatal("cursor pages never end")
+			}
+			page := must(Users.Query().WithTrashed().OrderBy(order, Users.ID.Asc()).CursorPaginate(ctx, 2, cursor))
+			for _, u := range page.Items {
+				seen[u.ID] = true
+			}
+			if cursor = page.NextCursor; cursor == "" {
+				break
+			}
+		}
+		eq(t, fmt.Sprintf("cursor pages over NULLs (desc %v)", desc), int64(len(seen)), total)
+	}
+	rowsSeen := map[any]bool{}
+	for cursor, pages := "", 0; ; pages++ {
+		if pages > int(total) {
+			t.Fatal("row cursor pages never end")
+		}
+		page := must(orm.From("users").OrderBy("country_id").OrderByDesc("created_at").OrderBy("id").CursorPaginate(ctx, 2, cursor))
+		for _, r := range page.Items {
+			rowsSeen[fmt.Sprint(r["id"])] = true
+		}
+		if cursor = page.NextCursor; cursor == "" {
+			break
+		}
+	}
+	eq(t, "row cursor pages over NULLs and times", int64(len(rowsSeen)), total)
+	must(Users.Query().Where(Users.CountryID.IsNull()).ForceDelete(ctx))
 	ordered := Posts.Query().OrderBy(Posts.Views.Desc(), Posts.ID.Asc())
 	all := titles(must(ordered.Get(ctx)))
 

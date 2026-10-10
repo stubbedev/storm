@@ -431,10 +431,11 @@ func colSets[M any](as []Assignment[M]) []colSet {
 
 // Order is an ORDER BY term for model M.
 type Order[M any] struct {
-	f    frag
-	col  AnyColumn[M] // set when ordering by a plain column (needed by CursorPaginate)
-	vec  *VectorOrder // set when ordering by distance from a vector
-	desc bool
+	f         frag
+	col       AnyColumn[M] // set when ordering by a plain column (needed by CursorPaginate)
+	vec       *VectorOrder // set when ordering by distance from a vector
+	desc      bool
+	nullsLast bool
 }
 
 // RawOrder is orderByRaw.

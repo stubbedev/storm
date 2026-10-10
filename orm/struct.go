@@ -514,6 +514,10 @@ func (r RowQuery) CursorPaginate(ctx context.Context, perPage int, cursor string
 	if slices.ContainsFunc(r.orders, func(o keysetTerm) bool { return o.col == "" }) {
 		return CursorPage[map[string]any]{}, fmt.Errorf("orm: cursor pagination on %s needs column orders, not a random order", r.name)
 	}
+	r.orders = slices.Clone(r.orders)
+	for i := range r.orders {
+		r.orders[i].nullable = resultName(r.orders[i].col) != r.key
+	}
 	return cursorPaginate(perPage, cursor, r.orders,
 		func(_ int, raw json.RawMessage) (any, error) { return jsonScalar(raw) },
 		func(after *Cond[rowModel], limit int) ([]map[string]any, error) {
@@ -523,7 +527,7 @@ func (r RowQuery) CursorPaginate(ctx context.Context, perPage int, cursor string
 			}
 			return page.Get(ctx)
 		},
-		func(row map[string]any, i int) any { return row[resultName(r.orders[i].col)] })
+		func(row map[string]any, i int) any { return cursorValue(row[resultName(r.orders[i].col)]) })
 }
 
 // rowModel is the model type of conditions a row query builds itself.
@@ -532,14 +536,32 @@ type rowModel struct{}
 // resultName is the key a (possibly qualified) column has in a result row.
 func resultName(col string) string { return col[strings.LastIndexByte(col, '.')+1:] }
 
+// cursorValue is a row value as a cursor stores it: a time keeps its type
+// (JSON would make it text, which SQLite then compares as text).
+func cursorValue(v any) any {
+	if t, ok := v.(time.Time); ok {
+		return map[string]string{cursorTime: t.UTC().Format(time.RFC3339Nano)}
+	}
+	return v
+}
+
+const cursorTime = "$time"
+
 // jsonScalar decodes a cursor value into a driver-ready value: integers
-// stay integers.
+// stay integers and times come back as times.
 func jsonScalar(raw json.RawMessage) (any, error) {
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
 	var v any
 	if err := d.Decode(&v); err != nil {
 		return nil, err
+	}
+	if m, ok := v.(map[string]any); ok {
+		text, isTime := m[cursorTime].(string)
+		if !isTime || len(m) != 1 {
+			return nil, fmt.Errorf("a cursor value cannot be an object: %s", raw)
+		}
+		return time.Parse(time.RFC3339Nano, text)
 	}
 	if n, ok := v.(json.Number); ok {
 		if i, err := n.Int64(); err == nil {
@@ -663,11 +685,9 @@ func (r RowQuery) render(b *SQL, list frag) {
 		for i, o := range r.orders {
 			b.Write(map[bool]string{true: " ORDER BY ", false: ", "}[i == 0])
 			if len(r.unions) > 0 && o.col != "" {
-				identExpr(resultName(o.col)).build(b)
-			} else {
-				o.e.build(b)
+				o.e = identExpr(resultName(o.col))
 			}
-			b.Write(map[bool]string{false: " ASC", true: " DESC"}[o.desc])
+			o.write(b)
 		}
 	})
 	b.Dialect.Limit(b, r.limit, r.offset)
@@ -737,7 +757,7 @@ func (r RowQuery) planOf() (Plan, error) {
 		if o.col == "" {
 			return Plan{}, &ErrNotTranslatable{Reason: "random order"}
 		}
-		p.Orders = append(p.Orders, PlanOrder{Column: unqualified(o.col, r.name), Desc: o.desc})
+		p.Orders = append(p.Orders, PlanOrder{Column: unqualified(o.col, r.name), Desc: o.desc, NullsLast: o.nullable})
 	}
 	for _, t := range r.selects {
 		if t.col == "" {

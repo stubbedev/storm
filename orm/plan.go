@@ -23,8 +23,9 @@ type Plan struct {
 
 // PlanOrder is one ORDER BY term.
 type PlanOrder struct {
-	Column string
-	Desc   bool
+	Column    string
+	Desc      bool
+	NullsLast bool // missing or null values sort after every value
 }
 
 // VectorOrder is a nearest-neighbour search: rows ranked by distance from

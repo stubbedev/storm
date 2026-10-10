@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 )
@@ -692,11 +693,22 @@ func (q Query[M]) CursorPaginate(ctx context.Context, perPage int, cursor string
 		q = q.Reorder(orders...)
 	}
 	terms := make([]keysetTerm, len(orders))
+	nullsLast := make([]Order[M], len(orders))
 	for i, o := range orders {
 		if o.col == nil {
 			return CursorPage[M]{}, errors.New("orm: CursorPaginate needs column orders")
 		}
-		terms[i] = keysetTerm{e: o.col, col: o.col.Name(), desc: o.desc}
+		nullable := nullableColumn(o.col) || slices.Contains(q.table.NullZero, o.col.Name())
+		terms[i] = keysetTerm{e: o.col, col: o.col.Name(), desc: o.desc, nullable: nullable}
+		nullsLast[i] = terms[i].order(o)
+	}
+	q = q.Reorder(nullsLast...)
+	value := func(m M, i int) any {
+		v := orders[i].col.anyValue(&m)
+		if terms[i].nullable && isZero(v) && slices.Contains(q.table.NullZero, terms[i].col) {
+			return nil
+		}
+		return v
 	}
 	return cursorPaginate(perPage, cursor, terms,
 		func(i int, raw json.RawMessage) (any, error) { return orders[i].col.decode(raw) },
@@ -707,14 +719,38 @@ func (q Query[M]) CursorPaginate(ctx context.Context, perPage int, cursor string
 			}
 			return page.Get(ctx)
 		},
-		func(m M, i int) any { return orders[i].col.anyValue(&m) })
+		value)
 }
 
-// keysetTerm is one ORDER BY column of a keyset (cursor) page.
+// keysetTerm is one ORDER BY column of a keyset (cursor) page; a nullable
+// one sorts NULLs last and pages over them.
 type keysetTerm struct {
-	e    AnyExpr
-	col  string
-	desc bool
+	e        AnyExpr
+	col      string
+	desc     bool
+	nullable bool
+}
+
+// write renders the term as an ORDER BY item.
+func (t keysetTerm) write(b *SQL) {
+	if t.nullable {
+		b.Dialect.NullsLast(b, t.e, t.desc)
+		return
+	}
+	t.e.build(b)
+	b.Write(map[bool]string{false: " ASC", true: " DESC"}[t.desc])
+}
+
+// order is t as a model order on o's column.
+func (t keysetTerm) order[M any](o Order[M]) Order[M] {
+	o.f, o.nullsLast = t.write, t.nullable
+	return o
+}
+
+// nullableColumn reports whether c's field can hold NULL (a pointer); a
+// nullzero column stores its zero as NULL too.
+func nullableColumn[M any](c AnyColumn[M]) bool {
+	return reflect.TypeOf(c.anyPtr(new(M))).Elem().Kind() == reflect.Pointer
 }
 
 // cursorPaginate fetches perPage items after cursor in the order of terms:
@@ -772,6 +808,9 @@ func decodeCursor(cursor string, n int, decode func(i int, raw json.RawMessage) 
 	}
 	vals := make([]any, n)
 	for i, p := range parts {
+		if string(p) == "null" {
+			continue
+		}
 		if vals[i], err = decode(i, p); err != nil {
 			return nil, fmt.Errorf("orm: bad cursor: %w", err)
 		}
@@ -781,25 +820,45 @@ func decodeCursor(cursor string, n int, decode func(i int, raw json.RawMessage) 
 
 // keysetAfter is the condition for rows after vals in the order of terms —
 // (a > x) OR (a = x AND b > y) ..., with < for descending terms — in its
-// SQL and document-store forms.
+// SQL and document-store forms. A nullable term sorts NULLs last: after a
+// value come the larger values and the NULLs, after a NULL nothing, and a
+// NULL equals a NULL.
 func keysetAfter[M any](terms []keysetTerm, vals []any) Cond[M] {
 	ors := make([]Cond[M], len(terms))
 	for i := range terms {
 		ands := make([]Cond[M], i+1)
 		for j := 0; j <= i; j++ {
-			op := "="
-			if j == i {
-				op = map[bool]string{false: ">", true: "<"}[terms[j].desc]
-			}
-			t, v := terms[j], vals[j]
-			ands[j] = Cond[M]{
-				f:  func(b *SQL) { t.e.build(b); b.Write(" ", op, " "); b.Arg(v) },
-				ir: Field{Column: t.col, Op: op, Value: v},
-			}
+			ands[j] = keysetCond[M](terms[j], vals[j], j == i)
 		}
 		ors[i] = And(ands...)
 	}
 	return Or(ors...)
+}
+
+// keysetCond is term t past value v (after) or equal to it.
+func keysetCond[M any](t keysetTerm, v any, after bool) Cond[M] {
+	isNull := Cond[M]{
+		f:  func(b *SQL) { t.e.build(b); b.Write(" IS NULL") },
+		ir: NullTest{Column: t.col},
+	}
+	switch {
+	case t.nullable && v == nil && after:
+		return Cond[M]{f: func(b *SQL) { b.Write("1 = 0") }, ir: List{Column: t.col}}
+	case t.nullable && v == nil:
+		return isNull
+	}
+	op := "="
+	if after {
+		op = map[bool]string{false: ">", true: "<"}[t.desc]
+	}
+	c := Cond[M]{
+		f:  func(b *SQL) { t.e.build(b); b.Write(" ", op, " "); b.Arg(v) },
+		ir: Field{Column: t.col, Op: op, Value: v},
+	}
+	if t.nullable && after {
+		return Or(c, isNull)
+	}
+	return c
 }
 
 func decodeInto(raw json.RawMessage, ptr any) (any, error) {

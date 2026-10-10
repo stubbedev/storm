@@ -375,6 +375,9 @@ func (s *MongoStore) FindDocs(ctx context.Context, p Plan) ([]map[string]any, er
 	if len(p.Orders) > 0 {
 		sort := bson.D{}
 		for _, o := range p.Orders {
+			if o.NullsLast && !o.Desc {
+				return nil, &ErrNotTranslatable{Reason: fmt.Sprintf("an ascending order on %s with NULLs last (MongoDB sorts them first)", o.Column)}
+			}
 			dir := 1
 			if o.Desc {
 				dir = -1

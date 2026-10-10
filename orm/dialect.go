@@ -27,6 +27,9 @@ type Dialect interface {
 	Lock(mode LockMode) string
 	// Limit writes LIMIT/OFFSET; zero means absent.
 	Limit(b *SQL, limit, offset int)
+	// NullsLast writes an ORDER BY term for e that sorts NULLs after every
+	// value in either direction.
+	NullsLast(b *SQL, e AnyExpr, desc bool)
 	Random() string
 	// DatePart extracts "date", "time", "year", "month" or "day" from e.
 	DatePart(b *SQL, part string, e AnyExpr)
@@ -93,17 +96,19 @@ func DialectFor(driver string) (Dialect, bool) {
 
 type sqliteDialect struct{}
 
-func (sqliteDialect) Name() string                 { return "sqlite" }
-func (sqliteDialect) Placeholder(int) string       { return "?" }
-func (sqliteDialect) Quote(id string) string       { return doubleQuote(id) }
-func (sqliteDialect) Bool(v bool) string           { return map[bool]string{true: "1", false: "0"}[v] }
-func (sqliteDialect) Returning() bool              { return true }
-func (sqliteDialect) AutoKeys() bool               { return true }
-func (sqliteDialect) InsertVerb(bool) string       { return "INSERT" }
-func (sqliteDialect) Lock(LockMode) string         { return "" } // SQLite locks the whole database
-func (sqliteDialect) Random() string               { return "RANDOM()" }
-func (sqliteDialect) Limit(b *SQL, l, o int)       { limit(b, l, o, "-1") }
-func (sqliteDialect) JSONLength(b *SQL, e AnyExpr) { fn(b, "json_array_length", e) }
+func (sqliteDialect) Name() string           { return "sqlite" }
+func (sqliteDialect) Placeholder(int) string { return "?" }
+func (sqliteDialect) Quote(id string) string { return doubleQuote(id) }
+func (sqliteDialect) Bool(v bool) string     { return map[bool]string{true: "1", false: "0"}[v] }
+func (sqliteDialect) Returning() bool        { return true }
+func (sqliteDialect) AutoKeys() bool         { return true }
+func (sqliteDialect) InsertVerb(bool) string { return "INSERT" }
+func (sqliteDialect) Lock(LockMode) string   { return "" } // SQLite locks the whole database
+func (sqliteDialect) Random() string         { return "RANDOM()" }
+func (sqliteDialect) Limit(b *SQL, l, o int) { limit(b, l, o, "-1") }
+
+func (sqliteDialect) NullsLast(b *SQL, e AnyExpr, desc bool) { nullsLast(b, e, desc) }
+func (sqliteDialect) JSONLength(b *SQL, e AnyExpr)           { fn(b, "json_array_length", e) }
 
 func (sqliteDialect) OnConflict(b *SQL, ignore bool, uniqueBy, update []string) {
 	onConflict(b, ignore, uniqueBy, update)
@@ -278,6 +283,8 @@ func (postgresDialect) InsertVerb(bool) string   { return "INSERT" }
 func (postgresDialect) Random() string           { return "RANDOM()" }
 func (postgresDialect) Limit(b *SQL, l, o int)   { limit(b, l, o, "") }
 
+func (postgresDialect) NullsLast(b *SQL, e AnyExpr, desc bool) { nullsLast(b, e, desc) }
+
 func (postgresDialect) Like(b *SQL, e AnyExpr, pattern string, caseless, not bool) {
 	standardLike(b, e, pattern, caseless, not)
 }
@@ -394,6 +401,15 @@ func (mysqlDialect) Returning() bool        { return false }
 func (mysqlDialect) AutoKeys() bool         { return true }
 func (mysqlDialect) Random() string         { return "RAND()" }
 func (mysqlDialect) Limit(b *SQL, l, o int) { limit(b, l, o, "18446744073709551615") }
+
+// NullsLast on MySQL and MariaDB, which have no NULLS LAST: sorting on
+// "e IS NULL" first puts the NULLs after every value.
+func (mysqlDialect) NullsLast(b *SQL, e AnyExpr, desc bool) {
+	e.build(b)
+	b.Write(" IS NULL, ")
+	e.build(b)
+	b.Write(map[bool]string{false: " ASC", true: " DESC"}[desc])
+}
 
 // Like on MySQL and MariaDB, where LIKE follows the column's collation
 // (case-insensitive by default): a binary pattern makes the match
@@ -577,6 +593,11 @@ func onConflict(b *SQL, ignore bool, uniqueBy, update []string) {
 
 // limit writes LIMIT/OFFSET; unbounded is the LIMIT required before a bare
 // OFFSET ("" if the dialect allows OFFSET alone).
+func nullsLast(b *SQL, e AnyExpr, desc bool) {
+	e.build(b)
+	b.Write(map[bool]string{false: " ASC", true: " DESC"}[desc], " NULLS LAST")
+}
+
 func limit(b *SQL, l, o int, unbounded string) {
 	switch {
 	case l > 0:
