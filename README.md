@@ -445,7 +445,10 @@ sets), and `orm.From(...)` table queries. The key column (the model's
 primary key, or a row query's `WithKey`) is unique as in SQL: MongoDB
 stores it as `_id` too, and Qdrant uses it as the point id, so inserting a
 taken key fails with an error `orm.IsUniqueViolation` recognises. `Upsert`
-sets only its update columns on a matching document. Conditions follow SQL's
+sets only its update columns on a matching document. A multi-document
+insert on MongoDB stops at the first failing document and keeps the ones
+before it; run it in `orm.TransactionOn` (a replica set) to make it all or
+nothing. Conditions follow SQL's
 three-valued logic, so `Ne`, `NotIn` and `Not(...)` never match a document
 missing the field, and a comparison with `nil` matches nothing. Keys must be
 UUID, ULID or manual (assigned automatically when missing); a Qdrant key
