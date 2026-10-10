@@ -118,6 +118,9 @@ func (s *Builder) drop(ctx context.Context, table string, ifExists bool) error {
 	if err != nil {
 		return err
 	}
+	if err := x.g.checkIdentifiers(table, table); err != nil {
+		return err
+	}
 	stmts := []string{x.g.drop(table, ifExists)}
 	if x.g.engine == engineDuckDB {
 		seqs, err := x.duckdbSequenceDrops(ctx, []string{table})
@@ -142,6 +145,9 @@ func (s *Builder) Rename(ctx context.Context, from, to string) error {
 	}
 	x, err := s.session(ctx)
 	if err != nil {
+		return err
+	}
+	if err := x.g.checkIdentifiers(from, from, to); err != nil {
 		return err
 	}
 	stmts := []string{x.g.rename(from, to)}
@@ -229,7 +235,7 @@ func (s *Builder) serverDatabase(ctx context.Context, name, op string) (session,
 	if x.g.engine == engineSQLite || x.g.engine == engineDuckDB {
 		return session{}, x.g.unsupported("", op+" "+name, "its databases are files; open one with orm.Open")
 	}
-	return x, nil
+	return x, x.g.checkIdentifiers("", name)
 }
 
 // Views lists the views on the connection (Schema::getViews).
@@ -252,6 +258,9 @@ func (s *Builder) CreateView(ctx context.Context, name, query string) error {
 	if err != nil {
 		return err
 	}
+	if err := x.g.checkIdentifiers(name, name); err != nil {
+		return err
+	}
 	return x.exec(ctx, "CREATE VIEW "+x.g.quote(name)+" AS "+query)
 }
 
@@ -264,6 +273,9 @@ func (s *Builder) DropViewIfExists(ctx context.Context, name string) error {
 func (s *Builder) dropView(ctx context.Context, name, ifExists string) error {
 	x, err := s.sqlOnly(ctx, name, "drop a view")
 	if err != nil {
+		return err
+	}
+	if err := x.g.checkIdentifiers(name, name); err != nil {
 		return err
 	}
 	return x.exec(ctx, "DROP VIEW "+ifExists+x.g.quote(name))

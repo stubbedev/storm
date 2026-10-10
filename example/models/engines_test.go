@@ -573,6 +573,7 @@ func TestDuckDB(t *testing.T) {
 	assertDropHelpers(t, ctx, "duck")
 	assertTimePrecision(t, ctx, "duck")
 	assertIndexForms(t, ctx, "duck")
+	assertIdentifierLimits(t, ctx, "duck", 0)
 	assertViews(t, ctx, "duck")
 	assertDatabases(t, ctx, "duck")
 

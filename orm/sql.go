@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // SQL accumulates a statement and its arguments for one dialect. Every query
@@ -54,8 +55,28 @@ func (b *SQL) Ident(name string) {
 			b.sb.WriteByte('*')
 			continue
 		}
+		if l, ok := b.Dialect.(identifierLimiter); ok {
+			if limit, chars := l.identifierLimit(); identifierSize(part, chars) > limit {
+				b.fail(fmt.Errorf("orm: %s keeps names of at most %d %s, and %q is longer", b.Dialect.Name(), limit,
+					map[bool]string{true: "characters", false: "bytes"}[chars], part))
+			}
+		}
 		b.sb.WriteString(b.Dialect.Quote(part))
 	}
+}
+
+// identifierLimiter marks dialects whose engine truncates (Postgres) or
+// refuses (MySQL, MariaDB) longer names; chars counts characters rather
+// than bytes.
+type identifierLimiter interface {
+	identifierLimit() (limit int, chars bool)
+}
+
+func identifierSize(name string, chars bool) int {
+	if chars {
+		return utf8.RuneCountInString(name)
+	}
+	return len(name)
 }
 
 // argRenderer marks dialects that render some argument values themselves

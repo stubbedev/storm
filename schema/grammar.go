@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Column types understood by every grammar.
@@ -295,6 +296,62 @@ func (g grammar) literal(v any) string {
 	return g.literal(fmt.Sprint(v))
 }
 
+// identifierLimit is the longest name the engine keeps intact, in bytes
+// or characters; zero is no limit. Postgres truncates a longer name
+// (silently, so two long index names can collide); MySQL and MariaDB
+// refuse one.
+func (g grammar) identifierLimit() (limit int, unit string) {
+	switch {
+	case g.engine == enginePostgres:
+		return 63, "bytes"
+	case g.mysqlFamily():
+		return 64, "characters"
+	}
+	return 0, ""
+}
+
+// checkIdentifiers refuses names longer than the engine keeps.
+func (g grammar) checkIdentifiers(table string, names ...string) error {
+	limit, unit := g.identifierLimit()
+	if limit == 0 {
+		return nil
+	}
+	for _, n := range names {
+		size := len(n)
+		if unit == "characters" {
+			size = utf8.RuneCountInString(n)
+		}
+		if size > limit {
+			return g.unsupported(table, "use the name "+strconv.Quote(n),
+				fmt.Sprintf("names are at most %d %s; give it a shorter one (an index or foreign key takes one with Name or Named)", limit, unit))
+		}
+	}
+	return nil
+}
+
+// checkBlueprintNames applies checkIdentifiers to every name a blueprint
+// writes: the table, its columns, indexes, foreign keys and renames.
+func (g grammar) checkBlueprintNames(bp *Blueprint) error {
+	names := []string{bp.table}
+	for _, c := range bp.columns {
+		names = append(names, c.Name)
+	}
+	for _, cmd := range bp.commands {
+		names = append(names, cmd.columns...)
+		names = append(names, cmd.from, cmd.to)
+		if cmd.index != nil {
+			names = append(names, cmd.index.IndexName)
+			names = append(names, cmd.index.Columns...)
+		}
+		if f := cmd.foreign; f != nil {
+			names = append(names, f.Name, f.RefTable)
+			names = append(names, f.Columns...)
+			names = append(names, f.RefColumns...)
+		}
+	}
+	return g.checkIdentifiers(bp.table, names...)
+}
+
 // namePattern is a charset, collation or engine name: written into DDL as
 // is on some engines, so it may hold nothing that could end the clause.
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
@@ -526,6 +583,9 @@ func (g grammar) checkTableOptions(bp *Blueprint, creating bool) error {
 }
 
 func (g grammar) compileCreate(bp *Blueprint) ([]string, error) {
+	if err := g.checkBlueprintNames(bp); err != nil {
+		return nil, err
+	}
 	if err := bp.err(); err != nil {
 		return nil, err
 	}
@@ -689,6 +749,9 @@ func (g grammar) compileAlter(bp *Blueprint) ([]string, error) {
 // compileAlterPhases compiles an alteration as the index and constraint
 // drops, then everything else.
 func (g grammar) compileAlterPhases(bp *Blueprint) (drops, stmts []string, err error) {
+	if err := g.checkBlueprintNames(bp); err != nil {
+		return nil, nil, err
+	}
 	if err := bp.err(); err != nil {
 		return nil, nil, err
 	}

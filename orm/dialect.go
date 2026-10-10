@@ -285,6 +285,8 @@ func (postgresDialect) Limit(b *SQL, l, o int)   { limit(b, l, o, "") }
 
 func (postgresDialect) NullsLast(b *SQL, e AnyExpr, desc bool) { nullsLast(b, e, desc) }
 
+func (postgresDialect) identifierLimit() (int, bool) { return 63, false }
+
 func (postgresDialect) Like(b *SQL, e AnyExpr, pattern string, caseless, not bool) {
 	standardLike(b, e, pattern, caseless, not)
 }
@@ -409,6 +411,8 @@ func (mysqlDialect) Returning() bool        { return false }
 func (mysqlDialect) AutoKeys() bool         { return true }
 func (mysqlDialect) Random() string         { return "RAND()" }
 func (mysqlDialect) Limit(b *SQL, l, o int) { limit(b, l, o, "18446744073709551615") }
+
+func (mysqlDialect) identifierLimit() (int, bool) { return 64, true }
 
 // NullsLast on MySQL and MariaDB, which have no NULLS LAST: sorting on
 // "e IS NULL" first puts the NULLs after every value.

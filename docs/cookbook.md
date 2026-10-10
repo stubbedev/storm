@@ -780,6 +780,13 @@ off and checks them before committing; inside a transaction (a migration) SQLite
 cannot turn foreign keys off, so with enforcement on such a migration needs
 `NoTransaction: true`.
 
+Names longer than the engine keeps fail loudly instead of being cut
+short: Postgres keeps 63 bytes (it would truncate silently, so two long
+index names could collide) and MySQL and MariaDB 64 characters. That
+covers generated index and foreign key names (`users_email_unique`);
+give a long one its own with `Name` or `Named`. Queries refuse over-long
+names on those engines too.
+
 ## Migrations
 
 ```go

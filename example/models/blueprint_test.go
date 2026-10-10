@@ -272,6 +272,7 @@ func TestBlueprintSurface(t *testing.T) {
 	assertDropHelpers(t, ctx, orm.DefaultConnection)
 	assertTimePrecision(t, ctx, orm.DefaultConnection)
 	assertIndexForms(t, ctx, orm.DefaultConnection)
+	assertIdentifierLimits(t, ctx, orm.DefaultConnection, map[string]int{"pgx": 63, "mysql": 64}[driver])
 	assertViews(t, ctx, orm.DefaultConnection)
 	assertDatabases(t, ctx, orm.DefaultConnection)
 
@@ -334,6 +335,42 @@ func assertTimePrecision(t *testing.T, ctx context.Context, conn string) {
 	ok(s.Drop(ctx, "stamps"))
 	err := s.Create(ctx, "stamps", func(b *schema.Blueprint) { b.UUIDPrimary(); b.Timestamp("at", 7) })
 	eq(t, conn+" precision past microseconds refused", err != nil && strings.Contains(err.Error(), "0 to 6"), true)
+}
+
+// assertIdentifierLimits checks names longer than the engine keeps fail
+// loudly — in DDL, in generated index names and in queries — rather than
+// being truncated (Postgres) into a name another one may share. limit is
+// zero where the engine has none.
+func assertIdentifierLimits(t *testing.T, ctx context.Context, conn string, limit int) {
+	t.Helper()
+	long := strings.Repeat("n", max(limit, 64)+1)
+	err := schema.On(conn).Create(ctx, "long_names", func(t *schema.Blueprint) {
+		t.ID()
+		t.String(long)
+	})
+	defer func() { tCheck(t, schema.On(conn).DropIfExists(ctx, "long_names")) }()
+	if limit == 0 {
+		ok(err)
+		eq(t, conn+" long names kept", must(orm.From("long_names").On(conn).Where(long, orm.Eq, "x").Count(ctx)), int64(0))
+		return
+	}
+	_, refused := errors.AsType[*schema.UnsupportedError](err)
+	eq(t, conn+" long column refused", refused && strings.Contains(err.Error(), "names are at most"), true)
+	exact := strings.Repeat("c", limit)
+	err = schema.On(conn).Create(ctx, "long_names", func(t *schema.Blueprint) {
+		t.ID()
+		t.String(exact).Index()
+	})
+	_, refused = errors.AsType[*schema.UnsupportedError](err)
+	eq(t, conn+" long generated index name refused", refused && strings.Contains(err.Error(), "long_names_"+exact+"_index"), true)
+	tCheck(t, schema.On(conn).Create(ctx, "long_names", func(t *schema.Blueprint) {
+		t.ID()
+		t.String(exact)
+		t.Index(exact).Name("long_names_short")
+	}))
+	eq(t, conn+" a name at the limit works", must(orm.From("long_names").On(conn).Where(exact, orm.Eq, "x").Count(ctx)), int64(0))
+	_, err = orm.From("long_names").On(conn).Where(long, orm.Eq, "x").Count(ctx)
+	eq(t, conn+" long names refused in queries", err != nil && strings.Contains(err.Error(), "keeps names of at most"), true)
 }
 
 // assertIndexForms creates a partial unique index and an expression index:
