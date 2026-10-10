@@ -135,13 +135,74 @@ func (t *Table[M]) writeValue(col string, v any) any {
 func (t *Table[M]) key(m *M) any { return t.value(m, t.PrimaryKey) }
 
 // sync marks m as persisted and snapshots its columns as the new original.
+// The snapshot is a deep copy, so edits made in place (a slice element, a
+// map entry, a pointee) still show as dirty.
 func (t *Table[M]) sync(m *M) {
 	st := t.state(m)
 	st.exists = true
 	st.original = make(map[string]any, len(t.Columns))
 	for _, c := range t.Columns {
-		st.original[c] = t.value(m, c)
+		st.original[c] = snapshot(t.value(m, c))
 	}
+}
+
+func snapshot(v any) any {
+	switch v.(type) {
+	case nil, string, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, time.Time:
+		return v
+	}
+	return deepCopy(reflect.ValueOf(v)).Interface()
+}
+
+func deepCopy(v reflect.Value) reflect.Value {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if v.IsNil() {
+			return v
+		}
+		if v.Kind() == reflect.Interface {
+			c := reflect.New(v.Type()).Elem()
+			c.Set(deepCopy(v.Elem()))
+			return c
+		}
+		c := reflect.New(v.Type().Elem())
+		c.Elem().Set(deepCopy(v.Elem()))
+		return c
+	case reflect.Slice:
+		if v.IsNil() {
+			return v
+		}
+		c := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		for i := range v.Len() {
+			c.Index(i).Set(deepCopy(v.Index(i)))
+		}
+		return c
+	case reflect.Map:
+		if v.IsNil() {
+			return v
+		}
+		c := reflect.MakeMapWithSize(v.Type(), v.Len())
+		for it := v.MapRange(); it.Next(); {
+			c.SetMapIndex(it.Key(), deepCopy(it.Value()))
+		}
+		return c
+	case reflect.Array, reflect.Struct:
+		c := reflect.New(v.Type()).Elem()
+		c.Set(v)
+		if v.Kind() == reflect.Array {
+			for i := range v.Len() {
+				c.Index(i).Set(deepCopy(v.Index(i)))
+			}
+			return c
+		}
+		for i := range v.NumField() {
+			if c.Field(i).CanSet() {
+				c.Field(i).Set(deepCopy(v.Field(i)))
+			}
+		}
+		return c
+	}
+	return v
 }
 
 // Dirty returns the columns changed since m was loaded or saved (getDirty).

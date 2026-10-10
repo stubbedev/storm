@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -425,6 +426,23 @@ func TestWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, "no-op save", Users.WasChanged(&u), false)
+
+	u.Settings.V.Labels = []string{"a"}
+	ok(Users.Save(ctx, &u))
+	u.Settings.V.Labels[0] = "b"
+	eq(t, "in-place slice edit is dirty", Users.Dirty(&u), []string{"settings"})
+	ok(Users.Save(ctx, &u))
+	eq(t, "in-place slice edit saved", must(Users.Find(ctx, 6)).Settings.V.Labels, []string{"b"})
+	deleted := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	trashed := must(Users.Query().WithTrashed().Find(ctx, 6))
+	trashed.DeletedAt = new(deleted)
+	ok(Users.Save(ctx, &trashed))
+	*trashed.DeletedAt = deleted.Add(time.Hour)
+	eq(t, "in-place pointee edit is dirty", Users.Dirty(&trashed), []string{"deleted_at"})
+	eq(t, "original is a snapshot", Users.DeletedAt.Original(&trashed).Equal(deleted), true)
+	trashed.DeletedAt = nil
+	ok(Users.Save(ctx, &trashed))
+	u = must(Users.Find(ctx, 6))
 
 	eq(t, "mass update", must(Users.Where(Users.CountryID.Eq(2)).Update(ctx, Users.Active.Set(false))), int64(3))
 	eq(t, "increment", must(Posts.Where(Posts.ID.Eq(1)).Increment(ctx, Posts.Views, 10)), int64(1))
