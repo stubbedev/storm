@@ -96,18 +96,21 @@ func (q Query[M]) FirstOr(ctx context.Context, fn func() (M, error)) (M, error) 
 }
 
 // Sole returns the only matching model; ErrNotFound or ErrMultipleRecords otherwise.
-func (q Query[M]) Sole(ctx context.Context) (M, error) {
-	models, err := q.Limit(2).Get(ctx)
-	var zero M
+func (q Query[M]) Sole(ctx context.Context) (M, error) { return sole(q.Limit(2).Get(ctx)) }
+
+// sole is the one item of items: ErrNotFound for none, ErrMultipleRecords
+// for more.
+func sole[T any](items []T, err error) (T, error) {
+	var zero T
 	switch {
 	case err != nil:
 		return zero, err
-	case len(models) == 0:
+	case len(items) == 0:
 		return zero, ErrNotFound
-	case len(models) > 1:
+	case len(items) > 1:
 		return zero, ErrMultipleRecords
 	}
-	return models[0], nil
+	return items[0], nil
 }
 
 // Find returns the model with the given primary key (find / findOrFail).
@@ -302,9 +305,14 @@ func (q Query[M]) Explain(ctx context.Context) ([]map[string]any, error) {
 	}
 	q = q.prepared()
 	q.extras, q.eager = nil, nil
-	rows, err := q.query(ctx, func(b *SQL) {
+	return explainOn(ctx, q.connName(), func(b *SQL) { q.renderSelect(b, nil) })
+}
+
+// explainOn returns the engine's plan for the SELECT query renders.
+func explainOn(ctx context.Context, conn string, query frag) ([]map[string]any, error) {
+	rows, err := readRows(ctx, conn, func(b *SQL) {
 		b.Write("EXPLAIN ")
-		q.renderSelect(b, nil)
+		query(b)
 	})
 	if err != nil {
 		return nil, err

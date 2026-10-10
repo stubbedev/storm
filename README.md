@@ -329,16 +329,22 @@ The typed variants are `FromTable`, `WhereCond`, `OrWhereCond`,
 `InsertCols` and `UpdateCols` write exactly what they are given — no
 timestamps or events.
 
-It also has `First`, `Pluck`, `Count`, `Exists`, `DoesntExist`,
-`Sum`/`Avg`/`Min`/`Max`, `WhereNotBetween`, `Distinct`, `SelectRaw`,
-`GroupBy`, `Having`, `HavingRaw`, `ForPage`, `Paginate`,
-`SimplePaginate`, `CursorPaginate`, `Chunk`, `ChunkByID`, `Lazy`, `Cursor`, `Insert`,
-`InsertOrIgnore`, `Upsert`, `InsertGetID`, `Update`, `Increment`,
-`Decrement`, `UpdateOrInsert`, `Delete` and `ToSQL`; see the cookbook.
+It also has `First`, `Find`, `Sole`, `Value` / `ValueCol`, `Pluck`,
+`Count`, `Exists`, `DoesntExist`, `Sum`/`Avg`/`Min`/`Max`, an `Or` form of
+every `Where` (`OrWhereIn`, `OrWhereNull`, `OrWhereBetween`, ...),
+`WhereColumn`, `WhereExists`, `Distinct`, `SelectRaw`, `GroupBy`,
+`Having`, `HavingRaw`, `Union` / `UnionAll`, `Latest` / `Oldest`,
+`InRandomOrder`, `Reorder`, `When` / `Unless`, `LockForUpdate` /
+`SharedLock`, `ForPage`, `Paginate`, `SimplePaginate`, `CursorPaginate`,
+`Chunk`, `ChunkByID`, `Lazy`, `Cursor`, `Insert`, `InsertOrIgnore`,
+`Upsert`, `InsertGetID`, `InsertUsing`, `Update`, `Increment`,
+`Decrement`, `UpdateOrInsert`, `Delete`, `Explain` and `ToSQL`; see the
+cookbook.
 Column names may be qualified (`"users.country_id"`, `"users.*"`), and
 every method runs on document stores too, except those with no document
-form (joins, grouping, raw SQL, aggregates, expression updates), which
-return `ErrNotTranslatable`.
+form (joins, grouping, unions, locks, random order, raw SQL, column
+comparisons, subqueries, aggregates, expression updates), which return
+`ErrNotTranslatable`.
 
 ## Analytical engines
 

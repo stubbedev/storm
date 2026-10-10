@@ -424,6 +424,24 @@ func TestMongo(t *testing.T) {
 	eq(t, "like with wildcards", must(orm.From("documents").On("mongo").Where("title", orm.Like, "n_ar").Count(ctx)), int64(1))
 
 	assertValuerErrors(t, ctx, "mongo")
+	mongoDocs := orm.From("documents").On("mongo")
+	eq(t, "row find", must(mongoDocs.Find(ctx, one.ID))["title"], any("near"))
+	eq(t, "row sole", must(mongoDocs.Where("title", orm.Eq, "near").Sole(ctx))["id"], any(one.ID))
+	eq(t, "row value", must(mongoDocs.Where("title", orm.Eq, "near").Value(ctx, "views")) != nil, true)
+	eq(t, "row latest", len(must(mongoDocs.Latest("views").Get(ctx))) > 0, true)
+	for what, q := range map[string]orm.RowQuery{
+		"union":        mongoDocs.Union(mongoDocs),
+		"lock":         mongoDocs.LockForUpdate(),
+		"random order": mongoDocs.InRandomOrder(),
+		"whereExists":  mongoDocs.WhereExists(mongoDocs),
+		"whereColumn":  mongoDocs.WhereColumn("views", orm.Gt, "title"),
+		"orWhereRaw":   mongoDocs.Where("views", orm.Gt, 1).OrWhereRaw("1 = 1"),
+	} {
+		_, err := q.Get(ctx)
+		eq(t, "row "+what+" refused", orm.IsNotTranslatable(err), true)
+	}
+	_, err = mongoDocs.Explain(ctx)
+	eq(t, "row explain refused", orm.IsNotTranslatable(err), true)
 	eq(t, "not equal", must(orm.From("documents").On("mongo").Where("title", "!=", "near").Count(ctx)), int64(3))
 	eq(t, "ilike", must(orm.From("documents").On("mongo").Where("title", orm.Ilike, "NEAR").Count(ctx)), int64(1))
 	eq(t, "not ilike", must(orm.From("documents").On("mongo").Where("title", orm.NotIlike, "%E%").Count(ctx)), int64(1))

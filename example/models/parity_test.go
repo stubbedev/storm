@@ -497,3 +497,64 @@ func TestEncryptedAndHashedCasts(t *testing.T) {
 	eq(t, "hash verifies", gotPw.Matches("hunter2"), true)
 	eq(t, "hash rejects", gotPw.Matches("wrong"), false)
 }
+
+func TestRowQueryParity(t *testing.T) {
+	ctx := setup(t)
+	users := orm.From("users")
+	names := func(q orm.RowQuery) string { return fmt.Sprint(must(q.OrderBy("id").Pluck(ctx, "name"))) }
+
+	eq(t, "find", must(users.Find(ctx, 2))["name"], any("Bob"))
+	_, err := users.Find(ctx, 404)
+	eq(t, "find missing", errors.Is(err, orm.ErrNotFound), true)
+	eq(t, "sole", must(users.Where("name", orm.Eq, "Alice").Sole(ctx))["email"], any("alice@example.com"))
+	_, err = users.Sole(ctx)
+	eq(t, "sole of many", errors.Is(err, orm.ErrMultipleRecords), true)
+	_, err = users.Where("name", orm.Eq, "Nobody").Sole(ctx)
+	eq(t, "sole of none", errors.Is(err, orm.ErrNotFound), true)
+	eq(t, "value", must(users.Where("name", orm.Eq, "Bob").Value(ctx, "email")), any("bob@example.com"))
+	_, err = users.Where("name", orm.Eq, "Nobody").Value(ctx, "email")
+	eq(t, "value of none", errors.Is(err, orm.ErrNotFound), true)
+	eq(t, "valueCol", must(users.Where("name", orm.Eq, "Carol").ValueCol(ctx, Users.Karma)), 99)
+
+	eq(t, "latest", must(users.Latest().First(ctx))["name"], any("Dave"))
+	eq(t, "oldest", must(users.Oldest().First(ctx))["name"], any("Alice"))
+	eq(t, "latest by column", must(users.Latest("karma").First(ctx))["name"], any("Carol"))
+	eq(t, "random order", len(must(users.InRandomOrder().Get(ctx))), 5)
+	eq(t, "reorder", must(users.OrderBy("name").Reorder().OrderByDesc("id").First(ctx))["name"], any("Eve"))
+	eq(t, "when", must(users.When(true, func(q orm.RowQuery) orm.RowQuery { return q.Where("name", orm.Eq, "Alice") }).Count(ctx)), int64(1))
+	eq(t, "unless", must(users.Unless(true, func(q orm.RowQuery) orm.RowQuery { return q.Where("name", orm.Eq, "Alice") }).Count(ctx)), int64(5))
+
+	ok(orm.Transaction(ctx, func(ctx context.Context) error {
+		eq(t, "lockForUpdate", len(must(users.Where("id", orm.Eq, 1).LockForUpdate().Get(ctx))), 1)
+		eq(t, "sharedLock", len(must(users.Where("id", orm.Eq, 1).SharedLock().Get(ctx))), 1)
+		return nil
+	}))
+
+	alice, bob := users.Select("name").Where("id", orm.Eq, 1), users.Select("name").Where("id", orm.Eq, 2)
+	eq(t, "union", fmt.Sprint(must(alice.Union(bob).OrderBy("name").Pluck(ctx, "name"))), "[Alice Bob]")
+	eq(t, "union removes duplicates", must(alice.Union(alice).Count(ctx)), int64(1))
+	eq(t, "unionAll keeps them", must(alice.UnionAll(alice).Count(ctx)), int64(2))
+	_, err = alice.Union(bob).Sum[int64](ctx, "karma")
+	eq(t, "aggregate of a union refused", err != nil && strings.Contains(err.Error(), "union"), true)
+
+	alices := users.Where("name", orm.Eq, "Alice")
+	eq(t, "orWhereIn", names(alices.OrWhereIn("id", 2, 3)), "[Alice Bob Carol]")
+	eq(t, "orWhereNotIn", names(alices.OrWhereNotIn("id", 1, 2, 3, 4)), "[Alice Eve]")
+	eq(t, "orWhereNull", must(alices.OrWhereNull("settings").Count(ctx)), int64(4))
+	eq(t, "orWhereNotNull", names(alices.OrWhereNotNull("deleted_at")), "[Alice Eve]")
+	eq(t, "orWhereBetween", names(alices.OrWhereBetween("karma", 90, 100)), "[Alice Carol]")
+	eq(t, "orWhereNotBetween", names(alices.OrWhereNotBetween("karma", 10, 100)), "[Alice Dave]")
+	eq(t, "orWhereRaw", names(alices.OrWhereRaw("karma < ?", 5)), "[Alice Dave]")
+	eq(t, "whereColumn", must(users.WhereColumn("created_at", orm.Eq, "updated_at").Count(ctx)), int64(5))
+	eq(t, "orWhereColumn", must(alices.OrWhereColumn("created_at", orm.Neq, "updated_at").Count(ctx)), int64(1))
+
+	posts := orm.From("posts").WhereColumn("posts.user_id", orm.Eq, "users.id")
+	eq(t, "whereExists", names(users.WhereExists(posts)), "[Alice Bob Carol Eve]")
+	eq(t, "whereNotExists", names(users.WhereNotExists(posts)), "[Dave]")
+	eq(t, "orWhereExists", must(users.Where("id", orm.Eq, 4).OrWhereExists(posts).Count(ctx)), int64(5))
+	eq(t, "orWhereNotExists", names(users.Where("id", orm.Eq, 1).OrWhereNotExists(posts)), "[Alice Dave]")
+
+	inserted := must(orm.From("roles").InsertUsing(ctx, []string{"name"}, orm.From("countries").Select("name")))
+	eq(t, "insertUsing", fmt.Sprint(inserted, must(orm.From("roles").Count(ctx))), "2 5")
+	eq(t, "explain", len(must(users.Where("id", orm.Eq, 1).Explain(ctx))) > 0, true)
+}

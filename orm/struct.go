@@ -40,8 +40,15 @@ type RowQuery struct {
 	nodes    []Node // document-store form of where, when translatable
 	badNode  bool   // set by clauses with no document form (WhereRaw)
 	orders   []keysetTerm
+	unions   []rowUnion
+	lock     LockMode
 	limit    int
 	offset   int
+}
+
+type rowUnion struct {
+	all bool
+	q   RowQuery
 }
 
 // From starts a row query on a table by name.
@@ -109,17 +116,82 @@ func (r RowQuery) OrWhereCond[M any](cs ...Cond[M]) RowQuery {
 	return r.orWhere(c.f, c.ir)
 }
 
-// WhereIn is whereIn on a raw column.
-func (r RowQuery) WhereIn(col string, vs ...any) RowQuery { return r.whereIn(false, col, vs) }
+// WhereIn is whereIn on a raw column; the Or forms of every Where OR the
+// condition with everything so far.
+func (r RowQuery) WhereIn(col string, vs ...any) RowQuery { return r.addWhere(inCond(false, col, vs)) }
 
-func (r RowQuery) WhereNotIn(col string, vs ...any) RowQuery { return r.whereIn(true, col, vs) }
+func (r RowQuery) WhereNotIn(col string, vs ...any) RowQuery {
+	return r.addWhere(inCond(true, col, vs))
+}
 
-func (r RowQuery) whereIn(not bool, col string, vs []any) RowQuery {
+func (r RowQuery) OrWhereIn(col string, vs ...any) RowQuery { return r.orWhere(inCond(false, col, vs)) }
+
+func (r RowQuery) OrWhereNotIn(col string, vs ...any) RowQuery {
+	return r.orWhere(inCond(true, col, vs))
+}
+
+// WhereNull and WhereNotNull filter on column nullness.
+func (r RowQuery) WhereNull(col string) RowQuery      { return r.addWhere(nullCond(false, col)) }
+func (r RowQuery) WhereNotNull(col string) RowQuery   { return r.addWhere(nullCond(true, col)) }
+func (r RowQuery) OrWhereNull(col string) RowQuery    { return r.orWhere(nullCond(false, col)) }
+func (r RowQuery) OrWhereNotNull(col string) RowQuery { return r.orWhere(nullCond(true, col)) }
+
+// WhereBetween filters a column between lo and hi; WhereNotBetween outside.
+func (r RowQuery) WhereBetween(col string, lo, hi any) RowQuery {
+	return r.addWhere(betweenCond(false, col, lo, hi))
+}
+
+func (r RowQuery) WhereNotBetween(col string, lo, hi any) RowQuery {
+	return r.addWhere(betweenCond(true, col, lo, hi))
+}
+
+func (r RowQuery) OrWhereBetween(col string, lo, hi any) RowQuery {
+	return r.orWhere(betweenCond(false, col, lo, hi))
+}
+
+func (r RowQuery) OrWhereNotBetween(col string, lo, hi any) RowQuery {
+	return r.orWhere(betweenCond(true, col, lo, hi))
+}
+
+// WhereRaw adds a condition from SQL with ? placeholders (whereRaw).
+func (r RowQuery) WhereRaw(sql string, args ...any) RowQuery {
+	return r.addWhere(rawCond(sql, args), nil)
+}
+
+func (r RowQuery) OrWhereRaw(sql string, args ...any) RowQuery {
+	return r.orWhere(rawCond(sql, args), nil)
+}
+
+// WhereColumn compares two columns (whereColumn); WhereCond with EqCol and
+// friends is the typed form.
+func (r RowQuery) WhereColumn(first string, op Op, second string) RowQuery {
+	return r.addWhere(columnCond(first, op, second), nil)
+}
+
+func (r RowQuery) OrWhereColumn(first string, op Op, second string) RowQuery {
+	return r.orWhere(columnCond(first, op, second), nil)
+}
+
+// WhereExists keeps rows for which sub returns any row (whereExists);
+// correlate sub to the outer table with WhereColumn on qualified names.
+func (r RowQuery) WhereExists(sub RowQuery) RowQuery { return r.addWhere(existsCond(false, sub), nil) }
+
+func (r RowQuery) WhereNotExists(sub RowQuery) RowQuery {
+	return r.addWhere(existsCond(true, sub), nil)
+}
+
+func (r RowQuery) OrWhereExists(sub RowQuery) RowQuery { return r.orWhere(existsCond(false, sub), nil) }
+
+func (r RowQuery) OrWhereNotExists(sub RowQuery) RowQuery {
+	return r.orWhere(existsCond(true, sub), nil)
+}
+
+func inCond(not bool, col string, vs []any) (frag, Node) {
 	node := List{Column: col, Not: not, Values: vs}
 	if len(vs) == 0 {
-		return r.addWhere(func(b *SQL) { b.Write(map[bool]string{false: "1 = 0", true: "1 = 1"}[not]) }, node)
+		return func(b *SQL) { b.Write(map[bool]string{false: "1 = 0", true: "1 = 1"}[not]) }, node
 	}
-	return r.addWhere(func(b *SQL) {
+	return func(b *SQL) {
 		b.Ident(col)
 		b.Write(map[bool]string{false: " IN (", true: " NOT IN ("}[not])
 		for i, v := range vs {
@@ -129,38 +201,45 @@ func (r RowQuery) whereIn(not bool, col string, vs []any) RowQuery {
 			b.Arg(v)
 		}
 		b.Write(")")
-	}, node)
+	}, node
 }
 
-// WhereNull and WhereNotNull filter on column nullness.
-func (r RowQuery) WhereNull(col string) RowQuery {
-	return r.addWhere(func(b *SQL) { b.Ident(col); b.Write(" IS NULL") }, NullTest{Column: col})
+func nullCond(not bool, col string) (frag, Node) {
+	return func(b *SQL) {
+		b.Ident(col)
+		b.Write(map[bool]string{false: " IS NULL", true: " IS NOT NULL"}[not])
+	}, NullTest{Column: col, Not: not}
 }
 
-func (r RowQuery) WhereNotNull(col string) RowQuery {
-	return r.addWhere(func(b *SQL) { b.Ident(col); b.Write(" IS NOT NULL") }, NullTest{Column: col, Not: true})
-}
-
-// WhereBetween filters a column between lo and hi; WhereNotBetween outside.
-func (r RowQuery) WhereBetween(col string, lo, hi any) RowQuery { return r.between(false, col, lo, hi) }
-
-func (r RowQuery) WhereNotBetween(col string, lo, hi any) RowQuery {
-	return r.between(true, col, lo, hi)
-}
-
-func (r RowQuery) between(not bool, col string, lo, hi any) RowQuery {
-	return r.addWhere(func(b *SQL) {
+func betweenCond(not bool, col string, lo, hi any) (frag, Node) {
+	return func(b *SQL) {
 		b.Ident(col)
 		b.Write(map[bool]string{false: " BETWEEN ", true: " NOT BETWEEN "}[not])
 		b.Arg(lo)
 		b.Write(" AND ")
 		b.Arg(hi)
-	}, Range{Column: col, Lo: lo, Hi: hi, Not: not})
+	}, Range{Column: col, Lo: lo, Hi: hi, Not: not}
 }
 
-// WhereRaw adds a condition from SQL with ? placeholders (whereRaw).
-func (r RowQuery) WhereRaw(sqlFragment string, args ...any) RowQuery {
-	return r.addWhere(func(b *SQL) { b.Raw(sqlFragment, args...) }, nil)
+func rawCond(sql string, args []any) frag {
+	return func(b *SQL) { b.Raw(sql, args...) }
+}
+
+func columnCond(first string, op Op, second string) frag {
+	checkOp(string(op))
+	return func(b *SQL) {
+		b.Ident(first)
+		b.Write(" ", string(op), " ")
+		b.Ident(second)
+	}
+}
+
+func existsCond(not bool, sub RowQuery) frag {
+	return func(b *SQL) {
+		b.Write(map[bool]string{false: "EXISTS (", true: "NOT EXISTS ("}[not])
+		sub.render(b, selectOne)
+		b.Write(")")
+	}
 }
 
 // addWhere ANDs a condition; a nil node marks it SQL-only.
@@ -334,6 +413,55 @@ func (r RowQuery) order(col string, e AnyExpr, dir string) RowQuery {
 	return r
 }
 
+// Latest sorts by col (default created_at) descending; Oldest ascending.
+func (r RowQuery) Latest(col ...string) RowQuery {
+	return r.OrderByDesc(cmp.Or(slices.Concat(col, []string{"created_at"})...))
+}
+
+func (r RowQuery) Oldest(col ...string) RowQuery {
+	return r.OrderBy(cmp.Or(slices.Concat(col, []string{"created_at"})...))
+}
+
+// InRandomOrder shuffles the rows; it has no document-store form.
+func (r RowQuery) InRandomOrder() RowQuery {
+	r.orders = append(slices.Clip(r.orders), keysetTerm{e: randomOrder{}})
+	return r
+}
+
+type randomOrder struct{}
+
+func (randomOrder) build(b *SQL) { b.Write(b.Dialect.Random()) }
+
+// Reorder drops every order so far.
+func (r RowQuery) Reorder() RowQuery { r.orders = nil; return r }
+
+// When applies fn when cond holds; Unless when it does not.
+func (r RowQuery) When(cond bool, fn func(RowQuery) RowQuery) RowQuery {
+	if cond {
+		return fn(r)
+	}
+	return r
+}
+
+func (r RowQuery) Unless(cond bool, fn func(RowQuery) RowQuery) RowQuery { return r.When(!cond, fn) }
+
+// LockForUpdate and SharedLock lock the selected rows until the
+// transaction ends.
+func (r RowQuery) LockForUpdate() RowQuery { r.lock = ForUpdate; return r }
+func (r RowQuery) SharedLock() RowQuery    { r.lock = ForShare; return r }
+
+// Union appends other's rows, without duplicates; UnionAll keeps them.
+// Orders and limits apply to the combined rows.
+func (r RowQuery) Union(other RowQuery) RowQuery {
+	r.unions = append(slices.Clip(r.unions), rowUnion{q: other})
+	return r
+}
+
+func (r RowQuery) UnionAll(other RowQuery) RowQuery {
+	r.unions = append(slices.Clip(r.unions), rowUnion{all: true, q: other})
+	return r
+}
+
 func (r RowQuery) Limit(n int) RowQuery  { r.limit = n; return r }
 func (r RowQuery) Offset(n int) RowQuery { r.offset = n; return r }
 
@@ -365,6 +493,9 @@ func (r RowQuery) pageOf(ctx context.Context) func(limit, offset int) ([]map[str
 func (r RowQuery) CursorPaginate(ctx context.Context, perPage int, cursor string) (CursorPage[map[string]any], error) {
 	if len(r.orders) == 0 {
 		r = r.OrderBy(r.keyColumn())
+	}
+	if slices.ContainsFunc(r.orders, func(o keysetTerm) bool { return o.col == "" }) {
+		return CursorPage[map[string]any]{}, fmt.Errorf("orm: cursor pagination on %s needs column orders, not a random order", r.name)
 	}
 	return cursorPaginate(perPage, cursor, r.orders,
 		func(_ int, raw json.RawMessage) (any, error) { return jsonScalar(raw) },
@@ -503,12 +634,19 @@ func (r RowQuery) render(b *SQL, list frag) {
 		b.Write(" HAVING ")
 		writeAnd(b, r.having)
 	}
+	for _, u := range r.unions {
+		b.Write(map[bool]string{true: " UNION ALL ", false: " UNION "}[u.all])
+		branch := u.q
+		branch.orders, branch.limit, branch.offset, branch.lock = nil, 0, 0, 0
+		branch.render(b, list)
+	}
 	for i, o := range r.orders {
 		b.Write(map[bool]string{true: " ORDER BY ", false: ", "}[i == 0])
 		o.e.build(b)
 		b.Write(map[bool]string{false: " ASC", true: " DESC"}[o.desc])
 	}
 	b.Dialect.Limit(b, r.limit, r.offset)
+	b.Write(b.Dialect.Lock(r.lock))
 }
 
 func (r RowQuery) writeTable(b *SQL) {
@@ -551,11 +689,20 @@ func (r RowQuery) planOf() (Plan, error) {
 	if len(r.groups) > 0 || len(r.having) > 0 {
 		return Plan{}, &ErrNotTranslatable{Reason: "groupBy / having"}
 	}
+	if len(r.unions) > 0 {
+		return Plan{}, &ErrNotTranslatable{Reason: "unions"}
+	}
+	if r.lock != 0 {
+		return Plan{}, &ErrNotTranslatable{Reason: "row locks"}
+	}
 	if r.badNode {
 		return Plan{}, &ErrNotTranslatable{Reason: "a raw or SQL-specific condition (whereRaw)"}
 	}
 	p := Plan{Table: r.name, Limit: r.limit, Offset: r.offset}
 	for _, o := range r.orders {
+		if o.col == "" {
+			return Plan{}, &ErrNotTranslatable{Reason: "random order"}
+		}
 		p.Orders = append(p.Orders, PlanOrder{Column: o.col, Desc: o.desc})
 	}
 	for _, t := range r.selects {
@@ -596,6 +743,46 @@ func (r RowQuery) Get(ctx context.Context) ([]map[string]any, error) {
 	}
 	defer closeRows(rows)
 	return scanMaps(rows)
+}
+
+// Find returns the row whose key column (WithKey, default "id") is id, or
+// ErrNotFound.
+func (r RowQuery) Find(ctx context.Context, id any) (map[string]any, error) {
+	return r.Where(r.keyColumn(), Eq, id).First(ctx)
+}
+
+// Sole returns the only matching row: ErrNotFound for none,
+// ErrMultipleRecords for more.
+func (r RowQuery) Sole(ctx context.Context) (map[string]any, error) { return sole(r.Limit(2).Get(ctx)) }
+
+// Value returns col of the first row (value()), or ErrNotFound; ValueCol
+// is the typed form.
+func (r RowQuery) Value(ctx context.Context, col string) (any, error) {
+	row, err := r.Select(col).First(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return row[resultName(col)], nil
+}
+
+func (r RowQuery) ValueCol[M, V any](ctx context.Context, c Column[M, V]) (V, error) {
+	vs, err := r.Limit(1).PluckCol(ctx, c)
+	if err != nil || len(vs) == 0 {
+		var zero V
+		return zero, cmp.Or(err, ErrNotFound)
+	}
+	return vs[0], nil
+}
+
+// InsertUsing inserts the rows sub selects into cols (insertUsing).
+func (r RowQuery) InsertUsing(ctx context.Context, cols []string, sub RowQuery) (int64, error) {
+	return insertUsing(ctx, r.connName(), r.name, cols, func(b *SQL) { sub.render(b, nil) })
+}
+
+// Explain returns the engine's plan for the query; document stores have
+// none.
+func (r RowQuery) Explain(ctx context.Context) ([]map[string]any, error) {
+	return explainOn(ctx, r.connName(), func(b *SQL) { r.render(b, nil) })
 }
 
 // First returns the first row or ErrNotFound.
@@ -652,7 +839,7 @@ func (r RowQuery) Count(ctx context.Context) (int64, error) {
 		return n, err
 	}
 	r.orders, r.limit, r.offset = nil, 0, 0
-	if r.distinct || len(r.groups) > 0 {
+	if r.distinct || len(r.groups) > 0 || len(r.unions) > 0 {
 		var list frag
 		if len(r.selects) == 0 && len(r.groups) > 0 {
 			list = func(b *SQL) { writeFrags(b, r.groups) }
@@ -709,6 +896,10 @@ func rowAggregate[V any](ctx context.Context, r RowQuery, fn string, e AnyExpr) 
 		var zero V
 		return zero, fmt.Errorf("orm: %s on %s: a grouped query has one value per group; select it with SelectCols(orm.%s(...).As(name)) and Get",
 			fn, r.name, map[string]string{"SUM": "Sum", "AVG": "Avg", "MIN": "Min", "MAX": "Max", "COUNT": "Count"}[fn])
+	}
+	if len(r.unions) > 0 {
+		var zero V
+		return zero, fmt.Errorf("orm: %s on %s: aggregate the union in SQL (SelectRaw over a subquery) or Get its rows", fn, r.name)
 	}
 	r.orders, r.limit, r.offset, r.distinct = nil, 0, 0, false
 	return scalarOn[V](ctx, r.connName(), func(b *SQL) {

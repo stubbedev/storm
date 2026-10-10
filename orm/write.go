@@ -510,17 +510,7 @@ func (q Query[M]) renderWhere(b *SQL) {
 
 // InsertUsing inserts the rows selected by sub (insertUsing).
 func (q Query[M]) InsertUsing[O any](ctx context.Context, cols []AnyColumn[M], sub Query[O], selects ...AnyExpr) (int64, error) {
-	res, err := q.exec(ctx, func(b *SQL) {
-		b.Write("INSERT INTO ")
-		b.Ident(q.table.Name)
-		b.Write(" (")
-		for i, c := range cols {
-			if i > 0 {
-				b.Write(", ")
-			}
-			b.Ident(c.Name())
-		}
-		b.Write(") ")
+	return insertUsing(ctx, q.connName(), q.table.Name, names(cols), func(b *SQL) {
 		sub.renderSelect(b, func(b *SQL) {
 			for i, e := range selects {
 				if i > 0 {
@@ -529,6 +519,23 @@ func (q Query[M]) InsertUsing[O any](ctx context.Context, cols []AnyColumn[M], s
 				e.build(b)
 			}
 		})
+	})
+}
+
+// insertUsing inserts the rows the SELECT sub renders into cols of table.
+func insertUsing(ctx context.Context, conn, table string, cols []string, sub frag) (int64, error) {
+	res, err := execOn(ctx, conn, func(b *SQL) {
+		b.Write("INSERT INTO ")
+		b.Ident(table)
+		b.Write(" (")
+		for i, c := range cols {
+			if i > 0 {
+				b.Write(", ")
+			}
+			b.Ident(c)
+		}
+		b.Write(") ")
+		sub(b)
 	})
 	if err != nil {
 		return 0, err
