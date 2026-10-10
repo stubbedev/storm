@@ -396,6 +396,7 @@ type QualifiedColumn interface {
 type identExpr string
 
 func (c identExpr) build(b *SQL) { b.Ident(string(c)) }
+func (c identExpr) Name() string { return string(c) }
 
 // OrderBy sorts ascending; OrderByDesc descending.
 func (r RowQuery) OrderBy(col string) RowQuery { return r.order(col, identExpr(col), " ASC") }
@@ -851,60 +852,72 @@ func (r RowQuery) Count(ctx context.Context) (int64, error) {
 			b.Ident("aggregate")
 		})
 	}
-	return rowAggregate[int64](ctx, r, "COUNT", identExpr("*"))
+	return rowScalar[int64](ctx, r, func(b *SQL) { b.Write("COUNT(*)") })
 }
 
 // Sum, Avg, Min and Max aggregate a column; the result type is chosen at
 // the call site: Sum[int64](ctx, "karma"). The *Col forms infer it from a
-// typed column. Aggregates have no document-store form.
+// typed column. Document stores aggregate server-side where they can.
 func (r RowQuery) Sum[V Number](ctx context.Context, col string) (V, error) {
-	return rowAggregate[V](ctx, r, "SUM", identExpr(col))
+	return rowAggregate[V](ctx, r, AggregateSum, identExpr(col))
 }
 
 func (r RowQuery) Avg(ctx context.Context, col string) (float64, error) {
-	return rowAggregate[float64](ctx, r, "AVG", identExpr(col))
+	return rowAggregate[float64](ctx, r, AggregateAvg, identExpr(col))
 }
 
 func (r RowQuery) Min[V any](ctx context.Context, col string) (V, error) {
-	return rowAggregate[V](ctx, r, "MIN", identExpr(col))
+	return rowAggregate[V](ctx, r, AggregateMin, identExpr(col))
 }
 
 func (r RowQuery) Max[V any](ctx context.Context, col string) (V, error) {
-	return rowAggregate[V](ctx, r, "MAX", identExpr(col))
+	return rowAggregate[V](ctx, r, AggregateMax, identExpr(col))
 }
 
 // SumCol, AvgCol, MinCol and MaxCol aggregate a typed column:
 // SumCol(ctx, Users.Karma) is an int64.
 func (r RowQuery) SumCol[M any, V Number](ctx context.Context, c Column[M, V]) (V, error) {
-	return rowAggregate[V](ctx, r, "SUM", c)
+	return rowAggregate[V](ctx, r, AggregateSum, c)
 }
 
 func (r RowQuery) AvgCol[M any, V Number](ctx context.Context, c Column[M, V]) (float64, error) {
-	return rowAggregate[float64](ctx, r, "AVG", c)
+	return rowAggregate[float64](ctx, r, AggregateAvg, c)
 }
 
 func (r RowQuery) MinCol[M, V any](ctx context.Context, c Column[M, V]) (V, error) {
-	return rowAggregate[V](ctx, r, "MIN", c)
+	return rowAggregate[V](ctx, r, AggregateMin, c)
 }
 
 func (r RowQuery) MaxCol[M, V any](ctx context.Context, c Column[M, V]) (V, error) {
-	return rowAggregate[V](ctx, r, "MAX", c)
+	return rowAggregate[V](ctx, r, AggregateMax, c)
 }
 
-func rowAggregate[V any](ctx context.Context, r RowQuery, fn string, e AnyExpr) (V, error) {
+func rowAggregate[V any](ctx context.Context, r RowQuery, agg Aggregate, c QualifiedColumn) (V, error) {
+	var zero V
+	method := strings.ToLower(agg.String())
+	r.orders, r.limit, r.offset, r.distinct = nil, 0, 0, false
+	if ds, ok, err := r.docConn(ctx); err != nil {
+		return zero, err
+	} else if ok {
+		p, err := r.plan(method)
+		if err != nil {
+			return zero, err
+		}
+		p.Columns = nil
+		return aggregateDocs[V](ctx, ds, r.connName(), p, agg, c.Name())
+	}
 	if len(r.groups) > 0 {
-		var zero V
 		return zero, fmt.Errorf("orm: %s on %s: a grouped query has one value per group; select it with SelectCols(orm.%s(...).As(name)) and Get",
-			fn, r.name, map[string]string{"SUM": "Sum", "AVG": "Avg", "MIN": "Min", "MAX": "Max", "COUNT": "Count"}[fn])
+			method, r.name, agg.String()[:1]+method[1:])
 	}
 	if len(r.unions) > 0 {
-		var zero V
-		return zero, fmt.Errorf("orm: %s on %s: aggregate the union in SQL (SelectRaw over a subquery) or Get its rows", fn, r.name)
+		return zero, fmt.Errorf("orm: %s on %s: aggregate the union in SQL (SelectRaw over a subquery) or Get its rows", method, r.name)
 	}
-	r.orders, r.limit, r.offset, r.distinct = nil, 0, 0, false
-	return scalarOn[V](ctx, r.connName(), func(b *SQL) {
-		r.render(b, func(b *SQL) { b.Write(fn, "("); e.build(b); b.Write(")") })
-	})
+	return rowScalar[V](ctx, r, func(b *SQL) { fn(b, agg.String(), c) })
+}
+
+func rowScalar[V any](ctx context.Context, r RowQuery, list frag) (V, error) {
+	return scalarOn[V](ctx, r.connName(), func(b *SQL) { r.render(b, list) })
 }
 
 // Exists reports whether any row matches; DoesntExist is its inverse.

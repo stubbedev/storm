@@ -37,9 +37,10 @@ type Scalar[M, V any] struct {
 	col string
 }
 
-func (s Scalar[M, V]) build(b *SQL) { s.f(b) }
-func (Scalar[M, V]) valueOf(V)      {}
-func (Scalar[M, V]) modelOf(M)      {}
+func (s Scalar[M, V]) build(b *SQL)      { s.f(b) }
+func (s Scalar[M, V]) docColumn() string { return s.col }
+func (Scalar[M, V]) valueOf(V)           {}
+func (Scalar[M, V]) modelOf(M)           {}
 
 func (s Scalar[M, V]) Eq(v V) Cond[M]  { return s.cmpArg("=", v) }
 func (s Scalar[M, V]) Ne(v V) Cond[M]  { return s.cmpArg("<>", v) }
@@ -181,12 +182,16 @@ func (s Scalar[M, V]) field(op string, v any) Node {
 }
 
 func (s Scalar[M, V]) in(op string, vs []V) Cond[M] {
-	if len(vs) == 0 {
-		return Raw[M](map[string]string{"IN": "1 = 0", "NOT IN": "1 = 1"}[op])
-	}
 	vals := make([]any, len(vs))
 	for i, v := range vs {
 		vals[i] = v
+	}
+	var ir Node
+	if s.col != "" {
+		ir = List{Table: s.tab, Column: s.col, Not: op == "NOT IN", Values: vals}
+	}
+	if len(vs) == 0 {
+		return Cond[M]{f: func(b *SQL) { b.Write(map[string]string{"IN": "1 = 0", "NOT IN": "1 = 1"}[op]) }, ir: ir}
 	}
 	return Cond[M]{
 		f: func(b *SQL) {
@@ -200,12 +205,7 @@ func (s Scalar[M, V]) in(op string, vs []V) Cond[M] {
 			}
 			b.Write(")")
 		},
-		ir: func() Node {
-			if s.col == "" {
-				return nil
-			}
-			return List{Table: s.tab, Column: s.col, Not: op == "NOT IN", Values: vals}
-		}(),
+		ir: ir,
 	}
 }
 
@@ -523,12 +523,16 @@ func CountDistinct[M, V any](e Expr[M, V]) Scalar[M, int64] {
 	return Scalar[M, int64]{f: func(b *SQL) { b.Write("COUNT(DISTINCT "); e.build(b); b.Write(")") }}
 }
 
-func Sum[M any, V Number](e Expr[M, V]) Scalar[M, V]       { return wrap[M, V]("SUM", e) }
-func Avg[M any, V Number](e Expr[M, V]) Scalar[M, float64] { return wrap[M, float64]("AVG", e) }
-func Min[M, V any](e Expr[M, V]) Scalar[M, V]              { return wrap[M, V]("MIN", e) }
-func Max[M, V any](e Expr[M, V]) Scalar[M, V]              { return wrap[M, V]("MAX", e) }
-func Lower[M any](e Expr[M, string]) Scalar[M, string]     { return wrap[M, string]("LOWER", e) }
-func Upper[M any](e Expr[M, string]) Scalar[M, string]     { return wrap[M, string]("UPPER", e) }
+func Sum[M any, V Number](e Expr[M, V]) Scalar[M, V] { return wrap[M, V](AggregateSum.String(), e) }
+func Avg[M any, V Number](e Expr[M, V]) Scalar[M, float64] {
+	return wrap[M, float64](AggregateAvg.String(), e)
+}
+
+func Min[M, V any](e Expr[M, V]) Scalar[M, V] { return wrap[M, V](AggregateMin.String(), e) }
+
+func Max[M, V any](e Expr[M, V]) Scalar[M, V]          { return wrap[M, V](AggregateMax.String(), e) }
+func Lower[M any](e Expr[M, string]) Scalar[M, string] { return wrap[M, string]("LOWER", e) }
+func Upper[M any](e Expr[M, string]) Scalar[M, string] { return wrap[M, string]("UPPER", e) }
 
 func Coalesce[M, V any](e Expr[M, V], fallback V) Scalar[M, V] {
 	return Scalar[M, V]{f: func(b *SQL) { b.Write("COALESCE("); e.build(b); b.Write(", "); b.Arg(fallback); b.Write(")") }}

@@ -494,6 +494,39 @@ func (s *MongoStore) CountDocs(ctx context.Context, table string, p Plan) (int64
 	return n, nil
 }
 
+// AggregateDocs runs fn over column as a $match + $group pipeline.
+func (s *MongoStore) AggregateDocs(ctx context.Context, table string, p Plan, fn Aggregate, column string) (any, error) {
+	if p.Vector != nil {
+		return nil, &ErrNotTranslatable{Reason: "vector search on MongoDB"}
+	}
+	op, ok := map[Aggregate]string{AggregateSum: "$sum", AggregateAvg: "$avg", AggregateMin: "$min", AggregateMax: "$max"}[fn]
+	if !ok {
+		return nil, fmt.Errorf("orm: mongo aggregate on %s: unknown %s", table, fn)
+	}
+	filter, err := mongoFilter(p.Where)
+	if err != nil {
+		return nil, err
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: filter}},
+		{{Key: "$group", Value: bson.D{{Key: "_id", Value: nil}, {Key: "v", Value: bson.D{{Key: op, Value: "$" + column}}}}}},
+	}
+	cursor, err := s.coll(table).Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("orm: mongo aggregate on %s: %w", table, err)
+	}
+	var out []struct {
+		V any `bson:"v"`
+	}
+	if err := cursor.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("orm: mongo aggregate on %s: %w", table, err)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out[0].V, nil
+}
+
 // mongoDoc converts a builder document to BSON: values implementing
 // driver.Valuer (orm.JSON, orm.Vector, orm.Encrypted) go through their
 // value form, times stay native.

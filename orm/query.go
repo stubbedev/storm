@@ -94,16 +94,7 @@ func (q Query[M]) WhereKey(ids ...any) Query[M] { return q.Where(q.keyIn("IN", i
 func (q Query[M]) WhereKeyNot(ids ...any) Query[M] { return q.Where(q.keyIn("NOT IN", ids)) }
 
 func (q Query[M]) keyIn(op string, ids []any) Cond[M] {
-	vals := make([]any, len(ids))
-	copy(vals, ids)
-	return Cond[M]{
-		f:  Scalar[M, any]{f: q.keyCol()}.in(op, ids).f,
-		ir: List{Column: q.table.PrimaryKey, Not: op == "NOT IN", Values: vals},
-	}
-}
-
-func (q Query[M]) keyCol() frag {
-	return func(b *SQL) { b.Col(q.table.Name, q.table.PrimaryKey) }
+	return q.table.column(q.table.PrimaryKey).in(op, ids)
 }
 
 // When applies fn only if cond is true (conditional clauses).
@@ -333,12 +324,12 @@ func (q Query[M]) prepared() Query[M] {
 	}
 	if q.table.softDeletes() && !slices.Contains(q.without, softDeleteScope) {
 		t := q.table
-		col := func(b *SQL) { b.Col(t.Name, t.DeletedAt) }
+		deleted := t.column(t.DeletedAt)
 		switch q.trashed {
 		case withoutTrashed:
-			q.where = append(slices.Clip(q.where), Cond[M]{f: func(b *SQL) { col(b); b.Write(" IS NULL") }})
+			q.where = append(slices.Clip(q.where), deleted.IsNull())
 		case onlyTrashed:
-			q.where = append(slices.Clip(q.where), Cond[M]{f: func(b *SQL) { col(b); b.Write(" IS NOT NULL") }})
+			q.where = append(slices.Clip(q.where), deleted.IsNotNull())
 		}
 	}
 	return q

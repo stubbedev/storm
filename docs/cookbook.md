@@ -616,8 +616,9 @@ sql, args := orm.From("users").Where("users.karma", orm.Gt, 10).ToSQL()
 duplicate on engines that report only changed rows (MySQL). `Count` after
 `Distinct` counts distinct rows. On document stores, `InsertOrIgnore`
 matches on the key column (`WithKey`, default `id`), `Increment` and
-`Decrement` become `$inc` on MongoDB, and aggregates — plus increments on
-Qdrant — return `ErrNotTranslatable`. ClickHouse, which has no unique
+`Decrement` become `$inc` on MongoDB, `Sum` / `Avg` / `Min` / `Max` run
+as an aggregation pipeline on MongoDB, and aggregates and increments on
+Qdrant return `ErrNotTranslatable`. ClickHouse, which has no unique
 constraints, emulates `InsertOrIgnore` and `Upsert` by reading the taken
 keys first.
 

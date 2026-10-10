@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -123,6 +124,103 @@ var Docs = DocSchema{
 	Title: orm.NewColumn(docTable, "title", func(m *Doc) *string { return &m.Title }),
 	Views: orm.NewColumn(docTable, "views", func(m *Doc) *int64 { return &m.Views }),
 	Vec:   orm.NewColumn(docTable, "vec", func(m *Doc) *orm.Vector[orm.D3] { return &m.Vec }),
+}
+
+// Note is a soft-deleting document model with a global scope hiding
+// drafts, so document stores are checked against the same implicit
+// conditions SQL queries carry.
+type Note struct {
+	orm.Model
+	ID        string     `db:"id"`
+	Title     string     `db:"title"`
+	Views     int64      `db:"views"`
+	DeletedAt *time.Time `db:"deleted_at"`
+}
+
+var noteTable = &orm.Table[Note]{
+	Name:       "notes",
+	PrimaryKey: "id",
+	KeyType:    orm.KeyUUID,
+	DeletedAt:  "deleted_at",
+	Columns:    []string{"id", "title", "views", "deleted_at"},
+	Ptr: func(m *Note, column string) any {
+		switch column {
+		case "id":
+			return &m.ID
+		case "title":
+			return &m.Title
+		case "views":
+			return &m.Views
+		case "deleted_at":
+			return &m.DeletedAt
+		}
+		return nil
+	},
+	State: func(m *Note) *orm.Model { return &m.Model },
+}
+
+type NoteSchema struct {
+	*orm.Table[Note]
+	ID    orm.Column[Note, string]
+	Title orm.Column[Note, string]
+	Views orm.Column[Note, int64]
+}
+
+var Notes = func() NoteSchema {
+	s := NoteSchema{
+		Table: noteTable,
+		ID:    orm.NewColumn(noteTable, "id", func(m *Note) *string { return &m.ID }),
+		Title: orm.NewColumn(noteTable, "title", func(m *Note) *string { return &m.Title }),
+		Views: orm.NewColumn(noteTable, "views", func(m *Note) *int64 { return &m.Views }),
+	}
+	noteTable.AddGlobalScope("published", func(q orm.Query[Note]) orm.Query[Note] { return q.Where(s.Title.Ne("draft")) })
+	return s
+}()
+
+// assertDocModelQueries runs the model builder's implicit conditions (soft
+// deletes, global scopes, key lookups) and its key walks against a
+// document store.
+func assertDocModelQueries(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	notes := Notes.Query().On(conn)
+	for _, n := range []Note{{Title: "a", Views: 1}, {Title: "b", Views: 2}, {Title: "c", Views: 3}, {Title: "draft", Views: 4}} {
+		ok(notes.Create(ctx, &n))
+	}
+	eq(t, conn+" global scope", must(notes.Count(ctx)), int64(3))
+	eq(t, conn+" without global scope", must(notes.WithoutGlobalScope("published").Count(ctx)), int64(4))
+	eq(t, conn+" scoped exists", must(notes.Where(Notes.Views.Eq(4)).Exists(ctx)), false)
+	eq(t, conn+" soft delete", must(notes.Where(Notes.Title.Eq("a")).Delete(ctx)), int64(1))
+	eq(t, conn+" soft deleted hidden", must(notes.Pluck(ctx, Notes.Title)), []string{"b", "c"})
+	eq(t, conn+" with trashed", must(notes.WithTrashed().Count(ctx)), int64(3))
+	eq(t, conn+" only trashed", must(notes.OnlyTrashed().Pluck(ctx, Notes.Title)), []string{"a"})
+	eq(t, conn+" pluck map", must(notes.OrderBy(Notes.Views.Asc()).PluckMap(ctx, Notes.Title, Notes.Views)), map[string]int64{"b": 2, "c": 3})
+	eq(t, conn+" value", must(notes.Where(Notes.Title.Eq("c")).Value(ctx, Notes.Views)), int64(3))
+	_, err := notes.Pluck(ctx, orm.Upper(Notes.Title))
+	eq(t, conn+" pluck of an expression refused", orm.IsNotTranslatable(err), true)
+	eq(t, conn+" restore", must(notes.OnlyTrashed().Restore(ctx)), int64(1))
+	eq(t, conn+" restored", must(notes.Count(ctx)), int64(3))
+
+	ids := must(notes.Pluck(ctx, Notes.ID))
+	eq(t, conn+" where key", must(notes.WhereKey(ids[0], ids[1]).Count(ctx)), int64(2))
+	eq(t, conn+" where no keys", must(notes.WhereKey().Count(ctx)), int64(0))
+	eq(t, conn+" where key not none", must(notes.WhereKeyNot().Count(ctx)), int64(3))
+	var walked []string
+	ok(notes.ChunkByID(ctx, 2, func(ns []Note) error {
+		for _, n := range ns {
+			walked = append(walked, n.ID)
+		}
+		return nil
+	}))
+	sort.Strings(ids)
+	eq(t, conn+" chunkByID walks keys in order", walked, ids)
+	var lazy int
+	for _, err := range notes.Lazy(ctx, 2) {
+		ok(err)
+		lazy++
+	}
+	eq(t, conn+" lazy", lazy, 3)
+	eq(t, conn+" unconditional update", must(notes.WithoutGlobalScopes().Update(ctx, Notes.Views.Set(0))), int64(4))
+	eq(t, conn+" force delete", must(notes.WithoutGlobalScopes().WithTrashed().ForceDelete(ctx)), int64(4))
 }
 
 // createWidgetTable creates widgets keyed by key, which adds the id column:
@@ -367,7 +465,8 @@ func TestMongo(t *testing.T) {
 	eq(t, "table doesn't exist", must(orm.From("documents").On("mongo").WhereCond(Docs.Views.Gt(100)).Exists(ctx)), false)
 	_, err = orm.From("documents").On("mongo").InsertGetID(ctx, map[string]any{"title": "x"})
 	eq(t, "table insertGetID refused", orm.IsNotTranslatable(err), true)
-	_, err = Docs.Query().On("mongo").Pluck(ctx, Docs.Title)
+	eq(t, "model pluck", must(Docs.Query().On("mongo").Where(Docs.Views.Between(2, 3)).OrderBy(Docs.Views.Asc()).Pluck(ctx, Docs.Title)), []string{"far", "renamed"})
+	_, err = Docs.Query().On("mongo").Explain(ctx)
 	eq(t, "SQL-only method refused", orm.IsNotTranslatable(err), true)
 	ok(orm.From("documents").On("mongo").InsertCols(ctx, Docs.ID.Set("typed-row"), Docs.Title.Set("typed"), Docs.Views.Set(4)))
 	typedRow := orm.From("documents").On("mongo").WhereCond(Docs.ID.Eq("typed-row"))
@@ -381,8 +480,7 @@ func TestMongo(t *testing.T) {
 	eq(t, "increments applied", must(typedRow.PluckCol(ctx, Docs.Views)), []int64{17})
 	_, err = typedRow.UpdateCols(ctx, Docs.Views.SetExpr(orm.Plus(Docs.Views, 1)))
 	eq(t, "other expressions refused", orm.IsNotTranslatable(err), true)
-	_, err = orm.From("documents").On("mongo").Sum[int64](ctx, "views")
-	eq(t, "aggregate refused", orm.IsNotTranslatable(err), true)
+	assertDocAggregates(t, ctx, "mongo")
 	_, err = orm.From("documents").On("mongo").WhereCond(Users.Name.Eq("x")).Count(ctx)
 	eq(t, "foreign column refused", orm.IsNotTranslatable(err), true)
 	ok(orm.From("documents").On("mongo").InsertOrIgnore(ctx,
@@ -462,6 +560,7 @@ func TestMongo(t *testing.T) {
 	eq(t, "unsigned decrement", must(orm.From("documents").On("mongo").Where("title", orm.Eq, "near").Decrement(ctx, "views", uint8(1))), int64(1))
 
 	assertDocMigrations(t, ctx, "mongo")
+	assertDocModelQueries(t, ctx, "mongo")
 
 	txDocs := orm.From("tx_docs").On("mongo")
 	ok(txDocs.Insert(ctx, map[string]any{"id": "seed"}))
@@ -485,6 +584,38 @@ func TestMongo(t *testing.T) {
 	eq(t, "failed nested transaction rolls back the whole", errors.Is(err, orm.ErrNestedFailed) && must(txDocs.Count(ctx)) == 2, true)
 	eq(t, "mongo supports transactions", must(orm.SupportsTransactions(ctx, "mongo")), true)
 	ok(schema.On("mongo").Drop(ctx, "tx_docs"))
+}
+
+// assertDocAggregates checks a document store aggregates the documents a
+// query matches through both builders, scopes and filters applied.
+func assertDocAggregates(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	docs := Docs.Query().On(conn)
+	views := must(docs.Pluck(ctx, Docs.Views))
+	var sum, high int64
+	low := views[0]
+	for _, v := range views {
+		sum += v
+		high, low = max(high, v), min(low, v)
+	}
+	eq(t, conn+" sum", must(docs.Sum(ctx, Docs.Views)), sum)
+	eq(t, conn+" avg", must(docs.Avg(ctx, Docs.Views)), float64(sum)/float64(len(views)))
+	eq(t, conn+" min", must(docs.Min(ctx, Docs.Views)), low)
+	eq(t, conn+" max", must(docs.Max(ctx, Docs.Views)), high)
+	eq(t, conn+" min of strings", must(docs.Where(Docs.Title.In("far", "near")).Min(ctx, Docs.Title)), "far")
+	eq(t, conn+" filtered sum ignores order and limit", must(docs.Where(Docs.Views.Gt(high-1)).OrderBy(Docs.Views.Desc()).Limit(1).Offset(5).Sum(ctx, Docs.Views)), high)
+	eq(t, conn+" sum of nothing", must(docs.Where(Docs.Views.Gt(high)).Sum(ctx, Docs.Views)), int64(0))
+	eq(t, conn+" avg of nothing", must(docs.Where(Docs.Views.Gt(high)).Avg(ctx, Docs.Views)), float64(0))
+	_, err := docs.Sum(ctx, orm.Plus(Docs.Views, 1))
+	eq(t, conn+" aggregate of an expression refused", orm.IsNotTranslatable(err), true)
+
+	rows := orm.From("documents").On(conn)
+	eq(t, conn+" row sum", must(rows.Sum[int64](ctx, "views")), sum)
+	eq(t, conn+" row max col", must(rows.MaxCol(ctx, Docs.Views)), high)
+	eq(t, conn+" row avg filtered", must(rows.Where("views", orm.Lte, low).Avg(ctx, "views")), float64(low))
+	eq(t, conn+" row min col", must(rows.MinCol(ctx, Docs.Title)), "far")
+	_, err = rows.GroupBy("title").Sum[int64](ctx, "views")
+	eq(t, conn+" grouped aggregate refused", orm.IsNotTranslatable(err), true)
 }
 
 // failingValuer fails to convert, as Encrypted does without a key.
@@ -625,6 +756,14 @@ func TestQdrant(t *testing.T) {
 	eq(t, "withKey names the point id column", fmt.Sprintf("%v %v", point["code"], point["name"]), "7 seven")
 	ok(keyed.DropCollection(ctx, "keyed"))
 	assertDocMigrations(t, ctx, "qdrant")
+	ok(store.DropCollection(ctx, "notes"))
+	ok(store.CreateCollection(ctx, orm.Collection{Name: "notes", Indexes: []orm.DocIndex{{Name: "notes_views", Fields: []orm.DocField{{Name: "views", Kind: orm.KindInt}}}}}))
+	assertDocModelQueries(t, ctx, "qdrant")
+	ok(store.DropCollection(ctx, "notes"))
+	_, err = Docs.Query().On("qdrant").Sum(ctx, Docs.Views)
+	eq(t, "qdrant model aggregate refused", orm.IsNotTranslatable(err), true)
+	_, err = orm.From("documents").On("qdrant").Max[int64](ctx, "views")
+	eq(t, "qdrant row aggregate refused", orm.IsNotTranslatable(err), true)
 	err = orm.TransactionOn(ctx, "qdrant", func(context.Context) error { return nil })
 	eq(t, "qdrant transactions refused", orm.IsNotTranslatable(err), true)
 	eq(t, "qdrant has no transactions", must(orm.SupportsTransactions(ctx, "qdrant")), false)

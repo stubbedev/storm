@@ -319,9 +319,7 @@ func (s *QdrantStore) FindDocs(ctx context.Context, table string, p Plan) ([]map
 			"vector":       p.Vector.Floats,
 			"limit":        limit,
 			"with_payload": true,
-		}
-		if len(filter) > 0 {
-			body["filter"] = filter
+			"filter":       filter,
 		}
 		if p.Offset > 0 {
 			body["offset"] = p.Offset
@@ -418,10 +416,7 @@ func (s *QdrantStore) scroll(ctx context.Context, table string, p Plan, filter m
 	if p.Limit > 0 {
 		want = p.Offset + p.Limit
 	}
-	body := map[string]any{"with_payload": true, "with_vector": false}
-	if len(filter) > 0 {
-		body["filter"] = filter
-	}
+	body := map[string]any{"with_payload": true, "with_vector": false, "filter": filter}
 	if len(p.Orders) == 1 {
 		if p.Orders[0].Desc {
 			return nil, &ErrNotTranslatable{Reason: "descending order (Qdrant order_by is ascending; store a negated field to sort descending)"}
@@ -545,18 +540,12 @@ func (s *QdrantStore) UpdateDocs(ctx context.Context, table string, p Plan, u Do
 			payload[k] = jv
 		}
 	}
-	body := map[string]any{"payload": payload}
-	if len(filter) > 0 {
-		body["filter"] = filter
-	}
+	body := map[string]any{"payload": payload, "filter": filter}
 	if err := s.do(ctx, http.MethodPost, collectionPath(table, "/points/payload?wait=true"), body, nil); err != nil {
 		return 0, err
 	}
 	for _, k := range nils {
-		body := map[string]any{"keys": []string{k}}
-		if len(filter) > 0 {
-			body["filter"] = filter
-		}
+		body := map[string]any{"keys": []string{k}, "filter": filter}
 		if err := s.do(ctx, http.MethodPost, collectionPath(table, "/points/payload/delete?wait=true"), body, nil); err != nil {
 			return 0, err
 		}
@@ -576,14 +565,17 @@ func (s *QdrantStore) DeleteDocs(ctx context.Context, table string, p Plan) (int
 	if err != nil {
 		return 0, err
 	}
-	body := map[string]any{}
-	if len(filter) > 0 {
-		body["filter"] = filter
-	}
+	body := map[string]any{"filter": filter}
 	if err := s.do(ctx, http.MethodPost, collectionPath(table, "/points/delete?wait=true"), body, nil); err != nil {
 		return 0, err
 	}
 	return n, nil
+}
+
+// AggregateDocs is refused: Qdrant has no server-side aggregation, and
+// summing by scrolling every point would hide an unbounded scan.
+func (s *QdrantStore) AggregateDocs(context.Context, string, Plan, Aggregate, string) (any, error) {
+	return nil, &ErrNotTranslatable{Reason: "aggregates on Qdrant (it has no server-side aggregation)"}
 }
 
 func (s *QdrantStore) CountDocs(ctx context.Context, table string, p Plan) (int64, error) {
@@ -591,10 +583,7 @@ func (s *QdrantStore) CountDocs(ctx context.Context, table string, p Plan) (int6
 	if err != nil {
 		return 0, err
 	}
-	body := map[string]any{"exact": true}
-	if len(filter) > 0 {
-		body["filter"] = filter
-	}
+	body := map[string]any{"exact": true, "filter": filter}
 	var res qdrantResult[struct {
 		Count int64 `json:"count"`
 	}]
@@ -629,7 +618,7 @@ func jsonValue(v any) (any, error) {
 // express (LIKE, deep nesting) are refused.
 func qdrantFilter(n Node) (map[string]any, error) {
 	if n == nil {
-		return nil, nil
+		return map[string]any{}, nil
 	}
 	conds, err := qdrantConds(n)
 	if err != nil {

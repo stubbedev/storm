@@ -88,6 +88,15 @@ func (t *Table[M]) morphAlias() string { return cmp.Or(t.MorphAlias, t.Name) }
 
 func (t *Table[M]) softDeletes() bool { return t.DeletedAt != "" }
 
+func (t *Table[M]) column(name string) Scalar[M, any] {
+	return Scalar[M, any]{f: func(b *SQL) { b.Col(t.Name, name) }, tab: t.Name, col: name}
+}
+
+func (t *Table[M]) keyOrder() Order[M] {
+	pk := tableColumn[M]{t, t.PrimaryKey}
+	return Order[M]{f: func(b *SQL) { pk.build(b); b.Write(" ASC") }, col: pk}
+}
+
 // value reads a column's current value from m.
 func (t *Table[M]) value(m *M, col string) any {
 	return reflect.ValueOf(t.Ptr(m, col)).Elem().Interface()

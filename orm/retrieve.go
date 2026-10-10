@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
+	"strings"
+	"time"
 )
 
 // ErrStop can be returned from a Chunk callback to stop without an error.
@@ -140,10 +142,10 @@ func (t *Table[M]) Where(conds ...Cond[M]) Query[M] { return t.Query().Where(con
 // ---------------------------------------------------------------------------
 
 func (q Query[M]) Exists(ctx context.Context) (bool, error) {
+	q = q.prepared()
 	if n, ok, err := q.countDocs(ctx); ok {
 		return err == nil && n > 0, err
 	}
-	q = q.prepared()
 	q.extras, q.eager = nil, nil
 	rows, err := q.Limit(1).query(ctx, func(b *SQL) { q.Limit(1).renderSelect(b, selectOne) })
 	if err != nil {
@@ -159,10 +161,10 @@ func (q Query[M]) DoesntExist(ctx context.Context) (bool, error) {
 }
 
 func (q Query[M]) Count(ctx context.Context) (int64, error) {
+	q = q.prepared()
 	if n, ok, err := q.countDocs(ctx); ok {
 		return n, err
 	}
-	q = q.prepared()
 	if len(q.groups) > 0 || q.distinct || len(q.unions) > 0 {
 		inner := q.forAggregate()
 		return scalarOn[int64](ctx, q.connName(), func(b *SQL) {
@@ -172,30 +174,42 @@ func (q Query[M]) Count(ctx context.Context) (int64, error) {
 			b.Ident("aggregate")
 		})
 	}
-	return aggregate[int64](ctx, q, Count[M]())
+	return selectScalar[int64](ctx, q, Count[M]().build)
 }
 
 // Sum only accepts numeric expressions: Sum(ctx, Users.Email) does not compile.
 func (q Query[M]) Sum[V Number](ctx context.Context, e Expr[M, V]) (V, error) {
-	return aggregate[V](ctx, q, Sum(e))
+	return aggregate[V](ctx, q, AggregateSum, e)
 }
 
 func (q Query[M]) Avg[V Number](ctx context.Context, e Expr[M, V]) (float64, error) {
-	return aggregate[float64](ctx, q, Avg(e))
+	return aggregate[float64](ctx, q, AggregateAvg, e)
 }
 
 func (q Query[M]) Min[V any](ctx context.Context, e Expr[M, V]) (V, error) {
-	return aggregate[V](ctx, q, Min(e))
+	return aggregate[V](ctx, q, AggregateMin, e)
 }
 
 func (q Query[M]) Max[V any](ctx context.Context, e Expr[M, V]) (V, error) {
-	return aggregate[V](ctx, q, Max(e))
+	return aggregate[V](ctx, q, AggregateMax, e)
 }
 
 // Pluck returns one expression per row; V comes from the expression, so
 // Pluck(ctx, Users.Email) is a []string.
 func (q Query[M]) Pluck[V any](ctx context.Context, e Expr[M, V]) ([]V, error) {
 	q = q.prepared()
+	if docs, cols, ok, err := q.pluckDocs(ctx, e); err != nil || ok {
+		if err != nil {
+			return nil, err
+		}
+		out := make([]V, len(docs))
+		for i, d := range docs {
+			if err := (nullable{&out[i]}).Scan(d[cols[0]]); err != nil {
+				return nil, fmt.Errorf("orm: pluck %s from %s: %w", cols[0], q.table.Name, err)
+			}
+		}
+		return out, nil
+	}
 	rows, err := q.query(ctx, func(b *SQL) { q.renderSelect(b, e.build) })
 	if err != nil {
 		return nil, err
@@ -215,6 +229,24 @@ func (q Query[M]) Pluck[V any](ctx context.Context, e Expr[M, V]) ([]V, error) {
 // PluckMap is pluck('value', 'key').
 func (q Query[M]) PluckMap[K comparable, V any](ctx context.Context, key Expr[M, K], val Expr[M, V]) (map[K]V, error) {
 	q = q.prepared()
+	if docs, cols, ok, err := q.pluckDocs(ctx, val, key); err != nil || ok {
+		if err != nil {
+			return nil, err
+		}
+		out := make(map[K]V, len(docs))
+		for _, d := range docs {
+			var k K
+			var v V
+			if err := (nullable{&v}).Scan(d[cols[0]]); err != nil {
+				return nil, fmt.Errorf("orm: pluck %s from %s: %w", cols[0], q.table.Name, err)
+			}
+			if err := (nullable{&k}).Scan(d[cols[1]]); err != nil {
+				return nil, fmt.Errorf("orm: pluck %s from %s: %w", cols[1], q.table.Name, err)
+			}
+			out[k] = v
+		}
+		return out, nil
+	}
 	rows, err := q.query(ctx, func(b *SQL) {
 		q.renderSelect(b, func(b *SQL) { val.build(b); b.Write(", "); key.build(b) })
 	})
@@ -232,6 +264,30 @@ func (q Query[M]) PluckMap[K comparable, V any](ctx context.Context, key Expr[M,
 		out[k] = v
 	}
 	return out, rows.Err()
+}
+
+func (q Query[M]) pluckDocs(ctx context.Context, exprs ...AnyExpr) ([]map[string]any, []string, bool, error) {
+	ds, ok, err := q.docstore(ctx)
+	if err != nil || !ok {
+		return nil, nil, false, err
+	}
+	cols := make([]string, len(exprs))
+	for i, e := range exprs {
+		f, ok := e.(interface{ docColumn() string })
+		if !ok || f.docColumn() == "" {
+			return nil, nil, true, fmt.Errorf("orm: pluck on %s: %w", q.table.Name, &ErrNotTranslatable{Reason: "plucking an expression rather than a column"})
+		}
+		cols[i] = f.docColumn()
+	}
+	p, err := q.planOf("pluck")
+	if err != nil {
+		return nil, nil, true, err
+	}
+	p.Columns = cols
+	start := time.Now()
+	docs, err := ds.FindDocs(ctx, q.table.Name, p)
+	emitDoc(q.connName(), "pluck", p, time.Since(start), err)
+	return docs, cols, true, err
 }
 
 // Value returns one expression from the first row.
@@ -290,9 +346,34 @@ func (q Query[M]) forAggregate() Query[M] {
 	return q
 }
 
-func aggregate[V, M any](ctx context.Context, q Query[M], e AnyExpr) (V, error) {
+func aggregate[V, M any](ctx context.Context, q Query[M], agg Aggregate, e AnyExpr) (V, error) {
 	q = q.prepared().forAggregate()
-	return scalarOn[V](ctx, q.connName(), func(b *SQL) { q.renderSelect(b, e.build) })
+	ds, ok, err := q.docstore(ctx)
+	if err != nil {
+		var zero V
+		return zero, err
+	}
+	if !ok {
+		return selectScalar[V](ctx, q, func(b *SQL) { fn(b, agg.String(), e) })
+	}
+	method := strings.ToLower(agg.String())
+	f, ok := e.(interface{ docColumn() string })
+	if !ok || f.docColumn() == "" {
+		var zero V
+		return zero, fmt.Errorf("orm: %s on %s: %w", method, q.table.Name, &ErrNotTranslatable{Reason: "aggregating an expression rather than a column"})
+	}
+	p, err := q.planOf(method)
+	if err != nil {
+		var zero V
+		return zero, err
+	}
+	p.Columns = nil
+	return aggregateDocs[V](ctx, ds, q.connName(), p, agg, f.docColumn())
+}
+
+func selectScalar[V, M any](ctx context.Context, q Query[M], list frag) (V, error) {
+	q = q.forAggregate()
+	return scalarOn[V](ctx, q.connName(), func(b *SQL) { q.renderSelect(b, list) })
 }
 
 // Explain returns the database's query plan for the query as one map of
@@ -423,12 +504,12 @@ func (q Query[M]) Lazy(ctx context.Context, size int) iter.Seq2[M, error] {
 }
 
 func (q Query[M]) chunksByID(ctx context.Context, size int) iter.Seq2[[]M, error] {
-	page := q.Reorder(Order[M]{f: func(b *SQL) { q.keyCol()(b); b.Write(" ASC") }}).Limit(size)
+	page := q.Reorder(q.table.keyOrder()).Limit(size)
 	return keysetChunks(size, func(after any) ([]M, error) {
 		if after == nil {
 			return page.Get(ctx)
 		}
-		return page.Where(Scalar[M, any]{f: q.keyCol()}.Gt(after)).Get(ctx)
+		return page.Where(q.table.column(q.table.PrimaryKey).Gt(after)).Get(ctx)
 	}, func(m M) (any, error) { return q.table.key(&m), nil })
 }
 
@@ -602,8 +683,7 @@ func simplePaginate[T any](perPage, page int, get func(limit, offset int) ([]T, 
 func (q Query[M]) CursorPaginate(ctx context.Context, perPage int, cursor string) (CursorPage[M], error) {
 	orders := q.orders
 	if len(orders) == 0 {
-		pk := tableColumn[M]{q.table, q.table.PrimaryKey}
-		orders = []Order[M]{{f: func(b *SQL) { pk.build(b); b.Write(" ASC") }, col: pk}}
+		orders = []Order[M]{q.table.keyOrder()}
 		q = q.Reorder(orders...)
 	}
 	terms := make([]keysetTerm, len(orders))

@@ -29,6 +29,35 @@ type DocStore interface {
 	DeleteDocs(ctx context.Context, table string, p Plan) (int64, error)
 	// CountDocs counts matching documents.
 	CountDocs(ctx context.Context, table string, p Plan) (int64, error)
+	// AggregateDocs computes fn over column across matching documents,
+	// returning nil when none has a value. A store that cannot aggregate
+	// server-side returns ErrNotTranslatable.
+	AggregateDocs(ctx context.Context, table string, p Plan, fn Aggregate, column string) (any, error)
+}
+
+// Aggregate is a column aggregate: Sum, Avg, Min or Max.
+type Aggregate int
+
+const (
+	AggregateSum Aggregate = iota + 1
+	AggregateAvg
+	AggregateMin
+	AggregateMax
+)
+
+// String is the aggregate's SQL function name.
+func (a Aggregate) String() string {
+	switch a {
+	case AggregateSum:
+		return "SUM"
+	case AggregateAvg:
+		return "AVG"
+	case AggregateMin:
+		return "MIN"
+	case AggregateMax:
+		return "MAX"
+	}
+	return fmt.Sprintf("Aggregate(%d)", int(a))
 }
 
 // DocUpdate is the change UpdateDocs applies: Set overwrites fields (nil
@@ -167,6 +196,20 @@ func (q Query[M]) countDocs(ctx context.Context) (int64, bool, error) {
 	n, err := ds.CountDocs(ctx, q.table.Name, p)
 	emitDoc(q.connName(), "count", p, time.Since(start), err)
 	return n, true, err
+}
+
+func aggregateDocs[V any](ctx context.Context, ds DocStore, conn string, p Plan, fn Aggregate, column string) (V, error) {
+	var v V
+	start := time.Now()
+	raw, err := ds.AggregateDocs(ctx, p.Table, p, fn, column)
+	emitDoc(conn, strings.ToLower(fn.String())+" "+column+" of", p, time.Since(start), err)
+	if err != nil {
+		return v, fmt.Errorf("orm: %s of %s on %s: %w", fn, column, p.Table, err)
+	}
+	if err := (nullable{&v}).Scan(raw); err != nil {
+		return v, fmt.Errorf("orm: %s of %s on %s: %w", fn, column, p.Table, err)
+	}
+	return v, nil
 }
 
 func (q Query[M]) docMaps(method string, models []*M) ([]map[string]any, error) {

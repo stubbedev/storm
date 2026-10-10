@@ -435,15 +435,18 @@ What translates: `Where` (comparisons, `In`, `Between`, null tests,
 `And` / `Or` / `Not`), `OrderBy` on columns, `Limit` / `Offset`, `Select`,
 `Upsert` and `InsertOrIgnore`, `Increment` / `Decrement` (`$inc` on
 MongoDB), and the model lifecycle — `Create`, `Save` (dirty columns only),
-`Delete`, soft deletes, events, `Count`, `Exists`, length-aware and simple
-pagination, chunking, transactions (MongoDB replica sets), and
-`orm.From(...)` table queries. Keys must be
+`Delete`, soft deletes and global scopes, events, `Count`, `Exists`,
+`Pluck` / `PluckMap` / `Value` of columns, `Sum` / `Avg` / `Min` / `Max`
+(an aggregation pipeline on MongoDB), length-aware and simple pagination,
+chunking (`ChunkByID` and `Lazy` included), transactions (MongoDB replica
+sets), and `orm.From(...)` table queries. Keys must be
 UUID, ULID or manual (assigned automatically when missing). Every
 operation reaches `orm.Listen` and the query log with a readable rendering
 of the plan. What refuses, with a precise error naming the part
 (`orm.IsNotTranslatable`): joins, unions, `groupBy`, raw fragments,
-subqueries, aggregates, `SetExpr`, and `Increment` on Qdrant, which has no
-atomic payload arithmetic. A custom store implements `orm.DocStore`;
+subqueries, expressions in place of columns, `SetExpr`, and aggregates
+and `Increment` on Qdrant, which has no server-side aggregation or atomic
+payload arithmetic. A custom store implements `orm.DocStore`;
 `UpdateDocs` receives an `orm.DocUpdate` with the fields to set and the
 amounts to add.
 
