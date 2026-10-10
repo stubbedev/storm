@@ -645,12 +645,7 @@ func (r *BelongsToManyRel[M, R, P, K, RK]) sync(ctx context.Context, parent *M, 
 	if err != nil {
 		return res, err
 	}
-	seen := make(map[RK]bool, len(ids))
 	for _, id := range ids {
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
 		if !slices.Contains(current, id) && !slices.Contains(res.Attached, id) {
 			res.Attached = append(res.Attached, id)
 		}
