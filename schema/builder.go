@@ -196,6 +196,42 @@ func (s *Builder) WhenTableDoesntHaveColumn(ctx context.Context, table, column s
 	return s.Table(ctx, table, fn)
 }
 
+// CreateDatabase creates a database on the connection's server
+// (Schema::createDatabase); DropDatabaseIfExists drops one. SQLite and
+// DuckDB databases are files, opened rather than created, so they refuse.
+func (s *Builder) CreateDatabase(ctx context.Context, name string) error {
+	x, err := s.serverDatabase(ctx, name, "create a database")
+	if err != nil {
+		return err
+	}
+	return x.exec(ctx, "CREATE DATABASE "+x.g.quote(name))
+}
+
+func (s *Builder) DropDatabaseIfExists(ctx context.Context, name string) error {
+	x, err := s.serverDatabase(ctx, name, "drop a database")
+	if err != nil {
+		return err
+	}
+	return x.exec(ctx, "DROP DATABASE IF EXISTS "+x.g.quote(name))
+}
+
+func (s *Builder) serverDatabase(ctx context.Context, name, op string) (session, error) {
+	if ds, ok, err := s.docStore(ctx); err != nil || ok {
+		if err != nil {
+			return session{}, err
+		}
+		return session{}, docUnsupported(ds, "", op+" "+name, "document stores create databases and collections on first write")
+	}
+	x, err := s.session(ctx)
+	if err != nil {
+		return session{}, err
+	}
+	if x.g.engine == engineSQLite || x.g.engine == engineDuckDB {
+		return session{}, x.g.unsupported("", op+" "+name, "its databases are files; open one with orm.Open")
+	}
+	return x, nil
+}
+
 // Views lists the views on the connection (Schema::getViews).
 func (s *Builder) Views(ctx context.Context) ([]string, error) {
 	x, err := s.sqlOnly(ctx, "", "list views")

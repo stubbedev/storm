@@ -273,6 +273,7 @@ func TestBlueprintSurface(t *testing.T) {
 	assertTimePrecision(t, ctx, orm.DefaultConnection)
 	assertIndexForms(t, ctx, orm.DefaultConnection)
 	assertViews(t, ctx, orm.DefaultConnection)
+	assertDatabases(t, ctx, orm.DefaultConnection)
 
 	ok(schema.Create(ctx, "shortcuts", func(b *schema.Blueprint) { b.ID(); b.String("a") }))
 	ok(schema.Table(ctx, "shortcuts", func(b *schema.Blueprint) { b.String("b").Nullable() }))
@@ -410,4 +411,22 @@ func assertViews(t *testing.T, ctx context.Context, conn string) {
 	ok(s.DropAllViews(ctx))
 	eq(t, conn+" dropAllViews", len(must(s.Views(ctx))), 0)
 	ok(s.Drop(ctx, "notes"))
+}
+
+// assertDatabases creates and drops a database on servers, and checks the
+// file-based engines refuse.
+func assertDatabases(t *testing.T, ctx context.Context, conn string) {
+	t.Helper()
+	s := schema.On(conn)
+	engine := must(s.DriverName(ctx))
+	err := s.CreateDatabase(ctx, "storm_scratch")
+	if engine == "sqlite" || engine == "duckdb" {
+		_, refused := errors.AsType[*schema.UnsupportedError](err)
+		eq(t, engine+" refuses databases", refused, true)
+		return
+	}
+	ok(err)
+	eq(t, engine+" duplicate database fails", s.CreateDatabase(ctx, "storm_scratch") != nil, true)
+	ok(s.DropDatabaseIfExists(ctx, "storm_scratch"))
+	ok(s.DropDatabaseIfExists(ctx, "storm_scratch"))
 }

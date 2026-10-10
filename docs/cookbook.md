@@ -806,6 +806,10 @@ views, err := schema.Default().Views(ctx)
 err = schema.Default().DropViewIfExists(ctx, "active_users")
 ```
 
+`CreateDatabase(ctx, name)` and `DropDatabaseIfExists(ctx, name)` manage
+databases on Postgres, MySQL, MariaDB and ClickHouse servers; SQLite and
+DuckDB databases are files you open with `orm.Open`, so they refuse.
+
 Indexes can be partial or cover an expression:
 
 ```go

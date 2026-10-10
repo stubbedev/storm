@@ -203,6 +203,7 @@ func TestDuckDB(t *testing.T) {
 	assertTimePrecision(t, ctx, "duck")
 	assertIndexForms(t, ctx, "duck")
 	assertViews(t, ctx, "duck")
+	assertDatabases(t, ctx, "duck")
 
 	// Flat files: DuckDB reads CSV straight from the builder.
 	csv := t.TempDir() + "/flat.csv"
@@ -304,6 +305,7 @@ func TestClickHouse(t *testing.T) {
 	assertTimePrecision(t, ctx, "ch")
 	assertIndexForms(t, ctx, "ch")
 	assertViews(t, ctx, "ch")
+	assertDatabases(t, ctx, "ch")
 	refusesExampleSchema(ctx, t, "ch", "clickhouse", "create_countries_table")
 }
 
