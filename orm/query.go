@@ -574,7 +574,7 @@ func unionResult(b *SQL, union bool, f frag) {
 // (or by key), filtered on that number and returned in it. q.perParent and
 // the orders may be columns of a table q joins.
 func (q Query[M, K]) renderPerParent(b *SQL) {
-	const row = "per_parent_row"
+	const row, alias = "per_parent_row", "per_parent"
 	inner := q
 	inner.perParent, inner.orders, inner.limit, inner.offset = nil, nil, 0, 0
 	orders := q.orders
@@ -594,7 +594,9 @@ func (q Query[M, K]) renderPerParent(b *SQL) {
 		if i > 0 {
 			b.Write(", ")
 		}
-		b.Col(q.table.Name, c)
+		b.Ident(alias)
+		b.Write(".")
+		b.Ident(c)
 	}
 	for _, e := range q.extras {
 		b.Write(", ")
@@ -611,7 +613,7 @@ func (q Query[M, K]) renderPerParent(b *SQL) {
 		b.Ident(row)
 	})
 	b.Write(") AS ")
-	b.Ident(q.table.Name)
+	b.Ident(alias)
 	b.Write(" WHERE ")
 	b.Ident(row)
 	b.Write(" > ", strconv.Itoa(q.offset))
