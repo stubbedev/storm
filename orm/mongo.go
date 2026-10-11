@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -26,6 +27,50 @@ import (
 type MongoStore struct {
 	client *mongo.Client
 	db     *mongo.Database
+
+	topologyMu  sync.Mutex
+	topologySet bool // canTransact is known
+	canTransact bool // a replica set or sharded cluster
+}
+
+// transactional reports whether the deployment runs multi-document
+// transactions (a replica set or sharded cluster), asking it once.
+func (s *MongoStore) transactional(ctx context.Context) (bool, error) {
+	s.topologyMu.Lock()
+	defer s.topologyMu.Unlock()
+	if s.topologySet {
+		return s.canTransact, nil
+	}
+	var hello struct {
+		SetName string `bson:"setName"`
+		Msg     string `bson:"msg"`
+	}
+	if err := s.db.RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}).Decode(&hello); err != nil {
+		return false, fmt.Errorf("orm: mongo reading the deployment topology: %w", err)
+	}
+	s.topologySet, s.canTransact = true, hello.SetName != "" || hello.Msg == "isdbgrid"
+	return s.canTransact, nil
+}
+
+// allOrNothing runs a write of n documents so it applies whole: as is for
+// one document or inside the caller's transaction, in its own transaction
+// where the deployment has them, and otherwise as is with undo, which
+// reverts what a failed write managed to apply.
+func (s *MongoStore) allOrNothing(ctx context.Context, n int, write func(context.Context) error, undo func(context.Context, error) error) error {
+	if n < 2 || mongo.SessionFromContext(ctx) != nil {
+		return write(ctx)
+	}
+	tx, err := s.transactional(ctx)
+	if err != nil {
+		return err
+	}
+	if tx {
+		return s.Transaction(ctx, write)
+	}
+	if err := write(ctx); err != nil {
+		return errors.Join(err, undo(ctx, err))
+	}
+	return nil
 }
 
 // OpenMongo connects and registers a MongoDB connection.
@@ -449,18 +494,42 @@ func (s *MongoStore) InsertDocs(ctx context.Context, table, key string, docs []m
 		return nil
 	}
 	elems := make([]any, len(docs))
+	ids := make(bson.A, len(docs))
 	for i, doc := range docs {
 		d, err := mongoKeyed(doc, key)
 		if err != nil {
 			return fmt.Errorf("orm: mongo insert into %s: %w", table, err)
 		}
-		elems[i] = d
+		elems[i], ids[i] = d, d[0].Value
 	}
-	if _, err := s.coll(table).InsertMany(ctx, elems); err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			return &DuplicateKeyError{Table: table, Key: key, Err: err}
-		}
-		return fmt.Errorf("orm: mongo insert into %s: %w", table, err)
+	coll := s.coll(table)
+	err := s.allOrNothing(ctx, len(elems), func(ctx context.Context) error {
+		_, err := coll.InsertMany(ctx, elems)
+		return err
+	}, func(ctx context.Context, err error) error { return undoInserted(ctx, coll, ids, err) })
+	switch {
+	case err == nil:
+		return nil
+	case mongo.IsDuplicateKeyError(err):
+		return &DuplicateKeyError{Table: table, Key: key, Err: err}
+	}
+	return fmt.Errorf("orm: mongo insert into %s: %w", table, err)
+}
+
+// undoInserted deletes the documents (by their _id values, ids) an
+// ordered InsertMany stored before the write error err reports; without a
+// write error what was stored is unknown, which it reports instead.
+func undoInserted(ctx context.Context, coll *mongo.Collection, ids bson.A, err error) error {
+	bulk, ok := errors.AsType[mongo.BulkWriteException](err)
+	if !ok || len(bulk.WriteErrors) == 0 {
+		return errors.New("the insert failed without a write error, so some documents may be stored")
+	}
+	stored := ids[:slices.MinFunc(bulk.WriteErrors, func(a, b mongo.BulkWriteError) int { return a.Index - b.Index }).Index]
+	if len(stored) == 0 {
+		return nil
+	}
+	if _, err := coll.DeleteMany(ctx, bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: stored}}}}); err != nil {
+		return fmt.Errorf("undoing the %d documents stored before the failure: %w", len(stored), err)
 	}
 	return nil
 }
@@ -508,7 +577,14 @@ func (s *MongoStore) UpsertDocs(ctx context.Context, table, key string, docs []m
 		}
 		models[i] = mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(changes).SetUpsert(true)
 	}
-	if _, err := s.coll(table).BulkWrite(ctx, models); err != nil {
+	coll := s.coll(table)
+	err := s.allOrNothing(ctx, len(models), func(ctx context.Context) error {
+		_, err := coll.BulkWrite(ctx, models)
+		return err
+	}, func(context.Context, error) error {
+		return errors.New("a standalone MongoDB server has no transactions, so upserts before the failure stay")
+	})
+	if err != nil {
 		return fmt.Errorf("orm: mongo upsert into %s: %w", table, err)
 	}
 	return nil

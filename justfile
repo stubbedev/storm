@@ -63,7 +63,7 @@ test-clickhouse:
 
 # Run the MongoDB tests.
 test-mongo:
-    STORM_TEST_MONGO='{{mongo_dsn}}' go test -count=1 -p 1 -run TestMongo ./example/models/
+    STORM_TEST_MONGO='{{mongo_dsn}}' go test -count=1 -p 1 -run TestMongo ./example/models/ ./orm/
 
 # Run the Qdrant tests.
 test-qdrant:

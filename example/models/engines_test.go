@@ -245,6 +245,9 @@ func assertDocKeys(t *testing.T, ctx context.Context, conn string, upsertByOther
 	err := notes.Create(ctx, &again)
 	eq(t, conn+" a taken key is a unique violation", orm.IsUniqueViolation(err), true)
 	eq(t, conn+" a taken key keeps the first", must(notes.Find(ctx, first.ID)).Title, "first")
+	batch := []Note{{ID: "00000000-0000-4000-8000-0000000000b1", Title: "batch"}, {ID: first.ID, Title: "clash"}, {ID: "00000000-0000-4000-8000-0000000000b3", Title: "batch"}}
+	eq(t, conn+" a batch with a taken key fails", orm.IsUniqueViolation(notes.Insert(ctx, batch...)), true)
+	eq(t, conn+" a failed batch stores nothing", must(notes.Where(Notes.Title.Eq("batch")).Count(ctx)), int64(0))
 	found := must(notes.CreateOrFirst(ctx, orm.Attrs(Notes.ID.Set(first.ID)), Notes.Title.Set("third")))
 	eq(t, conn+" createOrFirst finds the taken key", found.Title, "first")
 
