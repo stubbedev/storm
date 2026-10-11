@@ -425,6 +425,23 @@ func TestDuckDBSchema(t *testing.T) {
 	check(t, s.Table(ctx, "tags", func(t *Blueprint) { t.DropIndexOn("name") }))
 	check(t, s.Rename(ctx, "tags", "labels"))
 	check(t, s.Drop(ctx, "labels"))
+	check(t, s.Create(ctx, "gadgets", func(t *Blueprint) { t.String("name").Index() }))
+	widen := &Migrator{Connection: conn, Table: "gadget_migrations", Migrations: []Migration{{
+		Name: "2026_01_01_000001_widen_gadgets",
+		Up: func(ctx context.Context, s *Builder) error {
+			return s.Table(ctx, "gadgets", func(t *Blueprint) {
+				t.DropIndexOn("name")
+				t.String("name", 500).Change()
+			})
+		},
+		Down: func(context.Context, *Builder) error { return nil },
+	}}}
+	_, err = widen.Migrate(ctx, false)
+	failed(t, "duckdb refuses dropping and changing in one migration transaction", err, "NoTransaction")
+	widen.Migrations[0].NoTransaction = true
+	check(t, second(widen.Migrate(ctx, false)))
+	check(t, s.Drop(ctx, "gadgets"))
+	check(t, s.Drop(ctx, "gadget_migrations"))
 	failed(t, "duckdb cannot alter a referenced table", s.Table(ctx, "it's", func(t *Blueprint) { t.Integer("votes").Default(0) }), "Dependency")
 	ok, err := s.HasColumn(ctx, "it's", "votes")
 	check(t, err)

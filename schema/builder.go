@@ -94,6 +94,9 @@ func (s *Builder) Table(ctx context.Context, table string, fn func(*Blueprint)) 
 		return err
 	}
 	if x.g.engine == engineDuckDB && len(drops) > 0 && len(stmts) > 0 {
+		if _, inTx := x.db.(*sql.Tx); inTx && x.pretend == nil {
+			return fmt.Errorf("schema: duckdb cannot drop and change table %s in one transaction: the drops must commit before the table changes; mark the migration NoTransaction or split it into two", table)
+		}
 		if err := x.execAll(ctx, drops...); err != nil {
 			return err
 		}
