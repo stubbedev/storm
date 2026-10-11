@@ -197,20 +197,20 @@ func (x session) views(ctx context.Context) ([]string, error) {
 }
 
 func (x session) columns(ctx context.Context, table string) ([]ColumnInfo, error) {
-	autoinc := false
+	var sqliteDefs map[string]string
 	if x.g.engine == engineSQLite {
 		create, _, err := x.sqliteCreateSQL(ctx, table)
 		if err != nil {
 			return nil, err
 		}
-		autoinc = strings.Contains(strings.ToLower(create), "autoincrement")
+		sqliteDefs = parseCreate(create).defs
 	}
 	var out []ColumnInfo
 	err := x.introspect(ctx, "columns", map[engine]string{
 		engineSQLite:     `SELECT name, type, "notnull" = 0, dflt_value, pk = 1 AND lower(type) = 'integer' FROM pragma_table_xinfo(?) WHERE hidden != 1 ORDER BY cid`,
 		enginePostgres:   `SELECT column_name, data_type, is_nullable = 'YES', column_default, coalesce(column_default LIKE 'nextval(%', false) OR is_identity = 'YES' FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 ORDER BY ordinal_position`,
 		engineMySQL:      `SELECT column_name, column_type, is_nullable = 'YES', column_default, extra LIKE '%auto_increment%' FROM information_schema.columns WHERE table_schema = database() AND table_name = ? ORDER BY ordinal_position`,
-		engineDuckDB:     `SELECT column_name, data_type, is_nullable = 'YES', column_default, false FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position`,
+		engineDuckDB:     `SELECT column_name, data_type, is_nullable = 'YES', column_default, coalesce(column_default LIKE 'nextval(%', false) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position`,
 		engineClickHouse: `SELECT name, type, type LIKE 'Nullable%', if(default_kind = 'DEFAULT', default_expression, NULL), false FROM system.columns WHERE database = currentDatabase() AND table = ? ORDER BY position`,
 	}, []any{table}, func(r *sql.Rows) error {
 		var c ColumnInfo
@@ -225,7 +225,7 @@ func (x session) columns(ctx context.Context, table string) ([]ColumnInfo, error
 		if x.g.engine == engineMariaDB && c.Default != nil {
 			c.Default = mariadbDefault(*c.Default)
 		}
-		c.AutoIncrement = auto && (autoinc || x.g.engine != engineSQLite)
+		c.AutoIncrement = auto && (x.g.engine != engineSQLite || autoincrementDef(sqliteDefs[c.Name]))
 		out = append(out, c)
 		return nil
 	})

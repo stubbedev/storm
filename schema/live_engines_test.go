@@ -365,6 +365,19 @@ func TestSQLiteRebuild(t *testing.T) {
 	fks, err = s.GetForeignKeys(ctx, "keywords")
 	check(t, err)
 	want(t, "a named foreign key drops by its name", len(fks), 1)
+
+	check(t, s.Create(ctx, "pairs", func(t *Blueprint) {
+		t.Integer("a")
+		t.Integer("b")
+		t.String("note").Default("autoincrement")
+		t.Primary("a", "b")
+	}))
+	cols, err := s.GetColumns(ctx, "pairs")
+	check(t, err)
+	want(t, "no column of a composite key auto-increments", slices.ContainsFunc(cols, func(c ColumnInfo) bool { return c.AutoIncrement }), false)
+	cols, err = s.GetColumns(ctx, "keywords")
+	check(t, err)
+	want(t, "an AUTOINCREMENT key auto-increments", cols[0].Name == "id" && cols[0].AutoIncrement, true)
 }
 
 func TestDuckDBSchema(t *testing.T) {
@@ -394,6 +407,10 @@ func TestDuckDBSchema(t *testing.T) {
 	check(t, s.Create(ctx, "keyed", func(t *Blueprint) { t.ID().Primary(); t.String("code") }))
 	execOn(t, ctx, conn, "INSERT INTO keyed (code) VALUES ('a'), ('b')")
 	want(t, "ID().Primary() declares one auto-incrementing key", column[int64](t, ctx, conn, "SELECT id FROM keyed ORDER BY id"), []int64{1, 2})
+	cols, err := s.GetColumns(ctx, "keyed")
+	check(t, err)
+	want(t, "a sequence-backed key auto-increments", cols[0].Name == "id" && cols[0].AutoIncrement, true)
+	want(t, "other columns do not", cols[1].AutoIncrement, false)
 	failed(t, "duckdb refuses renaming a table fed by a sequence", s.Rename(ctx, "keyed", "old_keyed"), "draws from a sequence")
 	check(t, s.Drop(ctx, "keyed"))
 	check(t, s.Create(ctx, "tags", func(t *Blueprint) { t.String("name").Index() }))
