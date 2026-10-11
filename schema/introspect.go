@@ -164,7 +164,7 @@ func (x session) tables(ctx context.Context) ([]string, error) {
 			WHERE c.relkind IN ('r', 'p') AND n.nspname = current_schema() AND ` + pgUserRelation + ` ORDER BY c.relname`,
 		engineMySQL:      "SELECT table_name FROM information_schema.tables WHERE table_schema = database() AND table_type = 'BASE TABLE' ORDER BY table_name",
 		engineDuckDB:     "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name",
-		engineClickHouse: "SELECT name FROM system.tables WHERE database = currentDatabase() AND engine != 'View' ORDER BY name",
+		engineClickHouse: "SELECT name FROM system.tables WHERE database = currentDatabase() AND engine NOT IN ('View', 'MaterializedView') AND NOT startsWith(name, '.inner') ORDER BY name",
 	}, nil, func(r *sql.Rows) error {
 		var n string
 		if err := r.Scan(&n); err != nil {
@@ -184,7 +184,7 @@ func (x session) views(ctx context.Context) ([]string, error) {
 			WHERE c.relkind = 'v' AND n.nspname = current_schema() AND ` + pgUserRelation + ` ORDER BY c.relname`,
 		engineMySQL:      "SELECT table_name FROM information_schema.views WHERE table_schema = database() ORDER BY table_name",
 		engineDuckDB:     "SELECT view_name FROM duckdb_views() WHERE NOT internal AND schema_name = current_schema() ORDER BY view_name",
-		engineClickHouse: "SELECT name FROM system.tables WHERE database = currentDatabase() AND engine = 'View' ORDER BY name",
+		engineClickHouse: "SELECT name FROM system.tables WHERE database = currentDatabase() AND engine IN ('View', 'MaterializedView') ORDER BY name",
 	}, nil, func(r *sql.Rows) error {
 		var n string
 		if err := r.Scan(&n); err != nil {
@@ -211,7 +211,7 @@ func (x session) columns(ctx context.Context, table string) ([]ColumnInfo, error
 		enginePostgres:   `SELECT column_name, data_type, is_nullable = 'YES', column_default, coalesce(column_default LIKE 'nextval(%', false) OR is_identity = 'YES' FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 ORDER BY ordinal_position`,
 		engineMySQL:      `SELECT column_name, column_type, is_nullable = 'YES', column_default, extra LIKE '%auto_increment%' FROM information_schema.columns WHERE table_schema = database() AND table_name = ? ORDER BY ordinal_position`,
 		engineDuckDB:     `SELECT column_name, data_type, is_nullable = 'YES', column_default, coalesce(column_default LIKE 'nextval(%', false) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position`,
-		engineClickHouse: `SELECT name, type, type LIKE 'Nullable%', if(default_kind = 'DEFAULT', default_expression, NULL), false FROM system.columns WHERE database = currentDatabase() AND table = ? ORDER BY position`,
+		engineClickHouse: `SELECT name, type, type LIKE 'Nullable(%' OR type LIKE 'LowCardinality(Nullable(%', if(default_kind = 'DEFAULT', default_expression, NULL), false FROM system.columns WHERE database = currentDatabase() AND table = ? ORDER BY position`,
 	}, []any{table}, func(r *sql.Rows) error {
 		var c ColumnInfo
 		var def sql.NullString

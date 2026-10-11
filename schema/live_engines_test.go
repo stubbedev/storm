@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2"
@@ -514,6 +515,19 @@ func TestClickHouseSchema(t *testing.T) {
 		t.Comment("events")
 	}
 	check(t, s.Create(ctx, "events", events))
+	execOn(t, ctx, conn, "CREATE TABLE tagged (id UInt64, tag LowCardinality(Nullable(String))) ENGINE = MergeTree ORDER BY id")
+	tagged, err := s.GetColumns(ctx, "tagged")
+	check(t, err)
+	want(t, "a LowCardinality(Nullable) column is nullable", tagged[1].Nullable, true)
+	execOn(t, ctx, conn, "CREATE MATERIALIZED VIEW tag_counts ENGINE = MergeTree ORDER BY tuple() AS SELECT tag, count() AS n FROM tagged GROUP BY tag")
+	tables, err := s.Tables(ctx)
+	check(t, err)
+	want(t, "tables leave out materialized views and their inner tables", slices.ContainsFunc(tables, func(name string) bool { return name == "tag_counts" || strings.HasPrefix(name, ".inner") }), false)
+	views, err := s.Views(ctx)
+	check(t, err)
+	want(t, "views include materialized views", views, []string{"tag_counts"})
+	check(t, s.DropAllViews(ctx))
+	check(t, s.Drop(ctx, "tagged"))
 	check(t, s.CreateIfNotExists(ctx, "events", events))
 	execOn(t, ctx, conn, "INSERT INTO events (id, subject_id, subject_type, ip_address, level) VALUES (?, ?, ?, ?, ?)",
 		"0190d0f5-0000-7000-8000-000000000000", 1, "posts", "10.0.0.1", "warn")
