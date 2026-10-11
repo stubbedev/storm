@@ -639,6 +639,7 @@ func (g grammar) checkTableOptions(bp *Blueprint, creating bool) error {
 }
 
 func (g grammar) compileCreate(bp *Blueprint) ([]string, error) {
+	g.indexForeignKeys(bp)
 	if err := g.checkBlueprintNames(bp); err != nil {
 		return nil, err
 	}
@@ -806,6 +807,7 @@ func (g grammar) compileAlter(bp *Blueprint) ([]string, error) {
 // compileAlterPhases compiles an alteration as the index and constraint
 // drops, then everything else.
 func (g grammar) compileAlterPhases(bp *Blueprint) (drops, stmts []string, err error) {
+	g.indexForeignKeys(bp)
 	if err := g.checkBlueprintNames(bp); err != nil {
 		return nil, nil, err
 	}
@@ -1129,6 +1131,33 @@ func (g grammar) mysqlAlgorithm(idx *Index) string {
 	return " USING " + strings.ToUpper(idx.Algo)
 }
 
+// indexForeignKeys adds an index on the columns of every foreign key bp
+// declares that no index of bp leads with, on the engines that do not
+// index a foreign key's columns themselves (Postgres, SQLite): without one,
+// loading a parent's children, or deleting a parent, reads the child table
+// in full. MySQL and MariaDB create that index on their own. It runs once
+// per blueprint; the indexes it adds count as covering on a second run.
+func (g grammar) indexForeignKeys(bp *Blueprint) {
+	if g.engine != enginePostgres && g.engine != engineSQLite {
+		return
+	}
+	for _, fk := range slices.Clone(bp.commands) {
+		if fk.kind != cmdForeign {
+			continue
+		}
+		cols := fk.foreign.Columns
+		covered := slices.ContainsFunc(bp.commands, func(c *command) bool {
+			return (c.kind == cmdPrimary || c.kind.createsIndex()) && len(c.columns) >= len(cols) && slices.Equal(c.columns[:len(cols)], cols)
+		})
+		if !covered {
+			bp.commands = append(bp.commands, &command{
+				kind: cmdIndex, columns: cols, implied: true,
+				index: &Index{IndexName: indexName(bp.table, suffixIndex, cols), Columns: cols},
+			})
+		}
+	}
+}
+
 func (g grammar) createIndex(table string, cmd *command, ifNot bool) (string, error) {
 	idx := cmd.index
 	if g.engine == engineClickHouse {
@@ -1139,7 +1168,7 @@ func (g grammar) createIndex(table string, cmd *command, ifNot bool) (string, er
 		return "", err
 	}
 	exists := ""
-	if ifNot && !g.mysqlFamily() {
+	if (ifNot || cmd.implied) && !g.mysqlFamily() {
 		exists = "IF NOT EXISTS "
 	}
 	name, on := exists+g.quote(idx.IndexName), " ON "+g.quote(table)

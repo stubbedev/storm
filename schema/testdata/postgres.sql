@@ -18,3 +18,4 @@ DO $storm$ BEGIN IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = '"fligh
 ALTER TABLE "flights" DROP COLUMN "ref"
 ALTER INDEX "flights_code_unique" RENAME TO "flights_code_uq"
 ALTER TABLE "flights" ADD CONSTRAINT "flights_airline_id_foreign" FOREIGN KEY ("airline_id") REFERENCES "carriers" ("id") ON DELETE SET NULL
+CREATE INDEX IF NOT EXISTS "flights_airline_id_index" ON "flights" ("airline_id")

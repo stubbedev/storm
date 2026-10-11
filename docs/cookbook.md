@@ -796,7 +796,7 @@ every engine.
 ## Schema builder
 
 ```go
-err := schema.Create("flights", func(t *schema.Blueprint) {
+err := schema.Create(ctx, "flights", func(t *schema.Blueprint) {
 	t.ID()
 	t.ForeignID("airline_id").Constrained().CascadeOnDelete()
 	t.String("name", 100).Comment("flight name")
@@ -825,6 +825,12 @@ err = schema.Table(ctx, "flights", func(t *schema.Blueprint) {
 	t.Foreign("airline_id").References("id").On("carriers").NullOnDelete()
 })
 ```
+
+A foreign key's columns get an index (`flights_airline_id_index`) on
+Postgres and SQLite, which, unlike MySQL and MariaDB, do not index them on
+their own; without it, loading a parent's children or deleting a parent
+reads the whole child table. An index that already leads with those
+columns counts, and the implied one is created only if missing.
 
 **Column types:** `ID`, `BigIncrements`, `Increments`, `Medium/Small/TinyIncrements`,
 `String`, `Char`, `Tiny/Medium/LongText`, `Text`, `Tiny/Small/Medium/Big Integer`,

@@ -355,8 +355,11 @@ func TestBlueprintNames(t *testing.T) {
 	type Tenant struct{}
 	tenants := &orm.Table[Tenant, string]{Name: "tenants", PrimaryKey: "ulid", KeyType: orm.KeyULID}
 	stmts = mustCreate(t, postgresG, "sites", func(t *Blueprint) { t.ForeignIDFor(tenants).Constrained() })
-	want(t, "ForeignIDFor a ULID model", stmts, []string{`CREATE TABLE "sites" ("tenant_ulid" char(26) NOT NULL, ` +
-		`CONSTRAINT "sites_tenant_ulid_foreign" FOREIGN KEY ("tenant_ulid") REFERENCES "tenants" ("ulid"))`})
+	want(t, "ForeignIDFor a ULID model", stmts, []string{
+		`CREATE TABLE "sites" ("tenant_ulid" char(26) NOT NULL, ` +
+			`CONSTRAINT "sites_tenant_ulid_foreign" FOREIGN KEY ("tenant_ulid") REFERENCES "tenants" ("ulid"))`,
+		`CREATE INDEX IF NOT EXISTS "sites_tenant_ulid_index" ON "sites" ("tenant_ulid")`,
+	})
 	manual := &orm.Table[Tenant, string]{Name: "tenants", PrimaryKey: "code", KeyType: orm.KeyManual}
 	_, err = create(postgresG, "sites", func(t *Blueprint) { t.ForeignIDFor(manual).Constrained() })
 	failed(t, "ForeignIDFor a manual key", err, "set manually", "tenant_code")
@@ -397,6 +400,26 @@ func TestTimeDefaultPrecision(t *testing.T) {
 	stmts, err := create(postgresG, "moments", func(t *Blueprint) { t.Timestamp("at", 1).Default(half) })
 	check(t, err)
 	want(t, "the default literal keeps the fraction", strings.Contains(stmts[0], "DEFAULT '2026-01-02 03:04:05.5'"), true)
+}
+
+func TestForeignKeyIndexes(t *testing.T) {
+	children := func(t *Blueprint) {
+		t.ID()
+		t.ForeignID("parent_id").Constrained("parents")
+		t.ForeignID("owner_id").Constrained("owners")
+		t.Index("owner_id", "created_at")
+		t.Timestamp("created_at")
+	}
+	for _, c := range []struct {
+		g       grammar
+		indexed bool
+	}{{postgresG, true}, {sqliteG, true}, {mysqlG, false}} {
+		stmts := strings.Join(mustCreate(t, c.g, "children", children), "\n")
+		want(t, string(c.g.engine)+" indexes a foreign key's columns", strings.Contains(stmts, "children_parent_id_index"), c.indexed)
+		want(t, string(c.g.engine)+" leaves a foreign key an index already leads with", strings.Contains(stmts, "children_owner_id_index"), false)
+	}
+	stmts := mustAlter(t, postgresG, "children", func(t *Blueprint) { t.ForeignID("team_id").Constrained("teams") })
+	want(t, "an added foreign key gets its index if missing", stmts[len(stmts)-1], `CREATE INDEX IF NOT EXISTS "children_team_id_index" ON "children" ("team_id")`)
 }
 
 func TestRenamedOwned(t *testing.T) {

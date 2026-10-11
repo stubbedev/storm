@@ -117,7 +117,7 @@ func TestLiveFixes(t *testing.T) {
 			}
 		}
 		slices.Sort(names)
-		want(t, "a renamed table's indexes follow it", names, []string{"old_planes_model_index", "old_planes_tail_unique"})
+		want(t, "a renamed table's indexes follow it", names, []string{"old_planes_keyed_id_index", "old_planes_model_index", "old_planes_tail_unique"})
 	}
 	if x.g.engine != engineSQLite {
 		fks, err := s.GetForeignKeys(ctx, "old_planes")

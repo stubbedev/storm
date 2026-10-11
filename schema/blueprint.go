@@ -115,6 +115,9 @@ type command struct {
 	from    string
 	to      string
 	foreign *Foreign
+	// implied marks an index storm adds itself (on a foreign key's
+	// columns); it is created only if missing.
+	implied bool
 }
 
 // Column is a column definition with chainable modifiers.
