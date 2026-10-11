@@ -456,6 +456,13 @@ users, err := Users.Query().
 	Get()
 
 err = orm.Load(ctx, users, UserCountry) // $users->load('country')
+// A Limit or Offset in an eager scope applies to each parent, for every
+// relation kind: each user's two most viewed posts, each user's newest role.
+users, err = Users.Query().
+	With(UserPosts, func(q PostQuery) PostQuery { return q.OrderBy(Posts.Views.Desc()).Limit(2) }).
+	With(UserRoles, func(q RoleQuery) RoleQuery { return q.OrderBy(Roles.ID.Desc()).Limit(1) }).
+	Get()
+
 err = orm.LoadMissing(ctx, users, UserPosts) // only the users whose posts are not loaded yet
 
 // MorphTo owners are of several models, so scopes go on each target

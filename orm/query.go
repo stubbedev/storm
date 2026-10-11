@@ -571,7 +571,8 @@ func unionResult(b *SQL, union bool, f frag) {
 
 // renderPerParent applies limit and offset to each parent's rows, not to
 // all of them: the rows are numbered per q.perParent value in q's order
-// (or by key) and filtered on that number.
+// (or by key), filtered on that number and returned in it. q.perParent and
+// the orders may be columns of a table q joins.
 func (q Query[M, K]) renderPerParent(b *SQL) {
 	const row = "per_parent_row"
 	inner := q
@@ -620,7 +621,7 @@ func (q Query[M, K]) renderPerParent(b *SQL) {
 		b.Write(" <= ", strconv.Itoa(q.offset+q.limit))
 	}
 	b.Write(" ORDER BY ")
-	writeOrders(b)
+	b.Ident(row)
 }
 
 // persistedColumns are the columns the query selects from its table.

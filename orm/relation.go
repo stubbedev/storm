@@ -788,12 +788,12 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) mark() loadMark[M] {
 }
 
 func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) eagerLoad(ctx context.Context, conn string, parents []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
-	scope := chain(scopes)
 	keys := uniqueKeys(parents, r.parentKey, false)
 	if len(keys) == 0 {
 		return nil
 	}
-	pivots, err := relQuery(r.pivot, conn).Where(r.pivotParent.In(keys...)).Where(r.pivotConds()...).WithContext(ctx).Get()
+	q := chain(scopes)(relQuery(r.related, conn).Scope(r.scopes...))
+	pivots, err := r.pivotsOf(ctx, conn, keys, q)
 	if err != nil {
 		return err
 	}
@@ -808,11 +808,8 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) eagerLoad(ctx context.Con
 	}
 	out := map[J][]R{}
 	if len(rks) > 0 {
-		q := scope(relQuery(r.related, conn).Where(r.relatedKey.In(rks...)).Scope(r.scopes...))
-		if err := sharedRowsLimit(q, r.related.Name); err != nil {
-			return err
-		}
-		related, err := q.WithContext(ctx).Get()
+		q.limit, q.offset = 0, 0
+		related, err := q.Where(r.relatedKey.In(rks...)).WithContext(ctx).Get()
 		if err != nil {
 			return err
 		}
@@ -835,6 +832,42 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) eagerLoad(ctx context.Con
 		r.set(&parents[i], rs)
 	}
 	return nil
+}
+
+// pivotsOf reads the pivot rows of the parents with keys. When the eager
+// load's scope q has a Limit or Offset, it applies per parent: the pivot
+// rows are joined to the related rows q allows, numbered per parent in q's
+// order, and cut there.
+func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) pivotsOf(ctx context.Context, conn string, keys []J, q Query[R, RK]) ([]P, error) {
+	pq := relQuery(r.pivot, conn).Where(r.pivotParent.In(keys...)).Where(r.pivotConds()...)
+	if q.limit == 0 && q.offset == 0 {
+		return pq.WithContext(ctx).Get()
+	}
+	related, err := perParentSource(q)
+	if err != nil {
+		return nil, err
+	}
+	pq = pq.Join(r.related, r.relatedKey.EqCol(r.pivotRelated)).WhereOf(related.where...).OrderByOf(related.orders...)
+	pq.perParent, pq.limit, pq.offset = r.pivotParent, q.limit, q.offset
+	return pq.WithContext(ctx).Get()
+}
+
+// perParentSource is an eager-load scope's query as conditions and orders
+// another query can take over to number its rows per parent: its where
+// clause with global scopes applied, and its orders, by key when it has
+// none. A scope that joins, groups or unions cannot be taken over.
+func perParentSource[R any, RK comparable](q Query[R, RK]) (Query[R, RK], error) {
+	q = q.prepared()
+	if len(q.joins) > 0 || len(q.groups) > 0 || len(q.having) > 0 || len(q.unions) > 0 {
+		return q, fmt.Errorf("orm: eager loading %s: a Limit or Offset per parent cannot combine with joins, groups or unions in the scope", q.table.Name)
+	}
+	if q.table.PrimaryKey == "" && len(q.orders) == 0 {
+		return q, fmt.Errorf("orm: eager loading %s: a Limit or Offset per parent needs an order, and the table has no key to order by", q.table.Name)
+	}
+	if len(q.orders) == 0 {
+		q.orders = []Order[R]{q.table.keyOrder()}
+	}
+	return q, nil
 }
 
 func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) correlate(scope func(Query[R, RK]) Query[R, RK]) Query[R, RK] {
@@ -1015,8 +1048,16 @@ func (h throughBase[M, MK, T, TK, R, RK, J, TJ]) load(ctx context.Context, conn 
 		parentsOf[tk] = append(parentsOf[tk], h.firstKey.Get(&throughs[i]))
 	}
 	q := scope(relQuery(h.related, conn).Where(h.secondKey.In(tks...)))
-	if err := sharedRowsLimit(q, h.related.Name); err != nil {
-		return nil, err
+	if q.limit > 0 || q.offset > 0 {
+		src, err := perParentSource(q)
+		if err != nil {
+			return nil, err
+		}
+		limited := h.joined(relQuery(h.related, conn)).WhereOf(h.firstKey.In(keys...))
+		limited.where = append(limited.where, src.where...)
+		limited.orders, limited.eager, limited.selects = src.orders, src.eager, src.selects
+		limited.scoped, limited.perParent, limited.limit, limited.offset = true, h.firstKey, q.limit, q.offset
+		q = limited
 	}
 	related, err := q.WithContext(ctx).Get()
 	if err != nil {
@@ -1287,16 +1328,6 @@ func (r *MorphToRel[M, MK, J]) HasMorph[R any, RK comparable](key Column[R, RK, 
 }
 
 // ---------------------------------------------------------------------------
-
-// sharedRowsLimit refuses a limit in the eager-load scope of a relation
-// whose related rows are shared between parents (many-to-many, through):
-// one query cannot apply it per parent.
-func sharedRowsLimit[R any, RK comparable](q Query[R, RK], table string) error {
-	if q.limit == 0 && q.offset == 0 {
-		return nil
-	}
-	return fmt.Errorf("orm: eager loading %s: a Limit or Offset in this relation's scope cannot apply per parent; load each parent's %s with Of instead", table, table)
-}
 
 func relQuery[R any, RK comparable](t *Table[R, RK], conn string) Query[R, RK] {
 	q := t.Query()

@@ -361,8 +361,30 @@ func TestEagerLoading(t *testing.T) {
 		second := perParent(1)[i]
 		eq(t, u.Name+": eager offset applies per parent", titles(second.Posts), all[min(1, len(all)):min(2, len(all))])
 	}
-	_, err := Users.Query().With(UserRoles, func(q RoleQuery) RoleQuery { return q.Limit(1) }).Get()
-	eq(t, "many-to-many eager limit refused", err != nil && strings.Contains(err.Error(), "cannot apply per parent"), true)
+	roles := func(offset int) [2][]string {
+		us := must(Users.Query().Where(Users.ID.In(1, 2)).OrderBy(Users.ID.Asc()).
+			With(UserRoles, func(q RoleQuery) RoleQuery { return q.OrderBy(Roles.ID.Desc()).Limit(1).Offset(offset) }).
+			Get())
+		var out [2][]string
+		for i, u := range us {
+			out[i] = []string{}
+			for _, r := range u.Roles {
+				out[i] = append(out[i], r.Name+"/"+r.Pivot.GrantedBy)
+			}
+		}
+		return out
+	}
+	eq(t, "many-to-many eager limit applies per parent, to shared rows too", roles(0), [2][]string{{"editor/bob"}, {"editor/alice"}})
+	eq(t, "many-to-many eager offset applies per parent", roles(1), [2][]string{{"admin/system"}, {}})
+	byViews := func(q PostQuery) PostQuery { return q.OrderBy(Posts.Views.Desc(), Posts.ID.Asc()) }
+	allThrough := must(Countries.Query().OrderBy(Countries.ID.Asc()).With(CountryPosts, byViews).Get())
+	topThrough := must(Countries.Query().OrderBy(Countries.ID.Asc()).
+		With(CountryPosts, func(q PostQuery) PostQuery { return byViews(q).Limit(2) }).Get())
+	for i := range allThrough {
+		all := titles(allThrough[i].Posts)
+		eq(t, allThrough[i].Name+": through eager limit applies per parent", titles(topThrough[i].Posts), all[:min(2, len(all))])
+	}
+	var err error
 
 	posts := must(Posts.Query().OrderBy(Posts.ID.Asc()).With(PostAuthor).With(PostTags).Get())
 	eq(t, "belongsTo default (orphan)", posts[6].Author.Name, "Guest Author")

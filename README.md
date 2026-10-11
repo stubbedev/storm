@@ -648,7 +648,7 @@ valid operators after `orm.`.
 | `morphOne`, `morphMany`, `morphTo`, `morphToMany`, `morphedByMany` | same names |
 | `morphWith`, `constrain` on a `morphTo` eager load | `CommentCommentable.Constrain(orm.Target(Posts.ID, scopes...))` |
 | `latestOfMany`, `oldestOfMany`, `ofMany` (picked in SQL), `withDefault`, `chaperone`, `touches` | `OfMany(col, useMax)`, `WithDefault`, `Chaperone`, `Touches` |
-| `with`, nested and constrained eager loading, `load`, `loadMissing` | `With(rel, scopes...)`, `orm.Load`, `orm.LoadMissing` |
+| `with`, nested and constrained eager loading (limits per parent), `load`, `loadMissing` | `With(rel, scopes...)`, `orm.Load`, `orm.LoadMissing` |
 | `has`, `whereHas`, `doesntHave`, `whereRelation`, `whereHasMorph`, `whereMorphedTo` | `HasCount`, `WhereHas`, `WhereDoesntHave`, `WhereRelation`, `Rel.HasMorph`, `Rel.Is` |
 | `whereBelongsTo`, `whereAttachedTo` | `PostAuthor.Is(&u)`, `UserRoles.AttachedTo(&role)` |
 | `withCount/Sum/Avg/Min/Max/Exists`, `loadCount/Sum/Avg/Min/Max/Exists` | same names (`orm.LoadCount`, ...), into typed virtual columns |
