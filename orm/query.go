@@ -240,6 +240,38 @@ func (q Query[M, K]) joinSub[O any, OK comparable](kind string, sub Query[O, OK]
 	return q
 }
 
+// JoinLateral joins a subquery that may refer to the outer row's columns
+// (joinLateral: JOIN LATERAL (...) ON TRUE), e.g. each user's three latest
+// posts. Read its columns with Column.From(alias). Postgres, MySQL 8.0.14+
+// and DuckDB have lateral joins; elsewhere the query fails.
+func (q Query[M, K]) JoinLateral[O any, OK comparable](sub Query[O, OK], alias string) Query[M, K] {
+	return q.joinLateral("JOIN", sub, alias)
+}
+
+// LeftJoinLateral is JoinLateral keeping outer rows the subquery has no
+// rows for.
+func (q Query[M, K]) LeftJoinLateral[O any, OK comparable](sub Query[O, OK], alias string) Query[M, K] {
+	return q.joinLateral("LEFT JOIN", sub, alias)
+}
+
+func (q Query[M, K]) joinLateral[O any, OK comparable](kind string, sub Query[O, OK], alias string) Query[M, K] {
+	q.joins = append(slices.Clip(q.joins), func(b *SQL) {
+		if l, ok := b.Dialect.(lateralJoins); !ok || !l.lateralJoins() {
+			b.fail(fmt.Errorf("orm: %s has no lateral joins; select from a correlated subquery instead", b.Dialect.Name()))
+			return
+		}
+		b.Write(" ", kind, " LATERAL (")
+		sub.renderSelect(b, nil)
+		b.Write(") AS ")
+		b.Ident(alias)
+		b.Write(" ON TRUE")
+	})
+	return q
+}
+
+// lateralJoins reports whether a dialect has JOIN LATERAL.
+type lateralJoins interface{ lateralJoins() bool }
+
 // WhereFullText adds a full text match (see FullTextMatch).
 func (q Query[M, K]) WhereFullText(term string, cols ...AnyColumn[M]) Query[M, K] {
 	return q.Where(FullTextMatch(term, cols...))

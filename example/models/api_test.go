@@ -572,3 +572,27 @@ func TestLockWaits(t *testing.T) {
 	})
 	eq(t, "both transactions roll back", errors.Is(err, errRollBack), true)
 }
+
+func TestJoinLateral(t *testing.T) {
+	ctx := setup(t)
+	latest := Posts.Where(Posts.UserID.EqCol(Users.ID)).OrderBy(Posts.CreatedAt.Desc(), Posts.ID.Desc()).Limit(1)
+	query := Users.Query().
+		LeftJoinLateral(latest, "lp").
+		AddSelectAs(Users.LatestPostTitle, Posts.Title.From("lp")).
+		OrderBy(Users.ID.Asc())
+	d := must(orm.Connection(ctx, orm.DefaultConnection)).Dialect
+	if d == orm.SQLite || d == orm.MariaDB {
+		_, err := query.Get()
+		eq(t, d.Name()+" refuses lateral joins", err != nil && strings.Contains(err.Error(), "no lateral joins"), true)
+		return
+	}
+	users := must(query.Get())
+	eq(t, "leftJoinLateral reads each user's latest post", []string{users[0].Name, users[0].LatestPostTitle}, []string{"Alice", "Iterators"})
+	eq(t, "leftJoinLateral keeps users without posts", users[3].LatestPostTitle, "")
+	top := Posts.Where(Posts.UserID.EqCol(Users.ID)).OrderBy(Posts.Views.Desc(), Posts.ID.Asc()).Limit(2)
+	pairs := must(Users.Query().JoinLateral(top, "tp").Where(Users.ID.Eq(1)).
+		AddSelectAs(Users.LatestPostTitle, Posts.Title.From("tp")).
+		OrderByOf(Posts.Views.From("tp").Desc()).
+		Get())
+	eq(t, "joinLateral yields a row per subquery row", []string{pairs[0].LatestPostTitle, pairs[1].LatestPostTitle}, []string{"Generics in Go 1.27", "Iterators"})
+}

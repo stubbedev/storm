@@ -365,6 +365,8 @@ func (postgresDialect) Like(b *SQL, e AnyExpr, pattern string, caseless, not boo
 	standardLike(b, e, pattern, caseless, not)
 }
 
+func (postgresDialect) lateralJoins() bool { return true }
+
 func (postgresDialect) Lock(m LockMode, w LockWait) string {
 	return lockClause(map[LockMode]string{ForUpdate: " FOR UPDATE", ForShare: " FOR SHARE"}[m], w)
 }
@@ -527,6 +529,8 @@ func (mysqlDialect) InsertVerb(ignore bool) string {
 	return "INSERT"
 }
 
+func (mysqlDialect) lateralJoins() bool { return true }
+
 func (mysqlDialect) Lock(m LockMode, w LockWait) string {
 	return lockClause(map[LockMode]string{ForUpdate: " FOR UPDATE", ForShare: " FOR SHARE"}[m], w)
 }
@@ -632,6 +636,8 @@ type mariadbDialect struct{ mysqlDialect }
 
 func (mariadbDialect) Name() string    { return "mariadb" }
 func (mariadbDialect) Returning() bool { return true }
+
+func (mariadbDialect) lateralJoins() bool { return false }
 
 func (mariadbDialect) Lock(m LockMode, w LockWait) string {
 	return lockClause(map[LockMode]string{ForUpdate: " FOR UPDATE", ForShare: " LOCK IN SHARE MODE"}[m], w)

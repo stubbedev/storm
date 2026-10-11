@@ -325,6 +325,13 @@ func (c Column[M, K, V]) Name() string  { return c.name }
 func (c Column[M, K, V]) Get(m *M) V    { return *c.ptr(m) }
 func (c Column[M, K, V]) Ptr(m *M) *V   { return c.ptr(m) }
 func (c Column[M, K, V]) Asc() Order[M] { return Order[M]{f: c.order(" ASC"), e: c, col: c} }
+
+// From reads the column from a subquery joined under alias (JoinSub,
+// JoinLateral) instead of from its own table.
+func (c Column[M, K, V]) From(alias string) Scalar[M, V] {
+	return Scalar[M, V]{f: func(b *SQL) { b.Ident(alias); b.Write("."); b.Ident(c.name) }}
+}
+
 func (c Column[M, K, V]) Desc() Order[M] {
 	return Order[M]{f: c.order(" DESC"), e: c, col: c, desc: true}
 }

@@ -17,6 +17,8 @@ type duckdbDialect struct{ sqliteDialect }
 
 func (duckdbDialect) noSavepoints() {}
 
+func (duckdbDialect) lateralJoins() bool { return true }
+
 // renderArg writes a uint64 above the int64 range as a UBIGINT literal:
 // database/sql cannot bind it, and the text comes from the number itself.
 func (duckdbDialect) renderArg(b *SQL, v any) bool {

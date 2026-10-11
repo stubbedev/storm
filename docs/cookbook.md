@@ -226,6 +226,10 @@ Users.Query().
 counts := Posts.Query().Select(Posts.UserID).AddSelectAs(Posts.Views, orm.Count[Post]()).GroupBy(Posts.UserID)
 Users.Query().JoinSub(counts, "pc", Posts.UserID.EqCol(Users.ID), Posts.Views.Gte(2))
 
+// A lateral subquery sees the outer row; read its columns with From(alias).
+latest := Posts.Where(Posts.UserID.EqCol(Users.ID)).OrderBy(Posts.CreatedAt.Desc()).Limit(1)
+Users.Query().LeftJoinLateral(latest, "lp").AddSelectAs(Users.LatestPostTitle, Posts.Title.From("lp"))
+
 Users.Where(Users.Karma.Gt(90)).Union(Users.Where(Users.Name.Eq("Bob")))
 Users.Query().OrderBy(Users.Name.Asc()).Latest().InRandomOrder().Reorder(Users.ID.Desc())
 Users.Query().Limit(10).Offset(20) // or ForPage(3, 10)
