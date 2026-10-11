@@ -3,7 +3,7 @@
 #
 #   docker compose up -d --wait
 #   just test-all        # sqlite + postgres + mysql + mariadb + duckdb
-#                        # + clickhouse + mongo + qdrant
+#                        # + clickhouse + mongo (+ atlas search) + qdrant
 #
 # Each engine gets two empty databases: "storm" (default connection) and
 # "storm_audit" (the example's second connection).
@@ -91,6 +91,18 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+
+  mongo-atlas:
+    # MongoDB with its search engine (mongot), for vector search: plain
+    # mongod has none. Used by the MongoDB vector search tests only.
+    image: mongodb/mongodb-atlas-local:8.0
+    ports: ["127.0.0.1:17018:27017"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/runner", "healthcheck"]
+      interval: 2s
+      timeout: 30s
+      start_period: 120s
+      retries: 60
 
   qdrant:
     image: qdrant/qdrant:v1.15.1

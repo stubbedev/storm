@@ -220,3 +220,53 @@ func TestMongoFreshWithViews(t *testing.T) {
 	ok(schema.Run(ctx, migrator, []string{"wipe", "-drop-views"}, &out))
 	eq(t, "wipe -drop-views on a document store", must(s.HasTable(ctx, "toys")), false)
 }
+
+func TestMongoVectorSearch(t *testing.T) {
+	if os.Getenv("STORM_TEST_MONGO_ATLAS") == "" {
+		t.Skip("set STORM_TEST_MONGO_ATLAS to a MongoDB with search (mongodb/mongodb-atlas-local) to run")
+	}
+	current = t
+	ctx := context.Background()
+	store, err := orm.OpenMongo("mongo-atlas", os.Getenv("STORM_TEST_MONGO_ATLAS"), "stormvec"+strconv.FormatInt(time.Now().UnixNano()%100000, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close(ctx) })
+	s := schema.On("mongo-atlas")
+	t.Cleanup(func() { ok(s.DropAllTables(ctx)) })
+	ok(s.Create(ctx, "documents", func(t *schema.Blueprint) {
+		t.UUID("id").Primary()
+		t.String("title")
+		t.BigInteger("views")
+		t.Vector("vec", 3)
+		t.HnswIndex("vec", orm.L2)
+	}))
+	described := must(must(orm.Connection(ctx, "mongo-atlas")).Doc.(orm.DocSchema).DescribeCollection(ctx, "documents"))
+	eq(t, "the vector index is read back", *described.Vector, orm.DocVector{Field: "vec", Size: 3, Metric: orm.L2})
+	for _, d := range []Doc{
+		{Title: "near", Views: 1, Vec: orm.NewVector3(1, 0, 0)},
+		{Title: "far", Views: 2, Vec: orm.NewVector3(10, 10, 10)},
+		{Title: "middle", Views: 3, Vec: orm.NewVector3(5, 5, 5)},
+	} {
+		ok(Docs.Query().On("mongo-atlas").Create(&d))
+	}
+	nearest := func(qs ...orm.Cond[Doc]) []string {
+		docs := must(Docs.Query().On("mongo-atlas").Where(qs...).OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(1, 0, 0), orm.L2)).Limit(3).Get())
+		out := make([]string, len(docs))
+		for i, d := range docs {
+			out[i] = d.Title
+		}
+		return out
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for len(nearest()) < 3 && time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+	}
+	eq(t, "vector search ranks by distance", nearest(), []string{"near", "middle", "far"})
+	eq(t, "a filtered vector search", nearest(Docs.Views.Gt(1)), []string{"middle", "far"})
+	eq(t, "a vector read back", must(Docs.Query().On("mongo-atlas").Where(Docs.Title.Eq("far")).First()).Vec.String(), "[10,10,10]")
+	_, err = Docs.Query().On("mongo-atlas").OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(1, 0, 0), orm.L2)).Get()
+	eq(t, "a vector search without a limit is refused", orm.IsNotTranslatable(err), true)
+	_, err = Docs.Query().On("mongo-atlas").OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(1, 0, 0), orm.Cosine)).Limit(1).Get()
+	eq(t, "a metric the index does not measure is refused", err != nil && strings.Contains(err.Error(), "measures euclidean"), true)
+}

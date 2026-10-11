@@ -685,7 +685,7 @@ legitimately differs.
 | MariaDB | its own dialect: `INSERT ... RETURNING`, `LOCK IN SHARE MODE`; 11.7+ `VECTOR` columns with `VECTOR INDEX` (`t.HnswIndex`, euclidean or cosine) and `VEC_DISTANCE_*` ordering |
 | DuckDB | embedded OLAP; `orm.FromRaw("read_csv(?)", "f.csv")` queries flat files; auto-increment via sequences |
 | ClickHouse | `Update`/`Delete` are synchronous mutations, counted before they run; upserts read the taken keys first; no transactions or generated integer keys |
-| MongoDB | document store: the typed builder translates; joins, unions, subqueries and raw SQL refuse with `orm.ErrNotTranslatable`; keys are uuid/ulid/manual; migrations declare a validator |
+| MongoDB | document store: the typed builder translates; joins, unions, subqueries and raw SQL refuse with `orm.ErrNotTranslatable`; keys are uuid/ulid/manual; migrations declare a validator; `t.HnswIndex` creates a vector search index and `Nearest` (with a `Limit`) runs `$vectorSearch`, filterable on the declared fields — on Atlas or a local Atlas deployment, refused on a plain `mongod` |
 | Qdrant | vector store: collections are tables, `Nearest` ordering runs a similarity search; same refusals as MongoDB; migrations create collections and payload indexes |
 
 ## What Go doesn't allow

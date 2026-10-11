@@ -132,12 +132,11 @@ func (s *MongoStore) Collections(ctx context.Context) ([]string, error) {
 }
 
 // CreateCollection creates the collection with a $jsonSchema validator
-// enforcing the declared fields' types and presence, then its indexes.
-// MongoDB has no vector index outside Atlas, so a vector is refused.
+// enforcing the declared fields' types and presence, then its indexes and
+// its vector search index. Vector search needs MongoDB's search engine
+// (Atlas, or a local Atlas deployment); on a deployment without it the
+// collection is dropped again and the vector refused.
 func (s *MongoStore) CreateCollection(ctx context.Context, c Collection) error {
-	if c.Vector != nil {
-		return &ErrNotTranslatable{Reason: "vector indexes on MongoDB (Atlas Vector Search is not wired up; use Qdrant or pgvector)"}
-	}
 	opts := options.CreateCollection()
 	if len(c.Fields) > 0 {
 		opts.SetValidator(mongoValidator(c.Fields))
@@ -150,7 +149,132 @@ func (s *MongoStore) CreateCollection(ctx context.Context, c Collection) error {
 			return err
 		}
 	}
+	if c.Vector == nil {
+		return nil
+	}
+	if err := s.createVectorIndex(ctx, c); err != nil {
+		return errors.Join(err, s.DropCollection(context.WithoutCancel(ctx), c.Name))
+	}
 	return nil
+}
+
+// mongoSimilarities are the search index similarities of the metrics.
+var mongoSimilarities = map[VectorMetric]string{L2: "euclidean", Cosine: "cosine", InnerProduct: "dotProduct"}
+
+// mongoVectorIndex names a collection's vector search index, as the
+// schema package names an HNSW index.
+func mongoVectorIndex(collection, field string) string { return collection + "_" + field + "_hnsw" }
+
+// vectorIndexWait bounds how long a migration waits for a new vector
+// search index to become queryable.
+const vectorIndexWait = 2 * time.Minute
+
+// searchUnsupported turns MongoDB's "no search engine" error into a
+// refusal naming what is missing.
+func searchUnsupported(err error) error {
+	var ce mongo.CommandError
+	if errors.As(err, &ce) && ce.Code == 31082 {
+		return &ErrNotTranslatable{Reason: "vector search on this MongoDB deployment, which has no search engine (use Atlas or a local Atlas deployment)"}
+	}
+	return err
+}
+
+// createVectorIndex creates c's vector search index, with every declared
+// scalar field and the key as filter fields so that a vector search can
+// be filtered, and waits until it is queryable.
+func (s *MongoStore) createVectorIndex(ctx context.Context, c Collection) error {
+	v := c.Vector
+	fields := bson.A{bson.D{
+		{Key: "type", Value: "vector"},
+		{Key: "path", Value: v.Field},
+		{Key: "numDimensions", Value: v.Size},
+		{Key: "similarity", Value: mongoSimilarities[v.Metric]},
+	}}
+	fields = append(fields, bson.D{{Key: "type", Value: "filter"}, {Key: "path", Value: "_id"}})
+	for _, f := range c.Fields {
+		switch f.Kind {
+		case KindString, KindInt, KindFloat, KindBool, KindTime:
+			fields = append(fields, bson.D{{Key: "type", Value: "filter"}, {Key: "path", Value: f.Name}})
+		}
+	}
+	name := mongoVectorIndex(c.Name, v.Field)
+	_, err := s.coll(c.Name).SearchIndexes().CreateOne(ctx, mongo.SearchIndexModel{
+		Definition: bson.D{{Key: "fields", Value: fields}},
+		Options:    options.SearchIndexes().SetName(name).SetType("vectorSearch"),
+	})
+	if err != nil {
+		return fmt.Errorf("orm: mongo creating vector index %s: %w", name, searchUnsupported(err))
+	}
+	ctx, cancel := context.WithTimeout(ctx, vectorIndexWait)
+	defer cancel()
+	for {
+		ready, err := s.vectorIndexReady(ctx, c.Name, name)
+		if err != nil || ready {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("orm: mongo vector index %s did not become queryable: %w", name, ctx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func (s *MongoStore) vectorIndexReady(ctx context.Context, collection, name string) (bool, error) {
+	cur, err := s.coll(collection).SearchIndexes().List(ctx, options.SearchIndexes().SetName(name))
+	if err != nil {
+		return false, fmt.Errorf("orm: mongo reading vector index %s: %w", name, searchUnsupported(err))
+	}
+	var specs []struct {
+		Queryable bool `bson:"queryable"`
+	}
+	if err := cur.All(ctx, &specs); err != nil {
+		return false, fmt.Errorf("orm: mongo reading vector index %s: %w", name, err)
+	}
+	return len(specs) == 1 && specs[0].Queryable, nil
+}
+
+// vectorOf reads collection's vector from its vector search index; nil
+// when it has none, or the deployment has no search engine to hold one.
+func (s *MongoStore) vectorOf(ctx context.Context, collection string) (*DocVector, error) {
+	cur, err := s.coll(collection).SearchIndexes().List(ctx, nil)
+	if err != nil {
+		if IsNotTranslatable(searchUnsupported(err)) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("orm: mongo listing search indexes of %s: %w", collection, err)
+	}
+	var specs []struct {
+		Type             string `bson:"type"`
+		LatestDefinition struct {
+			Fields []struct {
+				Type          string `bson:"type"`
+				Path          string `bson:"path"`
+				NumDimensions int    `bson:"numDimensions"`
+				Similarity    string `bson:"similarity"`
+			} `bson:"fields"`
+		} `bson:"latestDefinition"`
+	}
+	if err := cur.All(ctx, &specs); err != nil {
+		return nil, fmt.Errorf("orm: mongo reading search indexes of %s: %w", collection, err)
+	}
+	for _, spec := range specs {
+		if spec.Type != "vectorSearch" {
+			continue
+		}
+		for _, f := range spec.LatestDefinition.Fields {
+			if f.Type != "vector" {
+				continue
+			}
+			for m, sim := range mongoSimilarities {
+				if sim == f.Similarity {
+					return &DocVector{Field: f.Path, Size: f.NumDimensions, Metric: m}, nil
+				}
+			}
+			return nil, fmt.Errorf("orm: mongo vector index on %s.%s has an unknown similarity %q", collection, f.Path, f.Similarity)
+		}
+	}
+	return nil, nil
 }
 
 func (s *MongoStore) DescribeCollection(ctx context.Context, name string) (Collection, error) {
@@ -208,6 +332,9 @@ func (s *MongoStore) DescribeCollection(ctx context.Context, name string) (Colle
 			}
 		}
 		c.Indexes = append(c.Indexes, idx)
+	}
+	if c.Vector, err = s.vectorOf(ctx, name); err != nil {
+		return Collection{}, err
 	}
 	return c, nil
 }
@@ -348,7 +475,7 @@ func mongoTypes(k FieldKind) bson.A {
 	case KindJSON:
 		return bson.A{"string", "object", "array"}
 	case KindVector:
-		return bson.A{"string", "array"}
+		return bson.A{"array"}
 	}
 	return nil
 }
@@ -407,12 +534,12 @@ func mongoFields(opts bson.Raw) ([]DocField, error) {
 const mongoNullsKey = "__storm_nulls_"
 
 func (s *MongoStore) FindDocs(ctx context.Context, p Plan) ([]map[string]any, error) {
-	if p.Vector != nil {
-		return nil, &ErrNotTranslatable{Reason: "vector search (MongoDB Atlas Vector Search is not wired up; use Qdrant or pgvector)"}
-	}
 	filter, err := mongoFilter(p)
 	if err != nil {
 		return nil, err
+	}
+	if p.Vector != nil {
+		return s.vectorSearch(ctx, p, filter)
 	}
 	sort, nullKeys := bson.D{}, bson.D{}
 	for i, o := range p.Orders {
@@ -472,6 +599,68 @@ func (s *MongoStore) FindDocs(ctx context.Context, p Plan) ([]map[string]any, er
 	var docs []map[string]any
 	if err := cursor.All(ctx, &docs); err != nil {
 		return nil, fmt.Errorf("orm: mongo find on %s: %w", p.Table, err)
+	}
+	for _, doc := range docs {
+		delete(doc, "_id")
+		for k, v := range doc {
+			doc[k] = fromBSON(v)
+		}
+	}
+	return docs, nil
+}
+
+// vectorSearch ranks the matching documents by distance from p.Vector with
+// $vectorSearch, an approximate nearest-neighbour search over the
+// collection's vector index. It needs a Limit (the k of the search), the
+// metric of the index, and no other order.
+func (s *MongoStore) vectorSearch(ctx context.Context, p Plan, filter bson.D) ([]map[string]any, error) {
+	v := p.Vector
+	switch {
+	case p.Limit == 0:
+		return nil, &ErrNotTranslatable{Reason: "a vector search without a Limit (MongoDB searches for the k nearest)"}
+	case len(p.Orders) > 0:
+		return nil, &ErrNotTranslatable{Reason: "ordering after a vector search on MongoDB"}
+	}
+	have, err := s.vectorOf(ctx, p.Table)
+	switch {
+	case err != nil:
+		return nil, err
+	case have == nil:
+		return nil, &ErrNotTranslatable{Reason: "a vector search on " + p.Table + ", which has no vector search index (or the deployment no search engine)"}
+	case have.Field != v.Column:
+		return nil, fmt.Errorf("orm: mongo vector search on %s.%s: the vector index is on %s", p.Table, v.Column, have.Field)
+	case have.Metric != v.Metric:
+		return nil, fmt.Errorf("orm: mongo vector search on %s.%s: the index measures %s, not the %s the order asks for", p.Table, v.Column, mongoSimilarities[have.Metric], mongoSimilarities[v.Metric])
+	}
+	k := p.Offset + p.Limit
+	search := bson.D{
+		{Key: "index", Value: mongoVectorIndex(p.Table, v.Column)},
+		{Key: "path", Value: v.Column},
+		{Key: "queryVector", Value: v.Floats},
+		{Key: "numCandidates", Value: min(max(k*20, 100), 10000)},
+		{Key: "limit", Value: k},
+	}
+	if len(filter) > 0 {
+		search = append(search, bson.E{Key: "filter", Value: filter})
+	}
+	pipeline := mongo.Pipeline{{{Key: "$vectorSearch", Value: search}}}
+	if p.Offset > 0 {
+		pipeline = append(pipeline, bson.D{{Key: "$skip", Value: int64(p.Offset)}})
+	}
+	if len(p.Columns) > 0 {
+		project := bson.D{}
+		for _, c := range p.Columns {
+			project = append(project, bson.E{Key: c, Value: 1})
+		}
+		pipeline = append(pipeline, bson.D{{Key: "$project", Value: project}})
+	}
+	cursor, err := s.coll(p.Table).Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("orm: mongo vector search on %s: %w", p.Table, searchUnsupported(err))
+	}
+	var docs []map[string]any
+	if err := cursor.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("orm: mongo vector search on %s: %w", p.Table, err)
 	}
 	for _, doc := range docs {
 		delete(doc, "_id")
@@ -768,6 +957,17 @@ func bsonValue(v any) (any, error) {
 		return mongoTime(*x)
 	case string, bool, int, int32, int64, uint, uint32, uint64, float64, nil, []any, map[string]any:
 		return v, nil
+	}
+	if vec, ok := v.(interface{ Floats() []float64 }); ok {
+		fs := vec.Floats()
+		if fs == nil {
+			return nil, nil
+		}
+		arr := make(bson.A, len(fs))
+		for i, f := range fs {
+			arr[i] = f
+		}
+		return arr, nil
 	}
 	val, ok := v.(driver.Valuer)
 	if !ok {

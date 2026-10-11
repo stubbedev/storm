@@ -39,6 +39,7 @@ maria_dsn   := "storm:storm@tcp(127.0.0.1:33070)/storm?parseTime=true&multiState
 maria_audit := "storm:storm@tcp(127.0.0.1:33070)/storm_audit?parseTime=true"
 ch_dsn      := "clickhouse://default:storm@127.0.0.1:19000/storm?dial_timeout=5s"
 mongo_dsn   := "mongodb://127.0.0.1:17017/?directConnection=true"
+mongo_atlas_dsn := "mongodb://127.0.0.1:17018/?directConnection=true"
 qdrant_url  := "http://127.0.0.1:16333"
 
 # Run the suite against Postgres with pgvector.
@@ -63,7 +64,7 @@ test-clickhouse:
 
 # Run the MongoDB tests.
 test-mongo:
-    STORM_TEST_MONGO='{{mongo_dsn}}' go test -count=1 -p 1 -run TestMongo ./example/models/ ./orm/
+    STORM_TEST_MONGO='{{mongo_dsn}}' STORM_TEST_MONGO_ATLAS='{{mongo_atlas_dsn}}' go test -count=1 -p 1 -run TestMongo ./example/models/ ./orm/
 
 # Run the Qdrant tests.
 test-qdrant:
