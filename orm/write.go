@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -148,7 +147,7 @@ func (q Query[M, K]) performInsert(ctx context.Context, m *M) error {
 	return t.fire(ctx, Created, m)
 }
 
-func scanReturnedKey(rows *sql.Rows, dst any) error {
+func scanReturnedKey(rows *resultRows, dst any) error {
 	defer closeRows(rows)
 	if !rows.Next() {
 		return cmp.Or(rows.Err(), errors.New("RETURNING gave no key"))

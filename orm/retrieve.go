@@ -3,7 +3,6 @@ package orm
 import (
 	"cmp"
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -39,7 +38,7 @@ func (q Query[M, K]) Get() ([]M, error) {
 	return models, nil
 }
 
-func (q Query[M, K]) scan(rows *sql.Rows) ([]M, error) {
+func (q Query[M, K]) scan(rows *resultRows) ([]M, error) {
 	defer closeRows(rows)
 	dests := q.dests()
 	var models []M

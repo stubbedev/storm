@@ -656,14 +656,14 @@ func (q Query[M, K]) conn(ctx context.Context) (Conn, error) { return sqlConn(ct
 
 // query reads on the read pool, or the write pool for a locking read,
 // whose lock means nothing on a replica.
-func (q Query[M, K]) query(ctx context.Context, f frag) (*sql.Rows, error) {
+func (q Query[M, K]) query(ctx context.Context, f frag) (*resultRows, error) {
 	if q.lock != NoLock {
 		return writeRows(ctx, q.connName(), f)
 	}
 	return readRows(ctx, q.connName(), f)
 }
 
-func (q Query[M, K]) queryWrite(ctx context.Context, f frag) (*sql.Rows, error) {
+func (q Query[M, K]) queryWrite(ctx context.Context, f frag) (*resultRows, error) {
 	return writeRows(ctx, q.connName(), f)
 }
 
@@ -673,7 +673,7 @@ func (q Query[M, K]) exec(ctx context.Context, f frag) (sql.Result, error) {
 
 // readRows runs a query on the named connection's read pool — or its write
 // pool once a Sticky scope has written to it.
-func readRows(ctx context.Context, name string, f frag) (*sql.Rows, error) {
+func readRows(ctx context.Context, name string, f frag) (*resultRows, error) {
 	c, err := sqlConn(ctx, name)
 	if err != nil {
 		return nil, err
@@ -683,7 +683,7 @@ func readRows(ctx context.Context, name string, f frag) (*sql.Rows, error) {
 
 // writeRows runs a statement that reads rows back but is a write, like
 // INSERT ... RETURNING, on the write pool.
-func writeRows(ctx context.Context, name string, f frag) (*sql.Rows, error) {
+func writeRows(ctx context.Context, name string, f frag) (*resultRows, error) {
 	if err := writable(ctx); err != nil {
 		return nil, err
 	}
@@ -698,7 +698,7 @@ func writeRows(ctx context.Context, name string, f frag) (*sql.Rows, error) {
 	return rows, err
 }
 
-func runRows(ctx context.Context, name string, d Dialect, db DB, f frag) (*sql.Rows, error) {
+func runRows(ctx context.Context, name string, d Dialect, db DB, f frag) (*resultRows, error) {
 	stmt, args, err := render(d, f)
 	if err != nil {
 		return nil, err
@@ -709,7 +709,7 @@ func runRows(ctx context.Context, name string, d Dialect, db DB, f frag) (*sql.R
 	if err != nil {
 		return nil, &QueryError{Err: err, SQL: stmt}
 	}
-	return rows, nil
+	return &resultRows{Rows: rows}, nil
 }
 
 // execOn runs a statement that returns no rows on the write pool.

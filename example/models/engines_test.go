@@ -597,6 +597,7 @@ func TestDuckDB(t *testing.T) {
 		t.BigInteger("views").Default(0)
 		t.Vector("vec", 3)
 	}))
+	assertUUIDKeys(t, "duck")
 	for _, d := range []Doc{
 		{Title: "near", Vec: orm.NewVector[orm.D3](1, 0, 0)},
 		{Title: "far", Vec: orm.NewVector[orm.D3](10, 10, 10)},
@@ -1168,6 +1169,7 @@ func TestPgVector(t *testing.T) {
 		t.Vector("vec", 3)
 		t.HnswIndex("vec", orm.Cosine)
 	}))
+	assertUUIDKeys(t, orm.DefaultConnection)
 	likeHnsw := must(orm.From("pg_indexes").Where("tablename", "=", "documents").Where("indexdef", "LIKE", "%hnsw%vector_cosine_ops%").Count())
 	eq(t, "hnsw index", likeHnsw, int64(1))
 
@@ -1182,6 +1184,20 @@ func TestPgVector(t *testing.T) {
 		Limit(1).Get())
 	eq(t, "knn", found[0].Title, "near")
 	eq(t, "vectors round-trip", must(Docs.Query().Where(Docs.Title.Eq("far")).First()).Vec.String(), "[10,10,10]")
+}
+
+// assertUUIDKeys reads a generated UUID key back as the text it was
+// written as, on a model and on a row, and writes by it again.
+func assertUUIDKeys(t *testing.T, conn string) {
+	t.Helper()
+	d := Doc{Title: "keyed", Vec: orm.NewVector3(1, 2, 3)}
+	ok(Docs.Query().On(conn).Create(&d))
+	back := must(Docs.Query().On(conn).Find(d.ID))
+	eq(t, conn+" the uuid key reads back as written", back.ID, d.ID)
+	eq(t, conn+" a row reads the uuid as text", must(orm.From("documents").On(conn).Where("id", orm.Eq, d.ID).Value("id")), any(d.ID))
+	back.Views = 1
+	ok(Docs.Query().On(conn).Save(&back))
+	ok(Docs.Query().On(conn).DeleteModel(&back))
 }
 
 func tCheck(t *testing.T, err error) {

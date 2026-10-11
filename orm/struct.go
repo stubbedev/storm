@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"iter"
@@ -735,7 +734,7 @@ func (r RowQuery) renderWhere(b *SQL) {
 }
 
 // read runs f on the read pool, or the write pool for a locking read.
-func (r RowQuery) read(ctx context.Context, f frag) (*sql.Rows, error) {
+func (r RowQuery) read(ctx context.Context, f frag) (*resultRows, error) {
 	if r.lock != NoLock {
 		return writeRows(ctx, r.connName(), f)
 	}
@@ -1272,7 +1271,7 @@ func (r RowQuery) mutationWhere() frag {
 }
 
 // scanMaps reads every remaining row into maps.
-func scanMaps(rows *sql.Rows) ([]map[string]any, error) {
+func scanMaps(rows *resultRows) ([]map[string]any, error) {
 	var out []map[string]any
 	err := eachMap(rows, func(m map[string]any) bool { out = append(out, m); return true })
 	return out, err
@@ -1280,7 +1279,7 @@ func scanMaps(rows *sql.Rows) ([]map[string]any, error) {
 
 // eachMap hands fn each remaining row as a fresh map, with []byte values
 // converted to strings, until fn returns false.
-func eachMap(rows *sql.Rows, fn func(map[string]any) bool) error {
+func eachMap(rows *resultRows, fn func(map[string]any) bool) error {
 	cols, err := rows.Columns()
 	if err != nil {
 		return err
