@@ -336,13 +336,45 @@ func (m *Migrator) Pretend(ctx context.Context) ([]PendingMigration, error) {
 		if mig.Up == nil {
 			return out, fmt.Errorf("schema: migration %s has no Up function", mig.Name)
 		}
-		b, log := On(cmp.Or(mig.Connection, m.conn())).Pretend()
-		if err := mig.Up(ctx, b); err != nil {
+		conn := cmp.Or(mig.Connection, m.conn())
+		b, log := On(conn).Pretend()
+		if err := pretendUp(ctx, conn, func(ctx context.Context) error { return mig.Up(ctx, b) }); err != nil {
 			return out, fmt.Errorf("schema: pretending %s: %w", mig.Name, err)
 		}
 		out = append(out, PendingMigration{Name: mig.Name, Statements: log()})
 	}
 	return out, nil
+}
+
+// errPretended rolls back the transaction a pretended migration ran in.
+var errPretended = errors.New("schema: pretend rolls back")
+
+// pretendUp runs up so its orm writes (made with the ctx it is given) leave
+// nothing behind: in a transaction that always rolls back on a SQL
+// connection with transactions, and on any other connection under
+// orm.ReadOnly, where a write fails instead of applying for real.
+func pretendUp(ctx context.Context, conn string, up func(context.Context) error) error {
+	c, err := orm.Connection(ctx, conn)
+	if err != nil {
+		return err
+	}
+	tx, err := orm.SupportsTransactions(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if c.Doc != nil || !tx {
+		return up(orm.ReadOnly(ctx))
+	}
+	err = orm.TransactionOn(ctx, conn, func(ctx context.Context) error {
+		if err := up(ctx); err != nil {
+			return err
+		}
+		return errPretended
+	})
+	if errors.Is(err, errPretended) {
+		return nil
+	}
+	return err
 }
 
 func (m *Migrator) down(ctx context.Context, names []string) ([]string, error) {

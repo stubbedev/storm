@@ -644,6 +644,15 @@ func TestClickHouse(t *testing.T) {
 		w.ID = int64(i + 1) // ClickHouse does not generate integer keys
 		ok(Widgets.Query().On("ch").Create(&w))
 	}
+	chWriter := &schema.Migrator{Connection: "ch", Migrations: []schema.Migration{{
+		Name: "2026_01_01_000001_write_widgets",
+		Up: func(ctx context.Context, _ *schema.Builder) error {
+			return orm.From("widgets").On("ch").WithContext(ctx).Insert(map[string]any{"id": 999, "name": "pretend"})
+		},
+	}}}
+	_, err = chWriter.Pretend(ctx)
+	eq(t, "pretend refuses writes where nothing rolls back", errors.Is(err, orm.ErrReadOnly), true)
+	eq(t, "pretend wrote nothing", must(orm.From("widgets").On("ch").Where("name", orm.Eq, "pretend").Count()), int64(0))
 	chWidgets := orm.From("widgets").On("ch")
 	eq(t, "union", len(must(chWidgets.Where("kind", orm.Eq, "gear").Union(chWidgets.Where("kind", orm.Eq, "gear")).Get())), 2)
 	ws := must(Widgets.Query().On("ch").Where(Widgets.Kind.Eq("gear")).OrderBy(Widgets.Karma.Desc()).Get())

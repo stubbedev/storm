@@ -83,6 +83,9 @@ func (c conflict) keys(key string) []string {
 
 // storeDocs inserts docs on a document store according to c.
 func (c conflict) storeDocs(ctx context.Context, ds DocStore, conn, table string, docs []map[string]any, key string) error {
+	if err := writable(ctx); err != nil {
+		return err
+	}
 	start := time.Now()
 	var err error
 	switch c.kind {

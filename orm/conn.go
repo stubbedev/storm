@@ -520,6 +520,25 @@ func IsDeadlock(err error) bool {
 	return false
 }
 
+// ErrReadOnly is the error a write returns under a ReadOnly context.
+var ErrReadOnly = errors.New("orm: the context is read-only, so writes are refused")
+
+type readOnlyKey struct{}
+
+// ReadOnly returns a ctx under which every write through orm — SQL
+// statements and document-store writes — fails with ErrReadOnly, while
+// reads run (migrate -pretend uses it where nothing can be rolled back).
+func ReadOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, readOnlyKey{}, true)
+}
+
+func writable(ctx context.Context) error {
+	if ctx.Value(readOnlyKey{}) != nil {
+		return ErrReadOnly
+	}
+	return nil
+}
+
 // IsUniqueViolation reports whether err is a unique constraint violation
 // on SQLite, Postgres, MySQL/MariaDB or DuckDB, or a document store's
 // DuplicateKeyError.

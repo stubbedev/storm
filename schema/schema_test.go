@@ -258,6 +258,22 @@ func TestMigrator(t *testing.T) {
 	want(t, "migrate", len(ran), 3)
 	want(t, "tables", tables(), "a,b,c")
 
+	writer := &Migrator{Migrations: []Migration{{
+		Name: "2026_01_01_000009_seed_a",
+		Up: func(ctx context.Context, s *Builder) error {
+			if err := s.Table(ctx, "a", func(t *Blueprint) { t.String("note").Nullable() }); err != nil {
+				return err
+			}
+			return orm.From("a").WithContext(ctx).Insert(map[string]any{"id": 99})
+		},
+	}}}
+	pending, err = writer.Pretend(ctx)
+	check(t, err)
+	want(t, "pretend logs the DDL", len(pending) == 1 && strings.Contains(strings.Join(pending[0].Statements, ";"), "note"), true)
+	rows, err := orm.From("a").Count()
+	check(t, err)
+	want(t, "pretend rolls back orm writes", rows, int64(0))
+
 	m.Migrations = append(m.Migrations, migration("2026_01_01_000004_create_d_table", "d"))
 	_, err = m.Migrate(ctx, false)
 	check(t, err)

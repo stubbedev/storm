@@ -684,6 +684,9 @@ func (q Query[M, K]) Truncate() error {
 	if ds, ok, err := q.docstore(ctx); err != nil {
 		return err
 	} else if ok {
+		if err := writable(ctx); err != nil {
+			return err
+		}
 		start := time.Now()
 		_, err := ds.DeleteDocs(ctx, Plan{Table: t.Name, Key: t.PrimaryKey})
 		emitDocRaw(q.connName(), "truncate "+t.Name, time.Since(start), err)

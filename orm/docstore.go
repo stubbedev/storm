@@ -257,6 +257,9 @@ func (q Query[M, K]) writeDocs(ctx context.Context, method string, models []*M) 
 	if err != nil || !ok {
 		return err
 	}
+	if err := writable(ctx); err != nil {
+		return err
+	}
 	docs, err := q.docMaps(method, models)
 	if err != nil {
 		return err
@@ -331,6 +334,9 @@ func (q Query[M, K]) updateDocs(ctx context.Context, sets []colSet) (int64, bool
 }
 
 func updateDocs(ctx context.Context, ds DocStore, conn string, p Plan, sets []colSet) (int64, error) {
+	if err := writable(ctx); err != nil {
+		return 0, err
+	}
 	u, err := docUpdate(sets)
 	if err != nil {
 		return 0, fmt.Errorf("orm: update on %s: %w", p.Table, err)
@@ -345,6 +351,9 @@ func updateDocs(ctx context.Context, ds DocStore, conn string, p Plan, sets []co
 }
 
 func deleteDocs(ctx context.Context, ds DocStore, conn string, p Plan) (int64, error) {
+	if err := writable(ctx); err != nil {
+		return 0, err
+	}
 	p, err := mutationPlan(ctx, ds, conn, p)
 	if err != nil {
 		return 0, fmt.Errorf("orm: delete on %s: %w", p.Table, err)

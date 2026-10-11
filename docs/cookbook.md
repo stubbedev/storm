@@ -824,7 +824,7 @@ go run ./cmd/migrate                       # migrate (also: -step, -pretend, -is
 go run ./cmd/migrate install               # create the migrations table
 go run ./cmd/migrate status
 go run ./cmd/migrate rollback [-steps N | -batch B]
-go run ./cmd/migrate reset | refresh [-steps N] [-seed] | fresh [-seed] | wipe
+go run ./cmd/migrate reset | refresh [-steps N] [-seed] | fresh [-seed] [-drop-views] | wipe [-drop-views]
 go run ./cmd/migrate make create_flights_table -dir migrations
 go run ./cmd/migrate make:seeder Users -dir seeders
 go run ./cmd/migrate make:model LineItem -dir models
@@ -837,6 +837,14 @@ on that connection — a MongoDB or Qdrant one included (see the README's
 "Migrating document stores"); a migrator whose own connection is a document
 store keeps its log there. `Migrator` exposes the same operations
 programmatically, for example to migrate in tests.
+
+Inside `Up` and `Down`, run orm queries with the ctx they receive
+(`orm.From("users").WithContext(ctx)...`) so they join the migration's
+transaction. `-pretend` prints the schema statements without running them
+and runs `Up` in a transaction it always rolls back, undoing those orm
+writes; on a connection without transactions (ClickHouse, a document
+store) the ctx is `orm.ReadOnly` and a write fails with `orm.ErrReadOnly`
+rather than applying. Each command accepts only its own flags.
 
 Views are created over a SELECT in the engine's SQL, listed apart from
 tables, and dropped one by one or all at once; `migrate:fresh -drop-views`

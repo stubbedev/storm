@@ -684,6 +684,9 @@ func readRows(ctx context.Context, name string, f frag) (*sql.Rows, error) {
 // writeRows runs a statement that reads rows back but is a write, like
 // INSERT ... RETURNING, on the write pool.
 func writeRows(ctx context.Context, name string, f frag) (*sql.Rows, error) {
+	if err := writable(ctx); err != nil {
+		return nil, err
+	}
 	c, err := sqlConn(ctx, name)
 	if err != nil {
 		return nil, err
@@ -711,6 +714,9 @@ func runRows(ctx context.Context, name string, d Dialect, db DB, f frag) (*sql.R
 
 // execOn runs a statement that returns no rows on the write pool.
 func execOn(ctx context.Context, name string, f frag) (sql.Result, error) {
+	if err := writable(ctx); err != nil {
+		return nil, err
+	}
 	c, err := sqlConn(ctx, name)
 	if err != nil {
 		return nil, err
