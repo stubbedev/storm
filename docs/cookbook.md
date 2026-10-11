@@ -133,12 +133,14 @@ byUser, err := Posts.Query().Grouped(ctx, Posts.UserID) // map[int64][]Post
 names, err := Users.Query().Map(ctx, func(u User) string { return u.Name })
 ```
 
-The schema ormgen generates takes keys of the model's key type:
-`Users.Find(ctx, "1")` does not compile when the key is an `int64`, and
-the same holds for `FindMany`, `FindOr`, `Destroy`, `WhereKey` and
-`WhereKeyNot`. The query forms (`Users.Where(...).Find(ctx, id)`) take
-`any`, convert an integer of another width, and fail the query on any
-other type.
+Tables, queries and columns carry the model's key type
+(`orm.Table[User, int64]`, `orm.Query[User, int64]`), so every key
+lookup is typed: `Users.Find(ctx, "1")` and
+`Users.Where(...).Find(ctx, "1")` do not compile when the key is an
+`int64`, and the same holds for `FindMany`, `FindOr`, `Destroy`,
+`WhereKey` and `WhereKeyNot`. A table without a primary key has key type
+`orm.NoKey`. ormgen also emits `UserQuery` (= `orm.Query[User, int64]`)
+for writing scopes.
 
 ## Where clauses
 
@@ -167,7 +169,7 @@ Users.Where(Users.Settings.JSONHasKey("theme"))
 
 Posts.Query().WhereFullText("generics", Posts.Title)
 
-Users.Query().When(onlyActive, func(q orm.Query[User]) orm.Query[User] {
+Users.Query().When(onlyActive, func(q UserQuery) UserQuery {
 	return q.Where(Users.Active.Eq(true))
 })
 ```
@@ -389,7 +391,7 @@ Relation options: `Scoped(...)` for constrained relations, `WithAttributes(...)`
 
 ```go
 users, err := Users.Query().
-	With(UserPosts, Published, func(q orm.Query[Post]) orm.Query[Post] {
+	With(UserPosts, Published, func(q PostQuery) PostQuery {
 		return q.OrderBy(Posts.Views.Desc()).With(PostComments) // nested
 	}).
 	With(UserLatestPost).
@@ -444,13 +446,13 @@ UserRoles.UpdateExistingPivot(ctx, &u, 3, RoleUsers.GrantedBy.Set("changed"))
 ## Scopes
 
 ```go
-func Active(q orm.Query[User]) orm.Query[User] { return q.Where(Users.Active.Eq(true)) }
-func Popular(min int64) func(orm.Query[Post]) orm.Query[Post] { // dynamic scope
-	return func(q orm.Query[Post]) orm.Query[Post] { return q.Where(Posts.Views.Gte(min)) }
+func Active(q UserQuery) UserQuery { return q.Where(Users.Active.Eq(true)) }
+func Popular(min int64) func(PostQuery) PostQuery { // dynamic scope
+	return func(q PostQuery) PostQuery { return q.Where(Posts.Views.Gte(min)) }
 }
 Users.Query().Scope(Active)
 
-Users.AddGlobalScope("verified", func(q orm.Query[User]) orm.Query[User] { return q.Where(...) })
+Users.AddGlobalScope("verified", func(q UserQuery) UserQuery { return q.Where(...) })
 Users.Query().WithoutGlobalScope("verified")
 Users.Query().WithoutGlobalScopes()
 ```

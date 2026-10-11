@@ -60,7 +60,7 @@ const ormImport = "github.com/stubbedev/storm/orm"
 
 type model struct {
 	Struct, Table, Schema, Var string
-	Connection, Key, KeyType   string
+	Connection, Key, KeyGen    string
 	CreatedAt, UpdatedAt       string
 	DeletedAt, Morph           string
 	TimePrecision              int
@@ -73,14 +73,14 @@ type field struct {
 	PK, Virtual, NullZero bool
 }
 
-// KeyField is the field holding m's primary key, or nil without one.
-func (m model) KeyField() *field {
-	for i := range m.Fields {
-		if m.Key != "" && m.Fields[i].Column == m.Key {
-			return &m.Fields[i]
+// KeyType is the Go type of m's primary key field, or orm.NoKey.
+func (m model) KeyType() string {
+	for _, f := range m.Fields {
+		if m.Key != "" && f.Column == m.Key {
+			return f.Type
 		}
 	}
-	return nil
+	return "orm.NoKey"
 }
 
 func main() {
@@ -242,18 +242,18 @@ func buildModel(name string, st *ast.StructType, opts map[string]string, byName 
 	}
 	switch opts["key_type"] {
 	case "":
-		m.KeyType = "orm.KeyManual"
+		m.KeyGen = "orm.KeyManual"
 		if f := col(m.Key); f != nil && strings.Contains(f.Type, "int") {
-			m.KeyType = "orm.KeyAutoIncrement"
+			m.KeyGen = "orm.KeyAutoIncrement"
 		}
 	case "increments":
-		m.KeyType = "orm.KeyAutoIncrement"
+		m.KeyGen = "orm.KeyAutoIncrement"
 	case "uuid":
-		m.KeyType = "orm.KeyUUID"
+		m.KeyGen = "orm.KeyUUID"
 	case "ulid":
-		m.KeyType = "orm.KeyULID"
+		m.KeyGen = "orm.KeyULID"
 	case "manual":
-		m.KeyType = "orm.KeyManual"
+		m.KeyGen = "orm.KeyManual"
 	default:
 		fail("unknown key_type %q", opts["key_type"])
 	}
@@ -359,14 +359,14 @@ import (
 {{- end}}
 )
 {{range .Models}}{{$m := .}}
-var {{.Var}} = &orm.Table[{{.Struct}}]{
+var {{.Var}} = &orm.Table[{{.Struct}}, {{.KeyType}}]{
 	Name:       "{{.Table}}",
 {{- if .Connection}}
 	Connection: "{{.Connection}}",
 {{- end}}
 {{- if .Key}}
 	PrimaryKey: "{{.Key}}",
-	KeyType:    {{.KeyType}},
+	KeyType:    {{.KeyGen}},
 {{- end}}
 {{- if .CreatedAt}}
 	CreatedAt:  "{{.CreatedAt}}",
@@ -402,10 +402,10 @@ var {{.Var}} = &orm.Table[{{.Struct}}]{
 
 // {{.Schema}}Schema describes the {{.Table}} table for {{.Struct}}.
 type {{.Schema}}Schema struct {
-	*orm.Table[{{.Struct}}]
+	*orm.Table[{{.Struct}}, {{.KeyType}}]
 {{- range .Fields}}
 	// {{.Name}} is {{if .Virtual}}virtual, not stored: selected extras only{{else}}the {{$m.Table}}.{{.Column}} column{{end}} of {{$m.Struct}} ({{.Type}}).
-	{{.Name}} orm.Column[{{$m.Struct}}, {{.Type}}]
+	{{.Name}} orm.Column[{{$m.Struct}}, {{$m.KeyType}}, {{.Type}}]
 {{- end}}
 }
 
@@ -417,46 +417,14 @@ var {{.Schema}} = {{.Schema}}Schema{
 	{{.Name}}: orm.{{if .Virtual}}NewVirtualColumn{{else}}NewColumn{{end}}({{$m.Var}}, "{{.Column}}", func(m *{{$m.Struct}}) *{{.Type}} { return &m.{{.Name}} }),
 {{- end}}
 }
-{{- with $m.KeyField}}
 
-// Find returns the {{$m.Struct}} whose primary key is id.
-func (s {{$m.Schema}}Schema) Find(ctx context.Context, id {{.Type}}) ({{$m.Struct}}, error) {
-	return s.Table.Find(ctx, id)
-}
-
-// FindOr returns the {{$m.Struct}} whose primary key is id, or fn's result
-// when there is none.
-func (s {{$m.Schema}}Schema) FindOr(ctx context.Context, id {{.Type}}, fn func() ({{$m.Struct}}, error)) ({{$m.Struct}}, error) {
-	return s.Query().FindOr(ctx, id, fn)
-}
-
-// FindMany returns the {{$m.Struct}} rows whose primary keys are ids.
-func (s {{$m.Schema}}Schema) FindMany(ctx context.Context, ids ...{{.Type}}) ([]{{$m.Struct}}, error) {
-	return s.Query().FindMany(ctx, orm.Keys(ids)...)
-}
-
-// Destroy deletes the {{$m.Struct}} rows whose primary keys are ids,
-// firing their events.
-func (s {{$m.Schema}}Schema) Destroy(ctx context.Context, ids ...{{.Type}}) (int, error) {
-	return s.Table.Destroy(ctx, orm.Keys(ids)...)
-}
-
-// WhereKey filters by primary key; WhereKeyNot excludes those keys.
-func (s {{$m.Schema}}Schema) WhereKey(ids ...{{.Type}}) orm.Query[{{$m.Struct}}] {
-	return s.Query().WhereKey(orm.Keys(ids)...)
-}
-
-func (s {{$m.Schema}}Schema) WhereKeyNot(ids ...{{.Type}}) orm.Query[{{$m.Struct}}] {
-	return s.Query().WhereKeyNot(orm.Keys(ids)...)
-}
-{{- end}}
+// {{.Struct}}Query is a query over {{.Table}}, for scopes:
+// func(q {{.Struct}}Query) {{.Struct}}Query.
+type {{.Struct}}Query = orm.Query[{{.Struct}}, {{.KeyType}}]
 {{end}}`))
 
 func render(pkg string, models []model, imports map[string]string) ([]byte, error) {
 	imports[ormImport] = ""
-	if slices.ContainsFunc(models, func(m model) bool { return m.KeyField() != nil }) {
-		imports["context"] = ""
-	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, map[string]any{"Pkg": pkg, "Models": models, "Imports": imports}); err != nil {
 		return nil, err

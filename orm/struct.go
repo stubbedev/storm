@@ -832,7 +832,7 @@ func (r RowQuery) Value(ctx context.Context, col string) (any, error) {
 	return row[resultName(col)], nil
 }
 
-func (r RowQuery) ValueCol[M, V any](ctx context.Context, c Column[M, V]) (V, error) {
+func (r RowQuery) ValueCol[M any, K comparable, V any](ctx context.Context, c Column[M, K, V]) (V, error) {
 	vs, err := r.Limit(1).PluckCol(ctx, c)
 	if err != nil || len(vs) == 0 {
 		var zero V
@@ -879,7 +879,7 @@ func (r RowQuery) Pluck(ctx context.Context, col string) ([]any, error) {
 
 // PluckCol returns one typed column per row: PluckCol(ctx, Users.Email) is
 // a []string.
-func (r RowQuery) PluckCol[M, V any](ctx context.Context, c Column[M, V]) ([]V, error) {
+func (r RowQuery) PluckCol[M any, K comparable, V any](ctx context.Context, c Column[M, K, V]) ([]V, error) {
 	rows, err := r.SelectCols(c).Get(ctx)
 	if err != nil {
 		return nil, err
@@ -945,19 +945,19 @@ func (r RowQuery) Max[V any](ctx context.Context, col string) (V, error) {
 
 // SumCol, AvgCol, MinCol and MaxCol aggregate a typed column:
 // SumCol(ctx, Users.Karma) is an int64.
-func (r RowQuery) SumCol[M any, V Number](ctx context.Context, c Column[M, V]) (V, error) {
+func (r RowQuery) SumCol[M any, K comparable, V Number](ctx context.Context, c Column[M, K, V]) (V, error) {
 	return rowAggregate[V](ctx, r, AggregateSum, c)
 }
 
-func (r RowQuery) AvgCol[M any, V Number](ctx context.Context, c Column[M, V]) (float64, error) {
+func (r RowQuery) AvgCol[M any, K comparable, V Number](ctx context.Context, c Column[M, K, V]) (float64, error) {
 	return rowAggregate[float64](ctx, r, AggregateAvg, c)
 }
 
-func (r RowQuery) MinCol[M, V any](ctx context.Context, c Column[M, V]) (V, error) {
+func (r RowQuery) MinCol[M any, K comparable, V any](ctx context.Context, c Column[M, K, V]) (V, error) {
 	return rowAggregate[V](ctx, r, AggregateMin, c)
 }
 
-func (r RowQuery) MaxCol[M, V any](ctx context.Context, c Column[M, V]) (V, error) {
+func (r RowQuery) MaxCol[M any, K comparable, V any](ctx context.Context, c Column[M, K, V]) (V, error) {
 	return rowAggregate[V](ctx, r, AggregateMax, c)
 }
 

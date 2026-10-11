@@ -3,12 +3,11 @@
 package models
 
 import (
-	"context"
 	"github.com/stubbedev/storm/orm"
 	"time"
 )
 
-var auditLogTable = &orm.Table[AuditEntry]{
+var auditLogTable = &orm.Table[AuditEntry, string]{
 	Name:       "audit_log",
 	Connection: "audit",
 	PrimaryKey: "id",
@@ -28,11 +27,11 @@ var auditLogTable = &orm.Table[AuditEntry]{
 
 // AuditLogSchema describes the audit_log table for AuditEntry.
 type AuditLogSchema struct {
-	*orm.Table[AuditEntry]
+	*orm.Table[AuditEntry, string]
 	// ID is the audit_log.id column of AuditEntry (string).
-	ID orm.Column[AuditEntry, string]
+	ID orm.Column[AuditEntry, string, string]
 	// Action is the audit_log.action column of AuditEntry (string).
-	Action orm.Column[AuditEntry, string]
+	Action orm.Column[AuditEntry, string, string]
 }
 
 // AuditLog is the entry point for the audit_log table (AuditEntry):
@@ -43,38 +42,11 @@ var AuditLog = AuditLogSchema{
 	Action: orm.NewColumn(auditLogTable, "action", func(m *AuditEntry) *string { return &m.Action }),
 }
 
-// Find returns the AuditEntry whose primary key is id.
-func (s AuditLogSchema) Find(ctx context.Context, id string) (AuditEntry, error) {
-	return s.Table.Find(ctx, id)
-}
+// AuditEntryQuery is a query over audit_log, for scopes:
+// func(q AuditEntryQuery) AuditEntryQuery.
+type AuditEntryQuery = orm.Query[AuditEntry, string]
 
-// FindOr returns the AuditEntry whose primary key is id, or fn's result
-// when there is none.
-func (s AuditLogSchema) FindOr(ctx context.Context, id string, fn func() (AuditEntry, error)) (AuditEntry, error) {
-	return s.Query().FindOr(ctx, id, fn)
-}
-
-// FindMany returns the AuditEntry rows whose primary keys are ids.
-func (s AuditLogSchema) FindMany(ctx context.Context, ids ...string) ([]AuditEntry, error) {
-	return s.Query().FindMany(ctx, orm.Keys(ids)...)
-}
-
-// Destroy deletes the AuditEntry rows whose primary keys are ids,
-// firing their events.
-func (s AuditLogSchema) Destroy(ctx context.Context, ids ...string) (int, error) {
-	return s.Table.Destroy(ctx, orm.Keys(ids)...)
-}
-
-// WhereKey filters by primary key; WhereKeyNot excludes those keys.
-func (s AuditLogSchema) WhereKey(ids ...string) orm.Query[AuditEntry] {
-	return s.Query().WhereKey(orm.Keys(ids)...)
-}
-
-func (s AuditLogSchema) WhereKeyNot(ids ...string) orm.Query[AuditEntry] {
-	return s.Query().WhereKeyNot(orm.Keys(ids)...)
-}
-
-var commentsTable = &orm.Table[Comment]{
+var commentsTable = &orm.Table[Comment, int64]{
 	Name:          "comments",
 	PrimaryKey:    "id",
 	KeyType:       orm.KeyAutoIncrement,
@@ -104,19 +76,19 @@ var commentsTable = &orm.Table[Comment]{
 
 // CommentsSchema describes the comments table for Comment.
 type CommentsSchema struct {
-	*orm.Table[Comment]
+	*orm.Table[Comment, int64]
 	// ID is the comments.id column of Comment (int64).
-	ID orm.Column[Comment, int64]
+	ID orm.Column[Comment, int64, int64]
 	// CommentableID is the comments.commentable_id column of Comment (int64).
-	CommentableID orm.Column[Comment, int64]
+	CommentableID orm.Column[Comment, int64, int64]
 	// CommentableType is the comments.commentable_type column of Comment (string).
-	CommentableType orm.Column[Comment, string]
+	CommentableType orm.Column[Comment, int64, string]
 	// Body is the comments.body column of Comment (string).
-	Body orm.Column[Comment, string]
+	Body orm.Column[Comment, int64, string]
 	// CreatedAt is the comments.created_at column of Comment (time.Time).
-	CreatedAt orm.Column[Comment, time.Time]
+	CreatedAt orm.Column[Comment, int64, time.Time]
 	// UpdatedAt is the comments.updated_at column of Comment (time.Time).
-	UpdatedAt orm.Column[Comment, time.Time]
+	UpdatedAt orm.Column[Comment, int64, time.Time]
 }
 
 // Comments is the entry point for the comments table (Comment):
@@ -131,38 +103,11 @@ var Comments = CommentsSchema{
 	UpdatedAt:       orm.NewColumn(commentsTable, "updated_at", func(m *Comment) *time.Time { return &m.UpdatedAt }),
 }
 
-// Find returns the Comment whose primary key is id.
-func (s CommentsSchema) Find(ctx context.Context, id int64) (Comment, error) {
-	return s.Table.Find(ctx, id)
-}
+// CommentQuery is a query over comments, for scopes:
+// func(q CommentQuery) CommentQuery.
+type CommentQuery = orm.Query[Comment, int64]
 
-// FindOr returns the Comment whose primary key is id, or fn's result
-// when there is none.
-func (s CommentsSchema) FindOr(ctx context.Context, id int64, fn func() (Comment, error)) (Comment, error) {
-	return s.Query().FindOr(ctx, id, fn)
-}
-
-// FindMany returns the Comment rows whose primary keys are ids.
-func (s CommentsSchema) FindMany(ctx context.Context, ids ...int64) ([]Comment, error) {
-	return s.Query().FindMany(ctx, orm.Keys(ids)...)
-}
-
-// Destroy deletes the Comment rows whose primary keys are ids,
-// firing their events.
-func (s CommentsSchema) Destroy(ctx context.Context, ids ...int64) (int, error) {
-	return s.Table.Destroy(ctx, orm.Keys(ids)...)
-}
-
-// WhereKey filters by primary key; WhereKeyNot excludes those keys.
-func (s CommentsSchema) WhereKey(ids ...int64) orm.Query[Comment] {
-	return s.Query().WhereKey(orm.Keys(ids)...)
-}
-
-func (s CommentsSchema) WhereKeyNot(ids ...int64) orm.Query[Comment] {
-	return s.Query().WhereKeyNot(orm.Keys(ids)...)
-}
-
-var countriesTable = &orm.Table[Country]{
+var countriesTable = &orm.Table[Country, int64]{
 	Name:       "countries",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
@@ -181,11 +126,11 @@ var countriesTable = &orm.Table[Country]{
 
 // CountriesSchema describes the countries table for Country.
 type CountriesSchema struct {
-	*orm.Table[Country]
+	*orm.Table[Country, int64]
 	// ID is the countries.id column of Country (int64).
-	ID orm.Column[Country, int64]
+	ID orm.Column[Country, int64, int64]
 	// Name is the countries.name column of Country (string).
-	Name orm.Column[Country, string]
+	Name orm.Column[Country, int64, string]
 }
 
 // Countries is the entry point for the countries table (Country):
@@ -196,38 +141,11 @@ var Countries = CountriesSchema{
 	Name:  orm.NewColumn(countriesTable, "name", func(m *Country) *string { return &m.Name }),
 }
 
-// Find returns the Country whose primary key is id.
-func (s CountriesSchema) Find(ctx context.Context, id int64) (Country, error) {
-	return s.Table.Find(ctx, id)
-}
+// CountryQuery is a query over countries, for scopes:
+// func(q CountryQuery) CountryQuery.
+type CountryQuery = orm.Query[Country, int64]
 
-// FindOr returns the Country whose primary key is id, or fn's result
-// when there is none.
-func (s CountriesSchema) FindOr(ctx context.Context, id int64, fn func() (Country, error)) (Country, error) {
-	return s.Query().FindOr(ctx, id, fn)
-}
-
-// FindMany returns the Country rows whose primary keys are ids.
-func (s CountriesSchema) FindMany(ctx context.Context, ids ...int64) ([]Country, error) {
-	return s.Query().FindMany(ctx, orm.Keys(ids)...)
-}
-
-// Destroy deletes the Country rows whose primary keys are ids,
-// firing their events.
-func (s CountriesSchema) Destroy(ctx context.Context, ids ...int64) (int, error) {
-	return s.Table.Destroy(ctx, orm.Keys(ids)...)
-}
-
-// WhereKey filters by primary key; WhereKeyNot excludes those keys.
-func (s CountriesSchema) WhereKey(ids ...int64) orm.Query[Country] {
-	return s.Query().WhereKey(orm.Keys(ids)...)
-}
-
-func (s CountriesSchema) WhereKeyNot(ids ...int64) orm.Query[Country] {
-	return s.Query().WhereKeyNot(orm.Keys(ids)...)
-}
-
-var imagesTable = &orm.Table[Image]{
+var imagesTable = &orm.Table[Image, int64]{
 	Name:       "images",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
@@ -250,15 +168,15 @@ var imagesTable = &orm.Table[Image]{
 
 // ImagesSchema describes the images table for Image.
 type ImagesSchema struct {
-	*orm.Table[Image]
+	*orm.Table[Image, int64]
 	// ID is the images.id column of Image (int64).
-	ID orm.Column[Image, int64]
+	ID orm.Column[Image, int64, int64]
 	// ImageableID is the images.imageable_id column of Image (int64).
-	ImageableID orm.Column[Image, int64]
+	ImageableID orm.Column[Image, int64, int64]
 	// ImageableType is the images.imageable_type column of Image (string).
-	ImageableType orm.Column[Image, string]
+	ImageableType orm.Column[Image, int64, string]
 	// URL is the images.url column of Image (string).
-	URL orm.Column[Image, string]
+	URL orm.Column[Image, int64, string]
 }
 
 // Images is the entry point for the images table (Image):
@@ -271,38 +189,11 @@ var Images = ImagesSchema{
 	URL:           orm.NewColumn(imagesTable, "url", func(m *Image) *string { return &m.URL }),
 }
 
-// Find returns the Image whose primary key is id.
-func (s ImagesSchema) Find(ctx context.Context, id int64) (Image, error) {
-	return s.Table.Find(ctx, id)
-}
+// ImageQuery is a query over images, for scopes:
+// func(q ImageQuery) ImageQuery.
+type ImageQuery = orm.Query[Image, int64]
 
-// FindOr returns the Image whose primary key is id, or fn's result
-// when there is none.
-func (s ImagesSchema) FindOr(ctx context.Context, id int64, fn func() (Image, error)) (Image, error) {
-	return s.Query().FindOr(ctx, id, fn)
-}
-
-// FindMany returns the Image rows whose primary keys are ids.
-func (s ImagesSchema) FindMany(ctx context.Context, ids ...int64) ([]Image, error) {
-	return s.Query().FindMany(ctx, orm.Keys(ids)...)
-}
-
-// Destroy deletes the Image rows whose primary keys are ids,
-// firing their events.
-func (s ImagesSchema) Destroy(ctx context.Context, ids ...int64) (int, error) {
-	return s.Table.Destroy(ctx, orm.Keys(ids)...)
-}
-
-// WhereKey filters by primary key; WhereKeyNot excludes those keys.
-func (s ImagesSchema) WhereKey(ids ...int64) orm.Query[Image] {
-	return s.Query().WhereKey(orm.Keys(ids)...)
-}
-
-func (s ImagesSchema) WhereKeyNot(ids ...int64) orm.Query[Image] {
-	return s.Query().WhereKeyNot(orm.Keys(ids)...)
-}
-
-var postsTable = &orm.Table[Post]{
+var postsTable = &orm.Table[Post, int64]{
 	Name:       "posts",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
@@ -333,21 +224,21 @@ var postsTable = &orm.Table[Post]{
 
 // PostsSchema describes the posts table for Post.
 type PostsSchema struct {
-	*orm.Table[Post]
+	*orm.Table[Post, int64]
 	// ID is the posts.id column of Post (int64).
-	ID orm.Column[Post, int64]
+	ID orm.Column[Post, int64, int64]
 	// UserID is the posts.user_id column of Post (int64).
-	UserID orm.Column[Post, int64]
+	UserID orm.Column[Post, int64, int64]
 	// Title is the posts.title column of Post (string).
-	Title orm.Column[Post, string]
+	Title orm.Column[Post, int64, string]
 	// Published is the posts.published column of Post (bool).
-	Published orm.Column[Post, bool]
+	Published orm.Column[Post, int64, bool]
 	// Views is the posts.views column of Post (int64).
-	Views orm.Column[Post, int64]
+	Views orm.Column[Post, int64, int64]
 	// CreatedAt is the posts.created_at column of Post (time.Time).
-	CreatedAt orm.Column[Post, time.Time]
+	CreatedAt orm.Column[Post, int64, time.Time]
 	// UpdatedAt is the posts.updated_at column of Post (time.Time).
-	UpdatedAt orm.Column[Post, time.Time]
+	UpdatedAt orm.Column[Post, int64, time.Time]
 }
 
 // Posts is the entry point for the posts table (Post):
@@ -363,38 +254,11 @@ var Posts = PostsSchema{
 	UpdatedAt: orm.NewColumn(postsTable, "updated_at", func(m *Post) *time.Time { return &m.UpdatedAt }),
 }
 
-// Find returns the Post whose primary key is id.
-func (s PostsSchema) Find(ctx context.Context, id int64) (Post, error) {
-	return s.Table.Find(ctx, id)
-}
+// PostQuery is a query over posts, for scopes:
+// func(q PostQuery) PostQuery.
+type PostQuery = orm.Query[Post, int64]
 
-// FindOr returns the Post whose primary key is id, or fn's result
-// when there is none.
-func (s PostsSchema) FindOr(ctx context.Context, id int64, fn func() (Post, error)) (Post, error) {
-	return s.Query().FindOr(ctx, id, fn)
-}
-
-// FindMany returns the Post rows whose primary keys are ids.
-func (s PostsSchema) FindMany(ctx context.Context, ids ...int64) ([]Post, error) {
-	return s.Query().FindMany(ctx, orm.Keys(ids)...)
-}
-
-// Destroy deletes the Post rows whose primary keys are ids,
-// firing their events.
-func (s PostsSchema) Destroy(ctx context.Context, ids ...int64) (int, error) {
-	return s.Table.Destroy(ctx, orm.Keys(ids)...)
-}
-
-// WhereKey filters by primary key; WhereKeyNot excludes those keys.
-func (s PostsSchema) WhereKey(ids ...int64) orm.Query[Post] {
-	return s.Query().WhereKey(orm.Keys(ids)...)
-}
-
-func (s PostsSchema) WhereKeyNot(ids ...int64) orm.Query[Post] {
-	return s.Query().WhereKeyNot(orm.Keys(ids)...)
-}
-
-var rolesTable = &orm.Table[Role]{
+var rolesTable = &orm.Table[Role, int64]{
 	Name:       "roles",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
@@ -413,11 +277,11 @@ var rolesTable = &orm.Table[Role]{
 
 // RolesSchema describes the roles table for Role.
 type RolesSchema struct {
-	*orm.Table[Role]
+	*orm.Table[Role, int64]
 	// ID is the roles.id column of Role (int64).
-	ID orm.Column[Role, int64]
+	ID orm.Column[Role, int64, int64]
 	// Name is the roles.name column of Role (string).
-	Name orm.Column[Role, string]
+	Name orm.Column[Role, int64, string]
 }
 
 // Roles is the entry point for the roles table (Role):
@@ -428,38 +292,11 @@ var Roles = RolesSchema{
 	Name:  orm.NewColumn(rolesTable, "name", func(m *Role) *string { return &m.Name }),
 }
 
-// Find returns the Role whose primary key is id.
-func (s RolesSchema) Find(ctx context.Context, id int64) (Role, error) {
-	return s.Table.Find(ctx, id)
-}
+// RoleQuery is a query over roles, for scopes:
+// func(q RoleQuery) RoleQuery.
+type RoleQuery = orm.Query[Role, int64]
 
-// FindOr returns the Role whose primary key is id, or fn's result
-// when there is none.
-func (s RolesSchema) FindOr(ctx context.Context, id int64, fn func() (Role, error)) (Role, error) {
-	return s.Query().FindOr(ctx, id, fn)
-}
-
-// FindMany returns the Role rows whose primary keys are ids.
-func (s RolesSchema) FindMany(ctx context.Context, ids ...int64) ([]Role, error) {
-	return s.Query().FindMany(ctx, orm.Keys(ids)...)
-}
-
-// Destroy deletes the Role rows whose primary keys are ids,
-// firing their events.
-func (s RolesSchema) Destroy(ctx context.Context, ids ...int64) (int, error) {
-	return s.Table.Destroy(ctx, orm.Keys(ids)...)
-}
-
-// WhereKey filters by primary key; WhereKeyNot excludes those keys.
-func (s RolesSchema) WhereKey(ids ...int64) orm.Query[Role] {
-	return s.Query().WhereKey(orm.Keys(ids)...)
-}
-
-func (s RolesSchema) WhereKeyNot(ids ...int64) orm.Query[Role] {
-	return s.Query().WhereKeyNot(orm.Keys(ids)...)
-}
-
-var roleUsersTable = &orm.Table[RoleUser]{
+var roleUsersTable = &orm.Table[RoleUser, orm.NoKey]{
 	Name:      "role_user",
 	CreatedAt: "created_at",
 	UpdatedAt: "updated_at",
@@ -484,17 +321,17 @@ var roleUsersTable = &orm.Table[RoleUser]{
 
 // RoleUsersSchema describes the role_user table for RoleUser.
 type RoleUsersSchema struct {
-	*orm.Table[RoleUser]
+	*orm.Table[RoleUser, orm.NoKey]
 	// UserID is the role_user.user_id column of RoleUser (int64).
-	UserID orm.Column[RoleUser, int64]
+	UserID orm.Column[RoleUser, orm.NoKey, int64]
 	// RoleID is the role_user.role_id column of RoleUser (int64).
-	RoleID orm.Column[RoleUser, int64]
+	RoleID orm.Column[RoleUser, orm.NoKey, int64]
 	// GrantedBy is the role_user.granted_by column of RoleUser (string).
-	GrantedBy orm.Column[RoleUser, string]
+	GrantedBy orm.Column[RoleUser, orm.NoKey, string]
 	// CreatedAt is the role_user.created_at column of RoleUser (time.Time).
-	CreatedAt orm.Column[RoleUser, time.Time]
+	CreatedAt orm.Column[RoleUser, orm.NoKey, time.Time]
 	// UpdatedAt is the role_user.updated_at column of RoleUser (time.Time).
-	UpdatedAt orm.Column[RoleUser, time.Time]
+	UpdatedAt orm.Column[RoleUser, orm.NoKey, time.Time]
 }
 
 // RoleUsers is the entry point for the role_user table (RoleUser):
@@ -508,7 +345,11 @@ var RoleUsers = RoleUsersSchema{
 	UpdatedAt: orm.NewColumn(roleUsersTable, "updated_at", func(m *RoleUser) *time.Time { return &m.UpdatedAt }),
 }
 
-var tagsTable = &orm.Table[Tag]{
+// RoleUserQuery is a query over role_user, for scopes:
+// func(q RoleUserQuery) RoleUserQuery.
+type RoleUserQuery = orm.Query[RoleUser, orm.NoKey]
+
+var tagsTable = &orm.Table[Tag, int64]{
 	Name:       "tags",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
@@ -527,11 +368,11 @@ var tagsTable = &orm.Table[Tag]{
 
 // TagsSchema describes the tags table for Tag.
 type TagsSchema struct {
-	*orm.Table[Tag]
+	*orm.Table[Tag, int64]
 	// ID is the tags.id column of Tag (int64).
-	ID orm.Column[Tag, int64]
+	ID orm.Column[Tag, int64, int64]
 	// Name is the tags.name column of Tag (string).
-	Name orm.Column[Tag, string]
+	Name orm.Column[Tag, int64, string]
 }
 
 // Tags is the entry point for the tags table (Tag):
@@ -542,38 +383,11 @@ var Tags = TagsSchema{
 	Name:  orm.NewColumn(tagsTable, "name", func(m *Tag) *string { return &m.Name }),
 }
 
-// Find returns the Tag whose primary key is id.
-func (s TagsSchema) Find(ctx context.Context, id int64) (Tag, error) {
-	return s.Table.Find(ctx, id)
-}
+// TagQuery is a query over tags, for scopes:
+// func(q TagQuery) TagQuery.
+type TagQuery = orm.Query[Tag, int64]
 
-// FindOr returns the Tag whose primary key is id, or fn's result
-// when there is none.
-func (s TagsSchema) FindOr(ctx context.Context, id int64, fn func() (Tag, error)) (Tag, error) {
-	return s.Query().FindOr(ctx, id, fn)
-}
-
-// FindMany returns the Tag rows whose primary keys are ids.
-func (s TagsSchema) FindMany(ctx context.Context, ids ...int64) ([]Tag, error) {
-	return s.Query().FindMany(ctx, orm.Keys(ids)...)
-}
-
-// Destroy deletes the Tag rows whose primary keys are ids,
-// firing their events.
-func (s TagsSchema) Destroy(ctx context.Context, ids ...int64) (int, error) {
-	return s.Table.Destroy(ctx, orm.Keys(ids)...)
-}
-
-// WhereKey filters by primary key; WhereKeyNot excludes those keys.
-func (s TagsSchema) WhereKey(ids ...int64) orm.Query[Tag] {
-	return s.Query().WhereKey(orm.Keys(ids)...)
-}
-
-func (s TagsSchema) WhereKeyNot(ids ...int64) orm.Query[Tag] {
-	return s.Query().WhereKeyNot(orm.Keys(ids)...)
-}
-
-var taggablesTable = &orm.Table[Taggable]{
+var taggablesTable = &orm.Table[Taggable, orm.NoKey]{
 	Name:    "taggables",
 	Columns: []string{"tag_id", "taggable_id", "taggable_type"},
 	Ptr: func(m *Taggable, column string) any {
@@ -592,13 +406,13 @@ var taggablesTable = &orm.Table[Taggable]{
 
 // TaggablesSchema describes the taggables table for Taggable.
 type TaggablesSchema struct {
-	*orm.Table[Taggable]
+	*orm.Table[Taggable, orm.NoKey]
 	// TagID is the taggables.tag_id column of Taggable (int64).
-	TagID orm.Column[Taggable, int64]
+	TagID orm.Column[Taggable, orm.NoKey, int64]
 	// TaggableID is the taggables.taggable_id column of Taggable (int64).
-	TaggableID orm.Column[Taggable, int64]
+	TaggableID orm.Column[Taggable, orm.NoKey, int64]
 	// TaggableType is the taggables.taggable_type column of Taggable (string).
-	TaggableType orm.Column[Taggable, string]
+	TaggableType orm.Column[Taggable, orm.NoKey, string]
 }
 
 // Taggables is the entry point for the taggables table (Taggable):
@@ -610,7 +424,11 @@ var Taggables = TaggablesSchema{
 	TaggableType: orm.NewColumn(taggablesTable, "taggable_type", func(m *Taggable) *string { return &m.TaggableType }),
 }
 
-var usersTable = &orm.Table[User]{
+// TaggableQuery is a query over taggables, for scopes:
+// func(q TaggableQuery) TaggableQuery.
+type TaggableQuery = orm.Query[Taggable, orm.NoKey]
+
+var usersTable = &orm.Table[User, int64]{
 	Name:       "users",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
@@ -659,37 +477,37 @@ var usersTable = &orm.Table[User]{
 
 // UsersSchema describes the users table for User.
 type UsersSchema struct {
-	*orm.Table[User]
+	*orm.Table[User, int64]
 	// ID is the users.id column of User (int64).
-	ID orm.Column[User, int64]
+	ID orm.Column[User, int64, int64]
 	// CountryID is the users.country_id column of User (int64).
-	CountryID orm.Column[User, int64]
+	CountryID orm.Column[User, int64, int64]
 	// Name is the users.name column of User (string).
-	Name orm.Column[User, string]
+	Name orm.Column[User, int64, string]
 	// Email is the users.email column of User (string).
-	Email orm.Column[User, string]
+	Email orm.Column[User, int64, string]
 	// Active is the users.active column of User (bool).
-	Active orm.Column[User, bool]
+	Active orm.Column[User, int64, bool]
 	// Karma is the users.karma column of User (int).
-	Karma orm.Column[User, int]
+	Karma orm.Column[User, int64, int]
 	// Settings is the users.settings column of User (orm.JSON[Settings]).
-	Settings orm.Column[User, orm.JSON[Settings]]
+	Settings orm.Column[User, int64, orm.JSON[Settings]]
 	// CreatedAt is the users.created_at column of User (time.Time).
-	CreatedAt orm.Column[User, time.Time]
+	CreatedAt orm.Column[User, int64, time.Time]
 	// UpdatedAt is the users.updated_at column of User (time.Time).
-	UpdatedAt orm.Column[User, time.Time]
+	UpdatedAt orm.Column[User, int64, time.Time]
 	// DeletedAt is the users.deleted_at column of User (*time.Time).
-	DeletedAt orm.Column[User, *time.Time]
+	DeletedAt orm.Column[User, int64, *time.Time]
 	// PostsCount is virtual, not stored: selected extras only of User (int64).
-	PostsCount orm.Column[User, int64]
+	PostsCount orm.Column[User, int64, int64]
 	// PostViews is virtual, not stored: selected extras only of User (int64).
-	PostViews orm.Column[User, int64]
+	PostViews orm.Column[User, int64, int64]
 	// HasAvatar is virtual, not stored: selected extras only of User (bool).
-	HasAvatar orm.Column[User, bool]
+	HasAvatar orm.Column[User, int64, bool]
 	// LatestPostTitle is virtual, not stored: selected extras only of User (string).
-	LatestPostTitle orm.Column[User, string]
+	LatestPostTitle orm.Column[User, int64, string]
 	// AvgPostViews is virtual, not stored: selected extras only of User (float64).
-	AvgPostViews orm.Column[User, float64]
+	AvgPostViews orm.Column[User, int64, float64]
 }
 
 // Users is the entry point for the users table (User):
@@ -713,38 +531,11 @@ var Users = UsersSchema{
 	AvgPostViews:    orm.NewVirtualColumn(usersTable, "avg_post_views", func(m *User) *float64 { return &m.AvgPostViews }),
 }
 
-// Find returns the User whose primary key is id.
-func (s UsersSchema) Find(ctx context.Context, id int64) (User, error) {
-	return s.Table.Find(ctx, id)
-}
+// UserQuery is a query over users, for scopes:
+// func(q UserQuery) UserQuery.
+type UserQuery = orm.Query[User, int64]
 
-// FindOr returns the User whose primary key is id, or fn's result
-// when there is none.
-func (s UsersSchema) FindOr(ctx context.Context, id int64, fn func() (User, error)) (User, error) {
-	return s.Query().FindOr(ctx, id, fn)
-}
-
-// FindMany returns the User rows whose primary keys are ids.
-func (s UsersSchema) FindMany(ctx context.Context, ids ...int64) ([]User, error) {
-	return s.Query().FindMany(ctx, orm.Keys(ids)...)
-}
-
-// Destroy deletes the User rows whose primary keys are ids,
-// firing their events.
-func (s UsersSchema) Destroy(ctx context.Context, ids ...int64) (int, error) {
-	return s.Table.Destroy(ctx, orm.Keys(ids)...)
-}
-
-// WhereKey filters by primary key; WhereKeyNot excludes those keys.
-func (s UsersSchema) WhereKey(ids ...int64) orm.Query[User] {
-	return s.Query().WhereKey(orm.Keys(ids)...)
-}
-
-func (s UsersSchema) WhereKeyNot(ids ...int64) orm.Query[User] {
-	return s.Query().WhereKeyNot(orm.Keys(ids)...)
-}
-
-var videosTable = &orm.Table[Video]{
+var videosTable = &orm.Table[Video, int64]{
 	Name:       "videos",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
@@ -763,11 +554,11 @@ var videosTable = &orm.Table[Video]{
 
 // VideosSchema describes the videos table for Video.
 type VideosSchema struct {
-	*orm.Table[Video]
+	*orm.Table[Video, int64]
 	// ID is the videos.id column of Video (int64).
-	ID orm.Column[Video, int64]
+	ID orm.Column[Video, int64, int64]
 	// Title is the videos.title column of Video (string).
-	Title orm.Column[Video, string]
+	Title orm.Column[Video, int64, string]
 }
 
 // Videos is the entry point for the videos table (Video):
@@ -778,33 +569,6 @@ var Videos = VideosSchema{
 	Title: orm.NewColumn(videosTable, "title", func(m *Video) *string { return &m.Title }),
 }
 
-// Find returns the Video whose primary key is id.
-func (s VideosSchema) Find(ctx context.Context, id int64) (Video, error) {
-	return s.Table.Find(ctx, id)
-}
-
-// FindOr returns the Video whose primary key is id, or fn's result
-// when there is none.
-func (s VideosSchema) FindOr(ctx context.Context, id int64, fn func() (Video, error)) (Video, error) {
-	return s.Query().FindOr(ctx, id, fn)
-}
-
-// FindMany returns the Video rows whose primary keys are ids.
-func (s VideosSchema) FindMany(ctx context.Context, ids ...int64) ([]Video, error) {
-	return s.Query().FindMany(ctx, orm.Keys(ids)...)
-}
-
-// Destroy deletes the Video rows whose primary keys are ids,
-// firing their events.
-func (s VideosSchema) Destroy(ctx context.Context, ids ...int64) (int, error) {
-	return s.Table.Destroy(ctx, orm.Keys(ids)...)
-}
-
-// WhereKey filters by primary key; WhereKeyNot excludes those keys.
-func (s VideosSchema) WhereKey(ids ...int64) orm.Query[Video] {
-	return s.Query().WhereKey(orm.Keys(ids)...)
-}
-
-func (s VideosSchema) WhereKeyNot(ids ...int64) orm.Query[Video] {
-	return s.Query().WhereKeyNot(orm.Keys(ids)...)
-}
+// VideoQuery is a query over videos, for scopes:
+// func(q VideoQuery) VideoQuery.
+type VideoQuery = orm.Query[Video, int64]

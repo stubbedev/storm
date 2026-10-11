@@ -232,7 +232,7 @@ func TestRetrieval(t *testing.T) {
 
 func TestWhereClauses(t *testing.T) {
 	ctx := setup(t)
-	get := func(q orm.Query[User]) []string { return names(must(q.OrderBy(Users.ID.Asc()).Get(ctx))) }
+	get := func(q UserQuery) []string { return names(must(q.OrderBy(Users.ID.Asc()).Get(ctx))) }
 
 	eq(t, "orWhere", get(Users.Where(Users.Karma.Gt(90)).OrWhere(Users.Name.Eq("Bob"))), []string{"Bob", "Carol"})
 	eq(t, "whereNot", get(Users.Query().WhereNot(Users.Active.Eq(true))), []string{"Carol"})
@@ -245,11 +245,11 @@ func TestWhereClauses(t *testing.T) {
 	eq(t, "whereColumn", get(Users.Where(Users.CreatedAt.EqCol(Users.UpdatedAt))), []string{"Alice", "Bob", "Carol", "Dave"})
 	eq(t, "anyOf", get(Users.Where(orm.AnyOf("LIKE", "%car%", Users.Name, Users.Email))), []string{"Carol"})
 	eq(t, "raw", get(Users.Where(orm.Raw[User]("karma % 2 = ?", 1))), []string{"Bob", "Carol", "Dave"})
-	eq(t, "when", get(Users.Query().When(true, func(q orm.Query[User]) orm.Query[User] { return q.Where(Users.Karma.Gt(40)) })), []string{"Alice", "Carol"})
-	eq(t, "unless", len(get(Users.Query().Unless(true, func(q orm.Query[User]) orm.Query[User] { return q.Where(Users.Karma.Gt(40)) }))), 4)
+	eq(t, "when", get(Users.Query().When(true, func(q UserQuery) UserQuery { return q.Where(Users.Karma.Gt(40)) })), []string{"Alice", "Carol"})
+	eq(t, "unless", len(get(Users.Query().Unless(true, func(q UserQuery) UserQuery { return q.Where(Users.Karma.Gt(40)) }))), 4)
 
 	// Date and JSON functions, rendered per dialect.
-	posts := func(q orm.Query[Post]) []string { return titles(must(q.OrderBy(Posts.ID.Asc()).Get(ctx))) }
+	posts := func(q PostQuery) []string { return titles(must(q.OrderBy(Posts.ID.Asc()).Get(ctx))) }
 	eq(t, "whereYear", len(posts(Posts.Where(orm.Year(Posts.CreatedAt).Eq(2026)))), 6)
 	eq(t, "whereDate", posts(Posts.Where(orm.Date(Posts.CreatedAt).Eq("2026-01-10"))), []string{"Generics in Go 1.27"})
 	eq(t, "whereMonth", posts(Posts.Where(orm.Month(Posts.CreatedAt).Eq(3))), []string{"Iterators"})
@@ -311,12 +311,12 @@ func TestEagerLoading(t *testing.T) {
 	users := must(Users.Query().
 		Where(Users.Active.Eq(true)).
 		OrderBy(Users.ID.Asc()).
-		With(UserPosts, Published, func(q orm.Query[Post]) orm.Query[Post] {
+		With(UserPosts, Published, func(q PostQuery) PostQuery {
 			return q.OrderBy(Posts.Views.Desc()).With(PostComments)
 		}).
 		With(UserLatestPost).
 		With(UserCountry).
-		With(UserRoles, func(q orm.Query[Role]) orm.Query[Role] { return q.OrderBy(Roles.ID.Asc()) }).
+		With(UserRoles, func(q RoleQuery) RoleQuery { return q.OrderBy(Roles.ID.Asc()) }).
 		With(UserAvatar).
 		Get(ctx))
 
@@ -335,7 +335,7 @@ func TestEagerLoading(t *testing.T) {
 
 	perParent := func(offset int) []User {
 		return must(Users.Query().Where(Users.Active.Eq(true)).OrderBy(Users.ID.Asc()).
-			With(UserPosts, func(q orm.Query[Post]) orm.Query[Post] { return q.OrderBy(Posts.Views.Desc()).Limit(1).Offset(offset) }).
+			With(UserPosts, func(q PostQuery) PostQuery { return q.OrderBy(Posts.Views.Desc()).Limit(1).Offset(offset) }).
 			Get(ctx))
 	}
 	for i, u := range perParent(0) {
@@ -344,7 +344,7 @@ func TestEagerLoading(t *testing.T) {
 		second := perParent(1)[i]
 		eq(t, u.Name+": eager offset applies per parent", titles(second.Posts), all[min(1, len(all)):min(2, len(all))])
 	}
-	_, err := Users.Query().With(UserRoles, func(q orm.Query[Role]) orm.Query[Role] { return q.Limit(1) }).Get(ctx)
+	_, err := Users.Query().With(UserRoles, func(q RoleQuery) RoleQuery { return q.Limit(1) }).Get(ctx)
 	eq(t, "many-to-many eager limit refused", err != nil && strings.Contains(err.Error(), "cannot apply per parent"), true)
 
 	posts := must(Posts.Query().OrderBy(Posts.ID.Asc()).With(PostAuthor).With(PostTags).Get(ctx))
@@ -374,7 +374,7 @@ func TestEagerLoading(t *testing.T) {
 
 func TestRelationQueries(t *testing.T) {
 	ctx := setup(t)
-	get := func(q orm.Query[User]) []string { return names(must(q.OrderBy(Users.ID.Asc()).Get(ctx))) }
+	get := func(q UserQuery) []string { return names(must(q.OrderBy(Users.ID.Asc()).Get(ctx))) }
 
 	eq(t, "whereHas", get(Users.Query().WhereHas(UserPosts, Published, Popular(100))), []string{"Alice", "Bob", "Carol"})
 	eq(t, "whereDoesntHave", get(Users.Query().WhereDoesntHave(UserPosts)), []string{"Dave"})
@@ -390,7 +390,7 @@ func TestRelationQueries(t *testing.T) {
 
 	alice := must(Users.Find(ctx, 1))
 	eq(t, "whereBelongsTo", len(must(Posts.Where(PostAuthor.Is(&alice)).Get(ctx))), 3)
-	eq(t, "morphToMany whereHas", titles(must(Posts.Query().WhereHas(PostTags, func(q orm.Query[Tag]) orm.Query[Tag] {
+	eq(t, "morphToMany whereHas", titles(must(Posts.Query().WhereHas(PostTags, func(q TagQuery) TagQuery {
 		return q.Where(Tags.Name.Eq("go"))
 	}).Get(ctx))), []string{"Generics in Go 1.27"})
 
@@ -425,7 +425,7 @@ func TestRelationQueries(t *testing.T) {
 	// A relation from a table to itself: users sharing a country with a
 	// high-karma user. The inner users table is aliased automatically.
 	compatriots := orm.HasMany(Users.CountryID, Users.CountryID, func(*User, []User) {})
-	eq(t, "self-referencing whereHas", get(Users.Query().WhereHas(compatriots, func(q orm.Query[User]) orm.Query[User] {
+	eq(t, "self-referencing whereHas", get(Users.Query().WhereHas(compatriots, func(q UserQuery) UserQuery {
 		return q.Where(Users.Karma.Gt(90))
 	})), []string{"Carol", "Dave"})
 }
@@ -647,8 +647,8 @@ func (g *guard) Created(context.Context, *User) error { g.created++; return nil 
 
 // isolatedUsers is a fresh Table for users, so events and global scopes
 // registered in tests don't leak into the shared Users schema.
-func isolatedUsers() *orm.Table[User] {
-	return &orm.Table[User]{
+func isolatedUsers() *orm.Table[User, int64] {
+	return &orm.Table[User, int64]{
 		Name: Users.Table.Name, PrimaryKey: Users.PrimaryKey, KeyType: Users.KeyType,
 		CreatedAt: Users.Table.CreatedAt, UpdatedAt: Users.Table.UpdatedAt, DeletedAt: Users.Table.DeletedAt,
 		Columns: Users.Columns, NullZero: Users.NullZero, Ptr: Users.Ptr, State: Users.State,
@@ -674,7 +674,7 @@ func TestEventsAndScopes(t *testing.T) {
 	eq(t, "created event", g.created, 1)
 	eq(t, "saved event", saved, []string{"Gina"})
 
-	users.AddGlobalScope("karma", func(q orm.Query[User]) orm.Query[User] { return q.Where(Users.Karma.Gt(10)) })
+	users.AddGlobalScope("karma", func(q UserQuery) UserQuery { return q.Where(Users.Karma.Gt(10)) })
 	eq(t, "global scope", must(users.Query().Count(ctx)), int64(3))
 	eq(t, "withoutGlobalScope", must(users.Query().WithoutGlobalScope("karma").Count(ctx)), int64(6))
 	eq(t, "withoutGlobalScopes", must(users.Query().WithoutGlobalScopes().Count(ctx)), int64(7))

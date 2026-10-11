@@ -343,11 +343,11 @@ func TestBlueprintNames(t *testing.T) {
 	failed(t, "unguessable table", err, "owner_uuid", "pass the table to Constrained")
 
 	type Tenant struct{}
-	tenants := &orm.Table[Tenant]{Name: "tenants", PrimaryKey: "ulid", KeyType: orm.KeyULID}
+	tenants := &orm.Table[Tenant, string]{Name: "tenants", PrimaryKey: "ulid", KeyType: orm.KeyULID}
 	stmts = mustCreate(t, postgresG, "sites", func(t *Blueprint) { t.ForeignIDFor(tenants).Constrained() })
 	want(t, "ForeignIDFor a ULID model", stmts, []string{`CREATE TABLE "sites" ("tenant_ulid" char(26) NOT NULL, ` +
 		`CONSTRAINT "sites_tenant_ulid_foreign" FOREIGN KEY ("tenant_ulid") REFERENCES "tenants" ("ulid"))`})
-	manual := &orm.Table[Tenant]{Name: "tenants", PrimaryKey: "code", KeyType: orm.KeyManual}
+	manual := &orm.Table[Tenant, string]{Name: "tenants", PrimaryKey: "code", KeyType: orm.KeyManual}
 	_, err = create(postgresG, "sites", func(t *Blueprint) { t.ForeignIDFor(manual).Constrained() })
 	failed(t, "ForeignIDFor a manual key", err, "set manually", "tenant_code")
 

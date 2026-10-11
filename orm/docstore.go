@@ -92,7 +92,7 @@ func AddDocStore(name string, ds DocStore) {
 	connMu.Unlock()
 }
 
-func (q Query[M]) docstore(ctx context.Context) (DocStore, bool, error) {
+func (q Query[M, K]) docstore(ctx context.Context) (DocStore, bool, error) {
 	c, err := lookup(ctx, q.connName())
 	if err != nil {
 		return nil, false, err
@@ -110,7 +110,7 @@ func docStoreFor(ctx context.Context, conn string) (DocStore, bool, error) {
 
 // plan compiles the query for a document store, refusing the parts that
 // only exist in SQL.
-func (q Query[M]) plan() (Plan, error) {
+func (q Query[M, K]) plan() (Plan, error) {
 	if q.err != nil {
 		return Plan{}, q.err
 	}
@@ -166,7 +166,7 @@ func (q Query[M]) plan() (Plan, error) {
 }
 
 // planOf is plan with the error wrapped for the calling method's context.
-func (q Query[M]) planOf(method string) (Plan, error) {
+func (q Query[M, K]) planOf(method string) (Plan, error) {
 	p, err := q.plan()
 	if err != nil {
 		return p, fmt.Errorf("orm: %s on %s: %w", method, q.table.Name, err)
@@ -174,7 +174,7 @@ func (q Query[M]) planOf(method string) (Plan, error) {
 	return p, nil
 }
 
-func (q Query[M]) findDocs(ctx context.Context) ([]M, error) {
+func (q Query[M, K]) findDocs(ctx context.Context) ([]M, error) {
 	ds, ok, err := q.docstore(ctx)
 	if err != nil || !ok {
 		return nil, err
@@ -204,7 +204,7 @@ func (q Query[M]) findDocs(ctx context.Context) ([]M, error) {
 	return models, nil
 }
 
-func (q Query[M]) countDocs(ctx context.Context) (int64, bool, error) {
+func (q Query[M, K]) countDocs(ctx context.Context) (int64, bool, error) {
 	ds, ok, err := q.docstore(ctx)
 	if err != nil || !ok {
 		return 0, false, err
@@ -234,7 +234,7 @@ func aggregateDocs[V any](ctx context.Context, ds DocStore, conn string, p Plan,
 	return aggregated(fn, v, p.Table)
 }
 
-func (q Query[M]) docMaps(method string, models []*M) ([]map[string]any, error) {
+func (q Query[M, K]) docMaps(method string, models []*M) ([]map[string]any, error) {
 	t := q.table
 	docs := make([]map[string]any, len(models))
 	for i, m := range models {
@@ -252,7 +252,7 @@ func (q Query[M]) docMaps(method string, models []*M) ([]map[string]any, error) 
 	return docs, nil
 }
 
-func (q Query[M]) writeDocs(ctx context.Context, method string, models []*M) error {
+func (q Query[M, K]) writeDocs(ctx context.Context, method string, models []*M) error {
 	ds, ok, err := q.docstore(ctx)
 	if err != nil || !ok {
 		return err
@@ -317,7 +317,7 @@ func docKey(keys []string, doc map[string]any) string {
 	return keyString(vals)
 }
 
-func (q Query[M]) updateDocs(ctx context.Context, sets []colSet) (int64, bool, error) {
+func (q Query[M, K]) updateDocs(ctx context.Context, sets []colSet) (int64, bool, error) {
 	ds, ok, err := q.docstore(ctx)
 	if err != nil || !ok {
 		return 0, false, err
@@ -410,7 +410,7 @@ func docFields(sets []colSet) (map[string]any, error) {
 	return fields, nil
 }
 
-func (q Query[M]) deleteDocs(ctx context.Context) (int64, bool, error) {
+func (q Query[M, K]) deleteDocs(ctx context.Context) (int64, bool, error) {
 	ds, ok, err := q.docstore(ctx)
 	if err != nil || !ok {
 		return 0, false, err
@@ -460,7 +460,7 @@ func checkSameTable(n Node, table string) error {
 
 // hydrate fills a model from a document's column values, reusing the
 // driver-value conversion SQL scanning uses.
-func hydrate[M any](t *Table[M], doc map[string]any) (M, error) {
+func hydrate[M any, K comparable](t *Table[M, K], doc map[string]any) (M, error) {
 	var m M
 	for _, c := range t.Columns {
 		v, ok := doc[c]

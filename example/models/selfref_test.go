@@ -32,8 +32,8 @@ type Badge struct {
 	Name       string `db:"name"`
 }
 
-func modelTable[M any](name string, cols []string, ptr func(*M, string) any, state func(*M) *orm.Model) *orm.Table[M] {
-	return &orm.Table[M]{Name: name, PrimaryKey: "id", KeyType: orm.KeyManual, Columns: cols, Ptr: ptr, State: state}
+func modelTable[M any](name string, cols []string, ptr func(*M, string) any, state func(*M) *orm.Model) *orm.Table[M, int64] {
+	return &orm.Table[M, int64]{Name: name, PrimaryKey: "id", KeyType: orm.KeyManual, Columns: cols, Ptr: ptr, State: state}
 }
 
 var (
@@ -95,7 +95,7 @@ func TestSelfReferentialThrough(t *testing.T) {
 	ok(departmentTable.Query().Insert(ctx, Department{ID: 1, ManagerID: 1}))
 	ok(badgeTable.Query().Insert(ctx, Badge{ID: 1, EmployeeID: 2, Name: "gold"}, Badge{ID: 2, EmployeeID: 3, Name: "silver"}))
 
-	names := func(q orm.Query[Employee]) []string {
+	names := func(q orm.Query[Employee, int64]) []string {
 		return must(q.OrderBy(employeeID.Asc()).Pluck(ctx, employeeName))
 	}
 	eq(t, "whereHas through the parent's own table as related", names(employeeTable.Query().WhereHas(managedEmployees)), []string{"Ann"})

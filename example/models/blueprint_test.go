@@ -292,7 +292,7 @@ type Stamp struct {
 	At time.Time `db:"at"`
 }
 
-var stampTable = &orm.Table[Stamp]{
+var stampTable = &orm.Table[Stamp, string]{
 	Name:       "stamps",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyUUID,

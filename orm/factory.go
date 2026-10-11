@@ -15,8 +15,8 @@ import (
 //	admins, err := UserFactory.Count(3).State(func(u *User) { u.Karma = 100 }).Create(ctx)
 //
 // Factories are immutable; every method returns a modified copy.
-type Factory[M any] struct {
-	table    *Table[M]
+type Factory[M any, K comparable] struct {
+	table    *Table[M, K]
 	def      func(n int) M
 	seq      *atomic.Int64
 	count    int
@@ -27,35 +27,35 @@ type Factory[M any] struct {
 
 // NewFactory returns a factory whose definition receives a sequence number
 // that increases across every model the factory makes.
-func NewFactory[M any](t *Table[M], definition func(n int) M) Factory[M] {
-	return Factory[M]{table: t, def: definition, seq: new(atomic.Int64), count: 1}
+func NewFactory[M any, K comparable](t *Table[M, K], definition func(n int) M) Factory[M, K] {
+	return Factory[M, K]{table: t, def: definition, seq: new(atomic.Int64), count: 1}
 }
 
 // Count sets how many models Make and Create produce.
-func (f Factory[M]) Count(n int) Factory[M] { f.count = n; return f }
+func (f Factory[M, K]) Count(n int) Factory[M, K] { f.count = n; return f }
 
 // State applies modifications to every model.
-func (f Factory[M]) State(fns ...func(*M)) Factory[M] {
+func (f Factory[M, K]) State(fns ...func(*M)) Factory[M, K] {
 	f.states = append(slices.Clip(f.states), fns...)
 	return f
 }
 
 // Sequence applies the modifications in turn, cycling: the first model gets
 // fns[0], the second fns[1], ...
-func (f Factory[M]) Sequence(fns ...func(*M)) Factory[M] {
+func (f Factory[M, K]) Sequence(fns ...func(*M)) Factory[M, K] {
 	f.sequence = slices.Clone(fns)
 	return f
 }
 
 // AfterCreating runs fn on each model after it is inserted — e.g. to create
 // related models (has / for).
-func (f Factory[M]) AfterCreating(fn func(ctx context.Context, m *M) error) Factory[M] {
+func (f Factory[M, K]) AfterCreating(fn func(ctx context.Context, m *M) error) Factory[M, K] {
 	f.after = append(slices.Clip(f.after), fn)
 	return f
 }
 
 // Make builds models without saving them.
-func (f Factory[M]) Make() []M {
+func (f Factory[M, K]) Make() []M {
 	out := make([]M, f.count)
 	for i := range out {
 		out[i] = f.def(int(f.seq.Add(1)))
@@ -70,10 +70,10 @@ func (f Factory[M]) Make() []M {
 }
 
 // MakeOne builds a single unsaved model.
-func (f Factory[M]) MakeOne() M { return f.Count(1).Make()[0] }
+func (f Factory[M, K]) MakeOne() M { return f.Count(1).Make()[0] }
 
 // Create builds and inserts models, firing model events.
-func (f Factory[M]) Create(ctx context.Context) ([]M, error) {
+func (f Factory[M, K]) Create(ctx context.Context) ([]M, error) {
 	models := f.Make()
 	for i := range models {
 		if err := f.table.Create(ctx, &models[i]); err != nil {
@@ -89,7 +89,7 @@ func (f Factory[M]) Create(ctx context.Context) ([]M, error) {
 }
 
 // CreateOne builds and inserts a single model.
-func (f Factory[M]) CreateOne(ctx context.Context) (M, error) {
+func (f Factory[M, K]) CreateOne(ctx context.Context) (M, error) {
 	ms, err := f.Count(1).Create(ctx)
 	if len(ms) == 0 {
 		var zero M

@@ -15,7 +15,7 @@ type benchDoc struct {
 	Vec    Vector[D3]
 }
 
-var benchDocTable = &Table[benchDoc]{
+var benchDocTable = &Table[benchDoc, int64]{
 	Name:       "bench_documents",
 	PrimaryKey: "id",
 	KeyType:    KeyAutoIncrement,
@@ -39,12 +39,12 @@ var benchDocTable = &Table[benchDoc]{
 }
 
 type benchDocSchema struct {
-	*Table[benchDoc]
-	ID     Column[benchDoc, int64]
-	Title  Column[benchDoc, string]
-	Views  Column[benchDoc, int64]
-	Posted Column[benchDoc, time.Time]
-	Vec    Column[benchDoc, Vector[D3]]
+	*Table[benchDoc, int64]
+	ID     Column[benchDoc, int64, int64]
+	Title  Column[benchDoc, int64, string]
+	Views  Column[benchDoc, int64, int64]
+	Posted Column[benchDoc, int64, time.Time]
+	Vec    Column[benchDoc, int64, Vector[D3]]
 }
 
 var benchDocs = benchDocSchema{

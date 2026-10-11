@@ -376,7 +376,7 @@ func (b *Blueprint) ForeignULID(name string) *Column { return b.ULID(name) }
 // its key: ForeignIDFor(Users.Table) adds user_id (foreignIdFor), and
 // Constrained() then references the model's primary key column. Models with
 // manual keys have no known column type; declare their column explicitly.
-func (b *Blueprint) ForeignIDFor[M any](t *orm.Table[M], column ...string) *Column {
+func (b *Blueprint) ForeignIDFor[M any, K comparable](t *orm.Table[M, K], column ...string) *Column {
 	if t.PrimaryKey == "" {
 		b.fail(fmt.Errorf("schema: ForeignIDFor(%s) on table %s: the model has no primary key to reference", t.Name, b.table))
 	}
@@ -726,13 +726,13 @@ func (b *Blueprint) DropConstrainedForeignID(column string) {
 
 // DropForeignIDFor drops the key column ForeignIDFor added; drop its
 // foreign key first, or use DropConstrainedForeignIDFor.
-func (b *Blueprint) DropForeignIDFor[M any](t *orm.Table[M], column ...string) {
+func (b *Blueprint) DropForeignIDFor[M any, K comparable](t *orm.Table[M, K], column ...string) {
 	b.DropColumn(b.keyColumn(t.Name, t.PrimaryKey, column))
 }
 
 // DropConstrainedForeignIDFor drops the foreign key and key column that
 // ForeignIDFor(...).Constrained() added.
-func (b *Blueprint) DropConstrainedForeignIDFor[M any](t *orm.Table[M], column ...string) {
+func (b *Blueprint) DropConstrainedForeignIDFor[M any, K comparable](t *orm.Table[M, K], column ...string) {
 	b.DropConstrainedForeignID(b.keyColumn(t.Name, t.PrimaryKey, column))
 }
 

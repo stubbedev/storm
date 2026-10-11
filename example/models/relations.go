@@ -46,10 +46,10 @@ var (
 
 // Local scopes.
 
-func Active(q orm.Query[User]) orm.Query[User] { return q.Where(Users.Active.Eq(true)) }
+func Active(q UserQuery) UserQuery { return q.Where(Users.Active.Eq(true)) }
 
-func Published(q orm.Query[Post]) orm.Query[Post] { return q.Where(Posts.Published.Eq(true)) }
+func Published(q PostQuery) PostQuery { return q.Where(Posts.Published.Eq(true)) }
 
-func Popular(minViews int64) func(orm.Query[Post]) orm.Query[Post] {
-	return func(q orm.Query[Post]) orm.Query[Post] { return q.Where(Posts.Views.Gte(minViews)) }
+func Popular(minViews int64) func(PostQuery) PostQuery {
+	return func(q PostQuery) PostQuery { return q.Where(Posts.Views.Gte(minViews)) }
 }

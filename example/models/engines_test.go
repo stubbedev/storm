@@ -36,7 +36,7 @@ type Widget struct {
 	UpdatedAt time.Time `db:"updated_at"`
 }
 
-var widgetTable = &orm.Table[Widget]{
+var widgetTable = &orm.Table[Widget, int64]{
 	Name:       "widgets",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
@@ -64,12 +64,12 @@ var widgetTable = &orm.Table[Widget]{
 }
 
 type WidgetSchema struct {
-	*orm.Table[Widget]
-	ID        orm.Column[Widget, int64]
-	Name      orm.Column[Widget, string]
-	Kind      orm.Column[Widget, string]
-	Karma     orm.Column[Widget, int64]
-	CreatedAt orm.Column[Widget, time.Time]
+	*orm.Table[Widget, int64]
+	ID        orm.Column[Widget, int64, int64]
+	Name      orm.Column[Widget, int64, string]
+	Kind      orm.Column[Widget, int64, string]
+	Karma     orm.Column[Widget, int64, int64]
+	CreatedAt orm.Column[Widget, int64, time.Time]
 }
 
 var Widgets = WidgetSchema{
@@ -89,7 +89,7 @@ type Doc struct {
 	Vec   orm.Vector[orm.D3] `db:"vec"`
 }
 
-var docTable = &orm.Table[Doc]{
+var docTable = &orm.Table[Doc, string]{
 	Name:       "documents",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyUUID,
@@ -112,11 +112,11 @@ var docTable = &orm.Table[Doc]{
 }
 
 type DocSchema struct {
-	*orm.Table[Doc]
-	ID    orm.Column[Doc, string]
-	Title orm.Column[Doc, string]
-	Views orm.Column[Doc, int64]
-	Vec   orm.Column[Doc, orm.Vector[orm.D3]]
+	*orm.Table[Doc, string]
+	ID    orm.Column[Doc, string, string]
+	Title orm.Column[Doc, string, string]
+	Views orm.Column[Doc, string, int64]
+	Vec   orm.Column[Doc, string, orm.Vector[orm.D3]]
 }
 
 var Docs = DocSchema{
@@ -139,7 +139,7 @@ type Note struct {
 	DeletedAt *time.Time `db:"deleted_at"`
 }
 
-var noteTable = &orm.Table[Note]{
+var noteTable = &orm.Table[Note, string]{
 	Name:       "notes",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyUUID,
@@ -164,11 +164,11 @@ var noteTable = &orm.Table[Note]{
 }
 
 type NoteSchema struct {
-	*orm.Table[Note]
-	ID    orm.Column[Note, string]
-	Title orm.Column[Note, string]
-	Views orm.Column[Note, int64]
-	Seen  orm.Column[Note, *time.Time]
+	*orm.Table[Note, string]
+	ID    orm.Column[Note, string, string]
+	Title orm.Column[Note, string, string]
+	Views orm.Column[Note, string, int64]
+	Seen  orm.Column[Note, string, *time.Time]
 }
 
 var Notes = func() NoteSchema {
@@ -179,7 +179,7 @@ var Notes = func() NoteSchema {
 		Views: orm.NewColumn(noteTable, "views", func(m *Note) *int64 { return &m.Views }),
 		Seen:  orm.NewColumn(noteTable, "seen", func(m *Note) **time.Time { return &m.Seen }),
 	}
-	noteTable.AddGlobalScope("published", func(q orm.Query[Note]) orm.Query[Note] { return q.Where(s.Title.Ne("draft")) })
+	noteTable.AddGlobalScope("published", func(q orm.Query[Note, string]) orm.Query[Note, string] { return q.Where(s.Title.Ne("draft")) })
 	return s
 }()
 
@@ -1081,7 +1081,7 @@ func TestQdrant(t *testing.T) {
 
 	before := must(Docs.Query().On("qdrant").Count(ctx))
 	extra := make([]Doc, 300)
-	ids := make([]any, len(extra))
+	ids := make([]string, len(extra))
 	for i := range extra {
 		extra[i] = Doc{ID: fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1), Title: "extra", Vec: orm.NewVector3(1, float64(i), 0)}
 		ids[i] = extra[i].ID

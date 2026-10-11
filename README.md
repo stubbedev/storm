@@ -8,7 +8,7 @@ users, err := Users.Query().
 	Scope(Active).
 	Where(Users.Karma.Gt(10)).
 	WhereHas(UserPosts, Published).
-	With(UserPosts, func(q orm.Query[Post]) orm.Query[Post] {
+	With(UserPosts, func(q PostQuery) PostQuery {
 		return q.OrderBy(Posts.Views.Desc()).With(PostComments)
 	}).
 	WithCount(UserPosts, Users.PostsCount).
@@ -19,7 +19,7 @@ emails, err := Users.Query().Pluck(ctx, Users.Email) // []string, inferred from 
 total, err := Posts.Query().Sum(ctx, Posts.Views)     // int64; Sum(ctx, Users.Email) does not compile
 ```
 
-Every column is typed (`orm.Column[User, string]`), so these mistakes are
+Every column is typed (`orm.Column[User, int64, string]` — model, key type, value type), so these mistakes are
 compile errors rather than runtime SQL errors:
 
 ```go
@@ -101,7 +101,8 @@ typed columns (`Users.Email`, `Users.CreatedAt`, ...) and table metadata.
 var UserPosts = orm.HasMany(Users.ID, Posts.UserID,
 	func(u *User, ps []Post) { u.Posts = ps })
 
-func Active(q orm.Query[User]) orm.Query[User] { return q.Where(Users.Active.Eq(true)) }
+// UserQuery is ormgen's alias for orm.Query[User, int64].
+func Active(q UserQuery) UserQuery { return q.Where(Users.Active.Eq(true)) }
 ```
 
 **3. Connect once.** The driver picks the dialect.
@@ -566,7 +567,7 @@ design and belong in migration code, not input.
 
 The whole API is generic over the model, so gopls carries the model type
 through every chain: hovering a query variable shows
-`orm.Query[models.User]`, `Pluck(ctx, Users.Email)` shows `[]string`, and a
+`orm.Query[models.User, int64]`, `Pluck(ctx, Users.Email)` shows `[]string`, and a
 condition shows `orm.Cond[models.User]`. ormgen also documents every
 generated symbol, so hovering `Users.Email` shows the column, table and
 field type at once.

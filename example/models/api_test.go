@@ -16,7 +16,7 @@ import (
 
 func TestScalarExpressions(t *testing.T) {
 	ctx := setup(t)
-	get := func(q orm.Query[User]) []string { return names(must(q.OrderBy(Users.ID.Asc()).Get(ctx))) }
+	get := func(q UserQuery) []string { return names(must(q.OrderBy(Users.ID.Asc()).Get(ctx))) }
 	fortyTwo := orm.Val[User](42)
 
 	eq(t, "neCol", get(Users.Where(Users.Karma.NeCol(fortyTwo))), []string{"Bob", "Carol", "Dave"})
@@ -53,13 +53,7 @@ func TestScalarExpressions(t *testing.T) {
 	eq(t, "sum of nothing is zero", must(Users.Where(Users.Karma.Gt(1000)).Sum(ctx, Users.Karma)), 0)
 	eq(t, "typed findMany", names(must(Users.FindMany(ctx, 1, 2))), []string{"Alice", "Bob"})
 	eq(t, "typed whereKeyNot", must(Users.WhereKeyNot(1, 2).Count(ctx)), int64(2))
-	eq(t, "an integer of another width finds the key", must(Users.Query().Find(ctx, int32(2))).Name, "Bob")
-	_, err = Users.Query().Find(ctx, "2")
-	eq(t, "a key of the wrong type is refused", err != nil && strings.Contains(err.Error(), "is a string, but the key is a int64"), true)
-	_, err = Users.Query().WhereKey(1, 2.5).Get(ctx)
-	eq(t, "a float key is refused", err != nil && strings.Contains(err.Error(), "float64"), true)
-	_, err = Users.Query().WhereKey(nil).Get(ctx)
-	eq(t, "a nil key is refused", err != nil && strings.Contains(err.Error(), "nil"), true)
+	eq(t, "typed find on a query chain", must(Users.Where(Users.Active.Eq(true)).Find(ctx, 2)).Name, "Bob")
 	_, err = Users.Query().Limit(0).Get(ctx)
 	eq(t, "a zero limit is refused, not unlimited", err != nil && strings.Contains(err.Error(), "Limit(0)"), true)
 	_, err = orm.From("users").Offset(-1).Get(ctx)
@@ -78,7 +72,7 @@ func TestScalarExpressions(t *testing.T) {
 
 func TestQueryShaping(t *testing.T) {
 	ctx := setup(t)
-	get := func(q orm.Query[User]) []string { return names(must(q.Get(ctx))) }
+	get := func(q UserQuery) []string { return names(must(q.Get(ctx))) }
 	byID := Users.Query().OrderBy(Users.ID.Asc())
 
 	eq(t, "orWhereNot", get(byID.Where(Users.Name.Eq("Alice")).OrWhereNot(Users.Active.Eq(true))), []string{"Alice", "Carol"})
@@ -136,7 +130,7 @@ func TestQueryShaping(t *testing.T) {
 func TestRelationOptions(t *testing.T) {
 	ctx := setup(t)
 	alice := must(Users.Find(ctx, 1))
-	get := func(q orm.Query[User]) []string { return names(must(q.OrderBy(Users.ID.Asc()).Get(ctx))) }
+	get := func(q UserQuery) []string { return names(must(q.OrderBy(Users.ID.Asc()).Get(ctx))) }
 
 	stats := must(Users.Query().
 		WithAvg(UserPosts, Posts.Views, Users.AvgPostViews).
@@ -165,12 +159,12 @@ func TestRelationOptions(t *testing.T) {
 
 	post := must(Posts.Find(ctx, 4))
 	eq(t, "belongsTo of", must(PostAuthor.Of(&post).First(ctx)).Name, "Bob")
-	eq(t, "belongsTo whereHas", must(Posts.Query().WhereHas(PostAuthor, func(q orm.Query[User]) orm.Query[User] {
+	eq(t, "belongsTo whereHas", must(Posts.Query().WhereHas(PostAuthor, func(q UserQuery) UserQuery {
 		return q.Where(Users.Name.Eq("Alice"))
 	}).Count(ctx)), int64(4))
 
 	eq(t, "wherePivot", must(UserRoles.WherePivot(RoleUsers.GrantedBy.Eq("system")).Of(&alice).Pluck(ctx, Roles.Name)), []string{"admin"})
-	eq(t, "scoped belongsToMany", must(UserRoles.Scoped(func(q orm.Query[Role]) orm.Query[Role] {
+	eq(t, "scoped belongsToMany", must(UserRoles.Scoped(func(q RoleQuery) RoleQuery {
 		return q.Where(Roles.Name.Eq("editor"))
 	}).Of(&alice).Pluck(ctx, Roles.Name)), []string{"editor"})
 

@@ -25,7 +25,7 @@ type Event struct {
 	Vec    orm.Vector[orm.D3]          `db:"vec"`
 }
 
-var eventTable = &orm.Table[Event]{
+var eventTable = &orm.Table[Event, int64]{
 	Name:       "events",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyManual,
@@ -53,14 +53,14 @@ var eventTable = &orm.Table[Event]{
 }
 
 var Events = struct {
-	*orm.Table[Event]
-	ID     orm.Column[Event, int64]
-	Body   orm.Column[Event, string]
-	Active orm.Column[Event, bool]
-	Tags   orm.Column[Event, orm.JSON[[]string]]
-	Meta   orm.Column[Event, orm.JSON[map[string]string]]
-	At     orm.Column[Event, time.Time]
-	Vec    orm.Column[Event, orm.Vector[orm.D3]]
+	*orm.Table[Event, int64]
+	ID     orm.Column[Event, int64, int64]
+	Body   orm.Column[Event, int64, string]
+	Active orm.Column[Event, int64, bool]
+	Tags   orm.Column[Event, int64, orm.JSON[[]string]]
+	Meta   orm.Column[Event, int64, orm.JSON[map[string]string]]
+	At     orm.Column[Event, int64, time.Time]
+	Vec    orm.Column[Event, int64, orm.Vector[orm.D3]]
 }{
 	Table:  eventTable,
 	ID:     orm.NewColumn(eventTable, "id", func(m *Event) *int64 { return &m.ID }),
@@ -107,7 +107,7 @@ type JDoc struct {
 	Tags *orm.JSON[[]any]          `db:"tags"`
 }
 
-var jdocTable = &orm.Table[JDoc]{
+var jdocTable = &orm.Table[JDoc, int64]{
 	Name:       "jdocs",
 	PrimaryKey: "id",
 	KeyType:    orm.KeyManual,
@@ -127,10 +127,10 @@ var jdocTable = &orm.Table[JDoc]{
 }
 
 var JDocs = struct {
-	*orm.Table[JDoc]
-	ID   orm.Column[JDoc, int64]
-	Doc  orm.Column[JDoc, *orm.JSON[map[string]any]]
-	Tags orm.Column[JDoc, *orm.JSON[[]any]]
+	*orm.Table[JDoc, int64]
+	ID   orm.Column[JDoc, int64, int64]
+	Doc  orm.Column[JDoc, int64, *orm.JSON[map[string]any]]
+	Tags orm.Column[JDoc, int64, *orm.JSON[[]any]]
 }{
 	Table: jdocTable,
 	ID:    orm.NewColumn(jdocTable, "id", func(m *JDoc) *int64 { return &m.ID }),

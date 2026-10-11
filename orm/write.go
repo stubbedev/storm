@@ -18,7 +18,7 @@ import (
 // now is the timestamp the table maintains its created, updated and
 // deleted columns with: UTC, at TimePrecision fractional second digits
 // (whole seconds by default, like Laravel's date format).
-func (t *Table[M]) now() time.Time {
+func (t *Table[M, K]) now() time.Time {
 	unit := time.Second
 	for range t.TimePrecision {
 		unit /= 10
@@ -30,12 +30,12 @@ func (t *Table[M]) now() time.Time {
 // Single-model writes (fire events, maintain timestamps and dirty state)
 // ---------------------------------------------------------------------------
 
-func (t *Table[M]) Create(ctx context.Context, m *M) error { return t.Query().Create(ctx, m) }
-func (t *Table[M]) Save(ctx context.Context, m *M) error   { return t.Query().Save(ctx, m) }
-func (t *Table[M]) Delete(ctx context.Context, m *M) error { return t.Query().DeleteModel(ctx, m) }
+func (t *Table[M, K]) Create(ctx context.Context, m *M) error { return t.Query().Create(ctx, m) }
+func (t *Table[M, K]) Save(ctx context.Context, m *M) error   { return t.Query().Save(ctx, m) }
+func (t *Table[M, K]) Delete(ctx context.Context, m *M) error { return t.Query().DeleteModel(ctx, m) }
 
 // Create inserts m. Auto-increment keys are read back, UUID keys generated.
-func (q Query[M]) Create(ctx context.Context, m *M) error {
+func (q Query[M, K]) Create(ctx context.Context, m *M) error {
 	if q.table.state(m).exists {
 		return errors.New("orm: Create called on a model that already exists; use Save")
 	}
@@ -43,7 +43,7 @@ func (q Query[M]) Create(ctx context.Context, m *M) error {
 }
 
 // Save inserts m if it is new, otherwise updates its dirty columns.
-func (q Query[M]) Save(ctx context.Context, m *M) error {
+func (q Query[M, K]) Save(ctx context.Context, m *M) error {
 	t := q.table
 	if err := t.fire(ctx, Saving, m); err != nil {
 		return err
@@ -61,7 +61,7 @@ func (q Query[M]) Save(ctx context.Context, m *M) error {
 }
 
 // assignKey fills a missing uuid or ulid primary key (HasUuids / HasUlids).
-func (t *Table[M]) assignKey(m *M) {
+func (t *Table[M, K]) assignKey(m *M) {
 	switch {
 	case t.KeyType == KeyUUID && isZero(t.key(m)):
 		t.setValue(m, t.PrimaryKey, NewUUIDv7())
@@ -70,7 +70,7 @@ func (t *Table[M]) assignKey(m *M) {
 	}
 }
 
-func (q Query[M]) performInsert(ctx context.Context, m *M) error {
+func (q Query[M, K]) performInsert(ctx context.Context, m *M) error {
 	t := q.table
 	if err := t.fire(ctx, Creating, m); err != nil {
 		return err
@@ -146,7 +146,7 @@ func scanReturnedKey(rows *sql.Rows, dst any) error {
 	return rows.Err()
 }
 
-func (q Query[M]) insertDoc(ctx context.Context, m *M) (bool, error) {
+func (q Query[M, K]) insertDoc(ctx context.Context, m *M) (bool, error) {
 	if _, ok, err := q.docstore(ctx); err != nil {
 		return true, err
 	} else if !ok {
@@ -163,7 +163,7 @@ func (q Query[M]) insertDoc(ctx context.Context, m *M) (bool, error) {
 	return true, t.fire(ctx, Created, m)
 }
 
-func (q Query[M]) performUpdate(ctx context.Context, m *M) error {
+func (q Query[M, K]) performUpdate(ctx context.Context, m *M) error {
 	t := q.table
 	st := t.state(m)
 	if len(t.Dirty(m)) == 0 {
@@ -192,17 +192,22 @@ func (q Query[M]) performUpdate(ctx context.Context, m *M) error {
 
 // instance is a query for exactly m's row, by its original key, ignoring
 // global scopes (newModelQuery()).
-func (q Query[M]) instance(m *M) Query[M] {
+func (q Query[M, K]) instance(m *M) Query[M, K] {
 	t := q.table
-	key, ok := t.state(m).original[t.PrimaryKey]
+	raw, ok := t.state(m).original[t.PrimaryKey]
 	if !ok {
-		key = t.key(m)
+		raw = t.key(m)
+	}
+	key, err := t.keyOf(raw)
+	if err != nil {
+		q.err = cmp.Or(q.err, err)
+		return q
 	}
 	return t.Query().On(q.onConn).WithoutGlobalScopes().WhereKey(key)
 }
 
 // DeleteModel deletes m — soft deletes it if the table uses soft deletes.
-func (q Query[M]) DeleteModel(ctx context.Context, m *M) error {
+func (q Query[M, K]) DeleteModel(ctx context.Context, m *M) error {
 	t := q.table
 	if t.PrimaryKey == "" {
 		return errors.New("orm: cannot delete a model without a primary key")
@@ -235,7 +240,7 @@ func (q Query[M]) DeleteModel(ctx context.Context, m *M) error {
 }
 
 // ForceDelete permanently deletes m, even with soft deletes.
-func (q Query[M]) ForceDeleteModel(ctx context.Context, m *M) error {
+func (q Query[M, K]) ForceDeleteModel(ctx context.Context, m *M) error {
 	t := q.table
 	if err := t.fire(ctx, ForceDeleting, m); err != nil {
 		return err
@@ -253,12 +258,12 @@ func (q Query[M]) ForceDeleteModel(ctx context.Context, m *M) error {
 	return t.fire(ctx, ForceDeleted, m)
 }
 
-func (t *Table[M]) ForceDelete(ctx context.Context, m *M) error {
+func (t *Table[M, K]) ForceDelete(ctx context.Context, m *M) error {
 	return t.Query().ForceDeleteModel(ctx, m)
 }
 
 // Restore un-deletes a soft deleted model.
-func (t *Table[M]) Restore(ctx context.Context, m *M) error {
+func (t *Table[M, K]) Restore(ctx context.Context, m *M) error {
 	if err := t.fire(ctx, Restoring, m); err != nil {
 		return err
 	}
@@ -270,10 +275,10 @@ func (t *Table[M]) Restore(ctx context.Context, m *M) error {
 }
 
 // Trashed reports whether m is soft deleted.
-func (t *Table[M]) Trashed(m *M) bool { return t.softDeletes() && !isZero(t.value(m, t.DeletedAt)) }
+func (t *Table[M, K]) Trashed(m *M) bool { return t.softDeletes() && !isZero(t.value(m, t.DeletedAt)) }
 
 // Touch updates m's updated-at timestamp.
-func (t *Table[M]) Touch(ctx context.Context, m *M) error {
+func (t *Table[M, K]) Touch(ctx context.Context, m *M) error {
 	if t.UpdatedAt == "" {
 		return nil
 	}
@@ -282,7 +287,7 @@ func (t *Table[M]) Touch(ctx context.Context, m *M) error {
 }
 
 // Refresh reloads m's columns from the database.
-func (t *Table[M]) Refresh(ctx context.Context, m *M) error {
+func (t *Table[M, K]) Refresh(ctx context.Context, m *M) error {
 	fresh, err := t.Fresh(ctx, m)
 	if err != nil {
 		return err
@@ -295,13 +300,18 @@ func (t *Table[M]) Refresh(ctx context.Context, m *M) error {
 }
 
 // Fresh returns a newly loaded copy of m.
-func (t *Table[M]) Fresh(ctx context.Context, m *M) (M, error) {
-	return t.Query().WithoutGlobalScopes().Find(ctx, t.key(m))
+func (t *Table[M, K]) Fresh(ctx context.Context, m *M) (M, error) {
+	key, err := t.keyOf(t.key(m))
+	if err != nil {
+		var zero M
+		return zero, err
+	}
+	return t.Query().WithoutGlobalScopes().Find(ctx, key)
 }
 
 // Replicate returns an unsaved copy of m without its key, timestamps and
 // the except columns.
-func (t *Table[M]) Replicate(ctx context.Context, m *M, except ...AnyColumn[M]) (M, error) {
+func (t *Table[M, K]) Replicate(ctx context.Context, m *M, except ...AnyColumn[M]) (M, error) {
 	c := *m
 	*t.state(&c) = Model{}
 	for _, name := range []string{t.PrimaryKey, t.CreatedAt, t.UpdatedAt, t.DeletedAt} {
@@ -316,7 +326,7 @@ func (t *Table[M]) Replicate(ctx context.Context, m *M, except ...AnyColumn[M]) 
 }
 
 // Destroy deletes the models with the given keys, firing events for each.
-func (t *Table[M]) Destroy(ctx context.Context, ids ...any) (int, error) {
+func (t *Table[M, K]) Destroy(ctx context.Context, ids ...K) (int, error) {
 	models, err := t.Query().FindMany(ctx, ids...)
 	if err != nil {
 		return 0, err
@@ -337,7 +347,7 @@ func (t *Table[M]) Destroy(ctx context.Context, ids ...any) (int, error) {
 // filled with attrs and values.
 //
 //	Users.Query().FirstOrNew(ctx, orm.Attrs(Users.Email.Set("a@b.c")), Users.Name.Set("A"))
-func (q Query[M]) FirstOrNew(ctx context.Context, attrs []Assignment[M], values ...Assignment[M]) (M, error) {
+func (q Query[M, K]) FirstOrNew(ctx context.Context, attrs []Assignment[M], values ...Assignment[M]) (M, error) {
 	m, err := q.Where(matching(attrs)...).First(ctx)
 	if errors.Is(err, ErrNotFound) {
 		var fresh M
@@ -348,7 +358,7 @@ func (q Query[M]) FirstOrNew(ctx context.Context, attrs []Assignment[M], values 
 }
 
 // FirstOrCreate finds a model matching attrs or creates it with attrs and values.
-func (q Query[M]) FirstOrCreate(ctx context.Context, attrs []Assignment[M], values ...Assignment[M]) (M, error) {
+func (q Query[M, K]) FirstOrCreate(ctx context.Context, attrs []Assignment[M], values ...Assignment[M]) (M, error) {
 	m, err := q.FirstOrNew(ctx, attrs, values...)
 	if err != nil || q.table.state(&m).exists {
 		return m, err
@@ -357,7 +367,7 @@ func (q Query[M]) FirstOrCreate(ctx context.Context, attrs []Assignment[M], valu
 }
 
 // UpdateOrCreate updates the model matching attrs with values, or creates it.
-func (q Query[M]) UpdateOrCreate(ctx context.Context, attrs []Assignment[M], values ...Assignment[M]) (M, error) {
+func (q Query[M, K]) UpdateOrCreate(ctx context.Context, attrs []Assignment[M], values ...Assignment[M]) (M, error) {
 	m, err := q.FirstOrNew(ctx, attrs, values...)
 	if err != nil {
 		return m, err
@@ -373,7 +383,7 @@ func (q Query[M]) UpdateOrCreate(ctx context.Context, attrs []Assignment[M], val
 // cannot be contained — no unique constraints (ClickHouse), or a
 // transaction without savepoints that the failure would abort (DuckDB,
 // MongoDB) — it looks the row up first instead (FirstOrCreate).
-func (q Query[M]) CreateOrFirst(ctx context.Context, attrs []Assignment[M], values ...Assignment[M]) (M, error) {
+func (q Query[M, K]) CreateOrFirst(ctx context.Context, attrs []Assignment[M], values ...Assignment[M]) (M, error) {
 	c, err := lookup(ctx, q.connName())
 	if err != nil {
 		var zero M
@@ -425,7 +435,7 @@ func Fill[M any](m *M, sets ...Assignment[M]) { fill(m, sets) }
 // ---------------------------------------------------------------------------
 
 // Update updates every matching row, maintaining updated-at.
-func (q Query[M]) Update(ctx context.Context, sets ...Assignment[M]) (int64, error) {
+func (q Query[M, K]) Update(ctx context.Context, sets ...Assignment[M]) (int64, error) {
 	t := q.table
 	if t.UpdatedAt != "" && timestamps(ctx) && !slices.ContainsFunc(sets, func(a Assignment[M]) bool { return a.col == t.UpdatedAt }) {
 		sets = append(slices.Clip(sets), setLiteral[M](t.UpdatedAt, t.now()))
@@ -433,7 +443,7 @@ func (q Query[M]) Update(ctx context.Context, sets ...Assignment[M]) (int64, err
 	return q.update(ctx, sets)
 }
 
-func (q Query[M]) update(ctx context.Context, sets []Assignment[M]) (int64, error) {
+func (q Query[M, K]) update(ctx context.Context, sets []Assignment[M]) (int64, error) {
 	if len(sets) == 0 {
 		return 0, fmt.Errorf("orm: update on %s: no columns to set", q.table.Name)
 	}
@@ -450,16 +460,16 @@ func (q Query[M]) update(ctx context.Context, sets []Assignment[M]) (int64, erro
 }
 
 // Increment adds by to a numeric column on every matching row.
-func (q Query[M]) Increment[V Number](ctx context.Context, col Column[M, V], by V, extra ...Assignment[M]) (int64, error) {
+func (q Query[M, K]) Increment[V Number](ctx context.Context, col Column[M, K, V], by V, extra ...Assignment[M]) (int64, error) {
 	return q.Update(ctx, append([]Assignment[M]{{colSet: increment(col, col.name, by)}}, extra...)...)
 }
 
-func (q Query[M]) Decrement[V Number](ctx context.Context, col Column[M, V], by V, extra ...Assignment[M]) (int64, error) {
+func (q Query[M, K]) Decrement[V Number](ctx context.Context, col Column[M, K, V], by V, extra ...Assignment[M]) (int64, error) {
 	return q.Update(ctx, append([]Assignment[M]{{colSet: decrement(col, col.name, by)}}, extra...)...)
 }
 
 // Delete deletes every matching row — soft deletes if the table uses them.
-func (q Query[M]) Delete(ctx context.Context) (int64, error) {
+func (q Query[M, K]) Delete(ctx context.Context) (int64, error) {
 	if q.table.softDeletes() {
 		return q.Update(ctx, setLiteral[M](q.table.DeletedAt, q.table.now()))
 	}
@@ -467,10 +477,10 @@ func (q Query[M]) Delete(ctx context.Context) (int64, error) {
 }
 
 // ForceDelete permanently deletes every matching row.
-func (q Query[M]) ForceDelete(ctx context.Context) (int64, error) { return q.hardDelete(ctx) }
+func (q Query[M, K]) ForceDelete(ctx context.Context) (int64, error) { return q.hardDelete(ctx) }
 
 // Restore un-deletes every matching soft deleted row.
-func (q Query[M]) Restore(ctx context.Context) (int64, error) {
+func (q Query[M, K]) Restore(ctx context.Context) (int64, error) {
 	return q.OnlyTrashed().Update(ctx, setLiteral[M](q.table.DeletedAt, nil))
 }
 
@@ -537,7 +547,7 @@ func mutationSuffix(b *SQL) {
 	}
 }
 
-func (q Query[M]) hardDelete(ctx context.Context) (int64, error) {
+func (q Query[M, K]) hardDelete(ctx context.Context) (int64, error) {
 	q = q.prepared()
 	if n, ok, err := q.deleteDocs(ctx); ok {
 		return n, err
@@ -551,7 +561,7 @@ func (q Query[M]) hardDelete(ctx context.Context) (int64, error) {
 
 // mutationWhere narrows a limited or offset mutation to the keys its
 // SELECT picks, in its order: no engine limits UPDATE and DELETE alike.
-func (q Query[M]) mutationWhere() (frag, error) {
+func (q Query[M, K]) mutationWhere() (frag, error) {
 	if q.limit == 0 && q.offset == 0 {
 		return q.renderWhere, nil
 	}
@@ -579,7 +589,7 @@ func keyedWhere(key string, sel frag) frag {
 	}
 }
 
-func (q Query[M]) renderWhere(b *SQL) {
+func (q Query[M, K]) renderWhere(b *SQL) {
 	if q.err != nil {
 		b.fail(q.err)
 	}
@@ -590,7 +600,7 @@ func (q Query[M]) renderWhere(b *SQL) {
 }
 
 // InsertUsing inserts the rows selected by sub (insertUsing).
-func (q Query[M]) InsertUsing[O any](ctx context.Context, cols []AnyColumn[M], sub Query[O], selects ...AnyExpr) (int64, error) {
+func (q Query[M, K]) InsertUsing[O any, OK comparable](ctx context.Context, cols []AnyColumn[M], sub Query[O, OK], selects ...AnyExpr) (int64, error) {
 	return insertUsing(ctx, q.connName(), q.table.Name, names(cols), func(b *SQL) {
 		sub.renderSelect(b, func(b *SQL) {
 			for i, e := range selects {
@@ -625,12 +635,12 @@ func insertUsing(ctx context.Context, conn, table string, cols []string, sub fra
 }
 
 // Truncate empties the table and resets its auto-increment counter.
-func (t *Table[M]) Truncate(ctx context.Context) error { return t.Query().Truncate(ctx) }
+func (t *Table[M, K]) Truncate(ctx context.Context) error { return t.Query().Truncate(ctx) }
 
 // Truncate empties the table on the query's connection, resetting its
 // auto-increment counter; on a document store it deletes every document.
 // The query's conditions do not apply.
-func (q Query[M]) Truncate(ctx context.Context) error {
+func (q Query[M, K]) Truncate(ctx context.Context) error {
 	t := q.table
 	if ds, ok, err := q.docstore(ctx); err != nil {
 		return err
@@ -656,7 +666,7 @@ func (q Query[M]) Truncate(ctx context.Context) error {
 // Prune deletes every matching model one by one, firing events — force
 // deleting soft deletable models (Prunable). For a mass delete without
 // events (MassPrunable) use Delete or ForceDelete.
-func (q Query[M]) Prune(ctx context.Context, chunk int) (int, error) {
+func (q Query[M, K]) Prune(ctx context.Context, chunk int) (int, error) {
 	t, n := q.table, 0
 	for models, err := range q.WithTrashed().chunksByID(ctx, chunk) {
 		if err != nil {
@@ -677,17 +687,19 @@ func (q Query[M]) Prune(ctx context.Context, chunk int) (int, error) {
 }
 
 // SaveQuietly, DeleteQuietly, ForceDeleteQuietly and RestoreQuietly skip model events.
-func (t *Table[M]) SaveQuietly(ctx context.Context, m *M) error { return t.Save(WithoutEvents(ctx), m) }
+func (t *Table[M, K]) SaveQuietly(ctx context.Context, m *M) error {
+	return t.Save(WithoutEvents(ctx), m)
+}
 
-func (t *Table[M]) DeleteQuietly(ctx context.Context, m *M) error {
+func (t *Table[M, K]) DeleteQuietly(ctx context.Context, m *M) error {
 	return t.Delete(WithoutEvents(ctx), m)
 }
 
-func (t *Table[M]) ForceDeleteQuietly(ctx context.Context, m *M) error {
+func (t *Table[M, K]) ForceDeleteQuietly(ctx context.Context, m *M) error {
 	return t.ForceDelete(WithoutEvents(ctx), m)
 }
 
-func (t *Table[M]) RestoreQuietly(ctx context.Context, m *M) error {
+func (t *Table[M, K]) RestoreQuietly(ctx context.Context, m *M) error {
 	return t.Restore(WithoutEvents(ctx), m)
 }
 
@@ -702,18 +714,18 @@ func WithoutTimestamps(ctx context.Context) context.Context {
 func timestamps(ctx context.Context) bool { return ctx.Value(noTimestampsKey{}) == nil }
 
 // Insert bulk-inserts rows as-is: no events, no timestamps (insert()).
-func (q Query[M]) Insert(ctx context.Context, ms ...M) error {
+func (q Query[M, K]) Insert(ctx context.Context, ms ...M) error {
 	return q.insertRows(ctx, ms, conflict{})
 }
 
 // InsertOrIgnore bulk-inserts, skipping rows that violate unique constraints.
-func (q Query[M]) InsertOrIgnore(ctx context.Context, ms ...M) error {
+func (q Query[M, K]) InsertOrIgnore(ctx context.Context, ms ...M) error {
 	return q.insertRows(ctx, ms, conflict{kind: conflictIgnore})
 }
 
 // InsertGetID inserts one row as-is and returns the database-generated
 // key (insertGetId); the table needs an auto-increment primary key.
-func (q Query[M]) InsertGetID(ctx context.Context, m M) (int64, error) {
+func (q Query[M, K]) InsertGetID(ctx context.Context, m M) (int64, error) {
 	t := q.table
 	if t.PrimaryKey == "" || t.KeyType != KeyAutoIncrement {
 		return 0, fmt.Errorf("orm: table %s has no auto-increment primary key", t.Name)
@@ -727,7 +739,7 @@ func (q Query[M]) InsertGetID(ctx context.Context, m M) (int64, error) {
 
 // Upsert inserts rows or updates the update columns (default: all others)
 // when uniqueBy conflicts. Timestamps are maintained.
-func (q Query[M]) Upsert(ctx context.Context, ms []M, uniqueBy []AnyColumn[M], update ...AnyColumn[M]) error {
+func (q Query[M, K]) Upsert(ctx context.Context, ms []M, uniqueBy []AnyColumn[M], update ...AnyColumn[M]) error {
 	t := q.table
 	ts := t.now()
 	for i := range ms {
@@ -751,7 +763,7 @@ func (q Query[M]) Upsert(ctx context.Context, ms []M, uniqueBy []AnyColumn[M], u
 	return q.insertRows(ctx, ms, conflict{kind: conflictUpdate, uniqueBy: uniq, update: upd})
 }
 
-func (q Query[M]) insertRows(ctx context.Context, ms []M, c conflict) error {
+func (q Query[M, K]) insertRows(ctx context.Context, ms []M, c conflict) error {
 	if len(ms) == 0 {
 		return nil
 	}
@@ -793,16 +805,16 @@ func (q Query[M]) insertRows(ctx context.Context, ms []M, c conflict) error {
 }
 
 // insertSQLRows inserts ms over cols in one statement.
-func (q Query[M]) insertSQLRows(ctx context.Context, cols []string, ms []*M, c conflict) error {
+func (q Query[M, K]) insertSQLRows(ctx context.Context, cols []string, ms []*M, c conflict) error {
 	return insertSQL(ctx, q.connName(), q.table.Name, cols, q.modelRows(cols, ms), c, q.table.PrimaryKey)
 }
 
-func (q Query[M]) renderInsert(b *SQL, verb string, cols []string, ms []*M) {
+func (q Query[M, K]) renderInsert(b *SQL, verb string, cols []string, ms []*M) {
 	writeInsert(b, verb, q.table.Name, cols, q.modelRows(cols, ms))
 }
 
 // modelRows is ms as insert rows over cols.
-func (q Query[M]) modelRows(cols []string, ms []*M) [][]colSet {
+func (q Query[M, K]) modelRows(cols []string, ms []*M) [][]colSet {
 	rows := make([][]colSet, len(ms))
 	for i, m := range ms {
 		row := make([]colSet, len(cols))
