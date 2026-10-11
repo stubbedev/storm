@@ -98,6 +98,12 @@ Directive options (`//orm:table <name> [options]`):
 Tag options: `pk`, `virtual` (selected only, never written), and `nullzero`
 (write the zero value as NULL). Zero `time.Time` values are always written as
 NULL, and NULLs are read back as zero values, or as nil for pointer fields.
+Fields of an embedded struct (a shared `Timestamps` struct, say) are columns
+too. ormgen type-checks the package, so a named key type such as
+`type UserID int64` still auto-increments, and it refuses anything it cannot
+generate correctly: an unknown option or tag, two `pk` fields, a field name
+that would hide a table method such as `Find`, or a generated name the
+package already declares.
 
 **Casts.** Use `orm.JSON[T]` for JSON columns, `time.Time` for dates, and
 typed string constants for enums. Any custom type implementing `sql.Scanner`
