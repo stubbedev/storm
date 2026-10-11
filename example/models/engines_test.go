@@ -857,6 +857,8 @@ func TestMongo(t *testing.T) {
 	}
 	_, err = mongoDocs.Explain()
 	eq(t, "row explain refused", orm.IsNotTranslatable(err), true)
+	_, err = Docs.Query().On("mongo").LockForUpdate().Get()
+	eq(t, "a model query's row lock is refused, not ignored", orm.IsNotTranslatable(err), true)
 	eq(t, "not equal", must(orm.From("documents").On("mongo").Where("title", "!=", "near").Count()), int64(3))
 	eq(t, "ilike", must(orm.From("documents").On("mongo").Where("title", orm.ILike, "NEAR").Count()), int64(1))
 	eq(t, "not ilike", must(orm.From("documents").On("mongo").Where("title", orm.NotILike, "%E%").Count()), int64(1))

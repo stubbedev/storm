@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -530,4 +531,44 @@ func TestReadWriteReportsMatchedRows(t *testing.T) {
 	alice := must(Users.Find(1))
 	n := must(orm.From("users").On("rw-mysql").Where("id", orm.Eq, 1).Update(map[string]any{"name": alice.Name}))
 	eq(t, "an unchanged row still counts as updated", n, int64(1))
+}
+
+func TestLockWaits(t *testing.T) {
+	for _, c := range []struct {
+		d    orm.Dialect
+		want string
+	}{
+		{orm.Postgres, " FOR UPDATE SKIP LOCKED"},
+		{orm.MySQL, " FOR UPDATE SKIP LOCKED"},
+		{orm.MariaDB, " FOR UPDATE SKIP LOCKED"},
+		{orm.SQLite, ""},
+	} {
+		stmt, _ := rendered(Users.Query().LockForUpdate().SkipLocked().ToSQLFor(c.d))
+		eq(t, c.d.Name()+" skip locked", strings.HasSuffix(stmt, c.want) && strings.Contains(stmt, "LOCK") == (c.want != ""), true)
+	}
+	stmt, _ := rendered(Users.Query().SharedLock().NoWait().ToSQLFor(orm.MariaDB))
+	eq(t, "mariadb shared lock nowait", strings.HasSuffix(stmt, " LOCK IN SHARE MODE NOWAIT"), true)
+	_, _, err := Users.Query().SkipLocked().ToSQLFor(orm.Postgres)
+	eq(t, "skip locked without a lock is an error", err != nil && strings.Contains(err.Error(), "need LockForUpdate or SharedLock"), true)
+	_, _, err = orm.From("users").NoWait().ToSQL()
+	eq(t, "skip locked without a lock is an error", err != nil && strings.Contains(err.Error(), "need LockForUpdate or SharedLock"), true)
+
+	if driver != "pgx" && driver != "mysql" {
+		return
+	}
+	ctx := setup(t)
+	errRollBack := errors.New("roll back")
+	err = orm.Transaction(ctx, func(ctx context.Context) error {
+		must(Users.WithContext(ctx).Where(Users.ID.Eq(1)).LockForUpdate().First())
+		return orm.Transaction(context.Background(), func(other context.Context) error {
+			free := must(Users.WithContext(other).Query().OrderBy(Users.ID.Asc()).LockForUpdate().SkipLocked().Pluck(Users.ID))
+			eq(t, "skip locked leaves the locked row out", len(free) > 0 && !slices.Contains(free, 1), true)
+			rows := must(orm.From("users").WithContext(other).Where("id", orm.Eq, 1).LockForUpdate().SkipLocked().Get())
+			eq(t, "a row query skips the locked row too", len(rows), 0)
+			_, err := Users.WithContext(other).Where(Users.ID.Eq(1)).LockForUpdate().NoWait().First()
+			eq(t, "nowait fails at once on the locked row", err != nil, true)
+			return errRollBack
+		})
+	})
+	eq(t, "both transactions roll back", errors.Is(err, errRollBack), true)
 }

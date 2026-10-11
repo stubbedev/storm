@@ -130,6 +130,9 @@ func (q Query[M, K]) plan() (Plan, error) {
 	if q.distinct {
 		return notSupported("distinct")
 	}
+	if q.lock.mode != NoLock {
+		return notSupported("row locks")
+	}
 	if len(q.extras) > 0 {
 		return notSupported("addSelect aggregates (withCount and friends)")
 	}

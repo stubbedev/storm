@@ -2,6 +2,7 @@ package orm
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -25,7 +26,7 @@ type Dialect interface {
 	InsertVerb(ignore bool) string
 	// OnConflict writes the upsert / insert-or-ignore clause.
 	OnConflict(b *SQL, ignore bool, uniqueBy, update []string)
-	Lock(mode LockMode) string
+	Lock(mode LockMode, wait LockWait) string
 	// Limit writes LIMIT/OFFSET; zero means absent.
 	Limit(b *SQL, limit, offset int)
 	// NullsLast writes an ORDER BY term for e that sorts NULLs after every
@@ -68,6 +69,43 @@ const (
 	ForShare
 )
 
+// LockWait is what a locking read does about rows another transaction has
+// locked.
+type LockWait int
+
+const (
+	// WaitForLocks blocks until the rows are released (the default).
+	WaitForLocks LockWait = iota
+	// NoWait fails at once instead (NOWAIT).
+	NoWait
+	// SkipLocked leaves the locked rows out (SKIP LOCKED), as a job queue's
+	// workers do to take different jobs.
+	SkipLocked
+)
+
+// rowLock is a query's lock: its mode and what it does about rows that are
+// locked already.
+type rowLock struct {
+	mode LockMode
+	wait LockWait
+}
+
+func (l rowLock) render(b *SQL) {
+	if l.wait != WaitForLocks && l.mode == NoLock {
+		b.fail(errors.New("orm: NoWait and SkipLocked need LockForUpdate or SharedLock"))
+		return
+	}
+	b.Write(b.Dialect.Lock(l.mode, l.wait))
+}
+
+// lockClause appends the wait policy to a lock clause; no lock is no clause.
+func lockClause(clause string, w LockWait) string {
+	if clause == "" {
+		return ""
+	}
+	return clause + map[LockWait]string{NoWait: " NOWAIT", SkipLocked: " SKIP LOCKED"}[w]
+}
+
 var (
 	SQLite   Dialect = sqliteDialect{}
 	Postgres Dialect = postgresDialect{}
@@ -98,16 +136,16 @@ func DialectFor(driver string) (Dialect, bool) {
 
 type sqliteDialect struct{}
 
-func (sqliteDialect) Name() string           { return "sqlite" }
-func (sqliteDialect) Placeholder(int) string { return "?" }
-func (sqliteDialect) Quote(id string) string { return doubleQuote(id) }
-func (sqliteDialect) Bool(v bool) string     { return map[bool]string{true: "1", false: "0"}[v] }
-func (sqliteDialect) Returning() bool        { return true }
-func (sqliteDialect) AutoKeys() bool         { return true }
-func (sqliteDialect) InsertVerb(bool) string { return "INSERT" }
-func (sqliteDialect) Lock(LockMode) string   { return "" } // SQLite locks the whole database
-func (sqliteDialect) Random() string         { return "RANDOM()" }
-func (sqliteDialect) Limit(b *SQL, l, o int) { limit(b, l, o, "-1") }
+func (sqliteDialect) Name() string                   { return "sqlite" }
+func (sqliteDialect) Placeholder(int) string         { return "?" }
+func (sqliteDialect) Quote(id string) string         { return doubleQuote(id) }
+func (sqliteDialect) Bool(v bool) string             { return map[bool]string{true: "1", false: "0"}[v] }
+func (sqliteDialect) Returning() bool                { return true }
+func (sqliteDialect) AutoKeys() bool                 { return true }
+func (sqliteDialect) InsertVerb(bool) string         { return "INSERT" }
+func (sqliteDialect) Lock(LockMode, LockWait) string { return "" } // SQLite locks the whole database
+func (sqliteDialect) Random() string                 { return "RANDOM()" }
+func (sqliteDialect) Limit(b *SQL, l, o int)         { limit(b, l, o, "-1") }
 
 func (sqliteDialect) NullsLast(b *SQL, e AnyExpr, desc bool) { nullsLast(b, e, desc) }
 func (sqliteDialect) JSONLength(b *SQL, e AnyExpr)           { fn(b, "json_array_length", e) }
@@ -291,8 +329,8 @@ func (postgresDialect) Like(b *SQL, e AnyExpr, pattern string, caseless, not boo
 	standardLike(b, e, pattern, caseless, not)
 }
 
-func (postgresDialect) Lock(m LockMode) string {
-	return map[LockMode]string{ForUpdate: " FOR UPDATE", ForShare: " FOR SHARE"}[m]
+func (postgresDialect) Lock(m LockMode, w LockWait) string {
+	return lockClause(map[LockMode]string{ForUpdate: " FOR UPDATE", ForShare: " FOR SHARE"}[m], w)
 }
 
 func (postgresDialect) OnConflict(b *SQL, ignore bool, uniqueBy, update []string) {
@@ -452,8 +490,8 @@ func (mysqlDialect) InsertVerb(ignore bool) string {
 	return "INSERT"
 }
 
-func (mysqlDialect) Lock(m LockMode) string {
-	return map[LockMode]string{ForUpdate: " FOR UPDATE", ForShare: " FOR SHARE"}[m]
+func (mysqlDialect) Lock(m LockMode, w LockWait) string {
+	return lockClause(map[LockMode]string{ForUpdate: " FOR UPDATE", ForShare: " FOR SHARE"}[m], w)
 }
 
 func (mysqlDialect) OnConflict(b *SQL, ignore bool, _, update []string) {
@@ -558,8 +596,8 @@ type mariadbDialect struct{ mysqlDialect }
 func (mariadbDialect) Name() string    { return "mariadb" }
 func (mariadbDialect) Returning() bool { return true }
 
-func (mariadbDialect) Lock(m LockMode) string {
-	return map[LockMode]string{ForUpdate: " FOR UPDATE", ForShare: " LOCK IN SHARE MODE"}[m]
+func (mariadbDialect) Lock(m LockMode, w LockWait) string {
+	return lockClause(map[LockMode]string{ForUpdate: " FOR UPDATE", ForShare: " LOCK IN SHARE MODE"}[m], w)
 }
 
 // VectorDistance uses MariaDB's VEC_DISTANCE functions, which have no

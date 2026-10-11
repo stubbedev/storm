@@ -351,7 +351,7 @@ every `Where` (`OrWhereIn`, `OrWhereNull`, `OrWhereBetween`, ...),
 `WhereColumn`, `WhereExists`, `Distinct`, `SelectRaw`, `GroupBy`,
 `Having`, `HavingRaw`, `Union` / `UnionAll`, `Latest` / `Oldest`,
 `InRandomOrder`, `Reorder`, `When` / `Unless`, `LockForUpdate` /
-`SharedLock`, `ForPage`, `Paginate`, `SimplePaginate`, `CursorPaginate`,
+`SharedLock` with `NoWait` / `SkipLocked`, `ForPage`, `Paginate`, `SimplePaginate`, `CursorPaginate`,
 `Chunk`, `ChunkByID`, `Lazy`, `Cursor`, `Insert`, `InsertOrIgnore`,
 `Upsert`, `InsertGetID`, `InsertUsing`, `Update`, `Increment`,
 `Decrement`, `UpdateOrInsert`, `Delete`, `Explain` and `ToSQL`; see the
@@ -627,7 +627,7 @@ valid operators after `orm.`.
 | `select`, `addSelect`, `selectRaw`, `distinct` | `Select`, `AddSelect`, `AddSelectAs(col, expr)`, `Distinct` |
 | `join`, `leftJoin`, `rightJoin`, `crossJoin`, `joinSub` | `Join`, `LeftJoin`, `RightJoin`, `CrossJoin`, `JoinSub` |
 | `groupBy`, `having`, `orderBy`, `latest`, `inRandomOrder`, `reorder` | same names |
-| `union`, `unionAll`, `when`, `unless`, `lockForUpdate`, `sharedLock` | same names |
+| `union`, `unionAll`, `when`, `unless`, `lockForUpdate`, `sharedLock`, `skipLocked`, `noWait` | same names |
 | `get`, `first`, `firstOrFail`, `find`, `findMany`, `sole`, `value`, `pluck` | `Get`, `First` (`ErrNotFound`), `Find`, `FindMany`, `FindOr`, `Sole`, `Value`, `Pluck`, `PluckMap` |
 | `count`, `sum`, `avg`, `min`, `max`, `exists` | same names; `Sum` and `Avg` only accept numeric columns |
 | `chunk`, `chunkById`, `chunkWhile`, `lazy`, `cursor` | `Chunk`, `ChunkByID`, `ChunkWhile`, `Lazy` and `Cursor` (Go iterators) |

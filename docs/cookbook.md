@@ -227,6 +227,26 @@ Users.Query().Limit(10).Offset(20) // or ForPage(3, 10)
 Users.Query().Distinct().LockForUpdate() // SharedLock()
 ```
 
+A locking read waits for rows another transaction has locked, unless told
+otherwise: `NoWait()` fails at once, and `SkipLocked()` leaves those rows
+out, so workers of a job queue each claim a different job:
+
+```go
+err := orm.Transaction(ctx, func(ctx context.Context) error {
+	job, err := Jobs.WithContext(ctx).Query().Where(Jobs.Done.Eq(false)).
+		OrderBy(Jobs.ID.Asc()).LockForUpdate().SkipLocked().First()
+	if err != nil {
+		return err
+	}
+	// ... run it, mark it done
+})
+```
+
+Postgres, MySQL 8 and MariaDB 10.6+ render `NOWAIT` / `SKIP LOCKED`; SQLite
+locks the whole database, so there the locks are no-ops, as in Laravel.
+`NoWait` and `SkipLocked` without a lock are an error, and a document store
+refuses row locks rather than ignoring them.
+
 ## Aggregates and single values
 
 ```go

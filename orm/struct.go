@@ -42,7 +42,7 @@ type RowQuery struct {
 	badNode  bool   // set by clauses with no document form (WhereRaw)
 	orders   []keysetTerm
 	unions   []rowUnion
-	lock     LockMode
+	lock     rowLock
 	limit    int
 	offset   int
 	err      error // the first invalid builder call, reported when the query runs
@@ -461,8 +461,14 @@ func (r RowQuery) Unless(cond bool, fn func(RowQuery) RowQuery) RowQuery { retur
 
 // LockForUpdate and SharedLock lock the selected rows until the
 // transaction ends.
-func (r RowQuery) LockForUpdate() RowQuery { r.lock = ForUpdate; return r }
-func (r RowQuery) SharedLock() RowQuery    { r.lock = ForShare; return r }
+func (r RowQuery) LockForUpdate() RowQuery { r.lock.mode = ForUpdate; return r }
+func (r RowQuery) SharedLock() RowQuery    { r.lock.mode = ForShare; return r }
+
+// NoWait makes a locking read fail at once on a locked row (NOWAIT).
+func (r RowQuery) NoWait() RowQuery { r.lock.wait = NoWait; return r }
+
+// SkipLocked makes a locking read leave out locked rows (SKIP LOCKED).
+func (r RowQuery) SkipLocked() RowQuery { r.lock.wait = SkipLocked; return r }
 
 // Union appends other's rows, without duplicates; UnionAll keeps them.
 // Orders and limits apply to the combined rows.
@@ -698,7 +704,7 @@ func (r RowQuery) render(b *SQL, list frag) {
 	}
 	for i, u := range r.unions {
 		branch := u.q
-		branch.lock = 0
+		branch.lock = rowLock{}
 		writeUnion(b, u.all, i, len(branch.orders) > 0 || branch.limit > 0 || branch.offset > 0, func(b *SQL) { branch.render(b, list) })
 	}
 	unionResult(b, len(r.unions) > 0, func(b *SQL) {
@@ -711,7 +717,7 @@ func (r RowQuery) render(b *SQL, list frag) {
 		}
 	})
 	b.Dialect.Limit(b, r.limit, r.offset)
-	b.Write(b.Dialect.Lock(r.lock))
+	r.lock.render(b)
 }
 
 func (r RowQuery) writeTable(b *SQL) {
@@ -735,7 +741,7 @@ func (r RowQuery) renderWhere(b *SQL) {
 
 // read runs f on the read pool, or the write pool for a locking read.
 func (r RowQuery) read(ctx context.Context, f frag) (*resultRows, error) {
-	if r.lock != NoLock {
+	if r.lock.mode != NoLock {
 		return writeRows(ctx, r.connName(), f)
 	}
 	return readRows(ctx, r.connName(), f)
@@ -771,7 +777,7 @@ func (r RowQuery) planOf() (Plan, error) {
 	if len(r.unions) > 0 {
 		return Plan{}, &ErrNotTranslatable{Reason: "unions"}
 	}
-	if r.lock != 0 {
+	if r.lock.mode != NoLock {
 		return Plan{}, &ErrNotTranslatable{Reason: "row locks"}
 	}
 	if r.badNode {

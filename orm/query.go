@@ -31,7 +31,7 @@ type Query[M any, K comparable] struct {
 	limit    int
 	offset   int
 	unions   []union[M, K]
-	lock     LockMode
+	lock     rowLock
 	eager    []eagerFn[M]
 
 	trashed    trashedMode
@@ -338,8 +338,16 @@ func (q Query[M, K]) union(all bool, other Query[M, K]) Query[M, K] {
 	return q
 }
 
-func (q Query[M, K]) LockForUpdate() Query[M, K] { q.lock = ForUpdate; return q }
-func (q Query[M, K]) SharedLock() Query[M, K]    { q.lock = ForShare; return q }
+func (q Query[M, K]) LockForUpdate() Query[M, K] { q.lock.mode = ForUpdate; return q }
+func (q Query[M, K]) SharedLock() Query[M, K]    { q.lock.mode = ForShare; return q }
+
+// NoWait makes a locking read fail at once on a row another transaction has
+// locked, instead of waiting for it (NOWAIT).
+func (q Query[M, K]) NoWait() Query[M, K] { q.lock.wait = NoWait; return q }
+
+// SkipLocked makes a locking read leave out the rows another transaction
+// has locked (SKIP LOCKED): workers of a job queue each take other jobs.
+func (q Query[M, K]) SkipLocked() Query[M, K] { q.lock.wait = SkipLocked; return q }
 
 // ---------------------------------------------------------------------------
 // Scopes and connections
@@ -480,7 +488,7 @@ func (q Query[M, K]) renderBody(b *SQL, list frag) {
 		})
 	}
 	b.Dialect.Limit(b, q.limit, q.offset)
-	b.Write(b.Dialect.Lock(q.lock))
+	q.lock.render(b)
 }
 
 func limitErr(n int) error {
@@ -657,7 +665,7 @@ func (q Query[M, K]) conn(ctx context.Context) (Conn, error) { return sqlConn(ct
 // query reads on the read pool, or the write pool for a locking read,
 // whose lock means nothing on a replica.
 func (q Query[M, K]) query(ctx context.Context, f frag) (*resultRows, error) {
-	if q.lock != NoLock {
+	if q.lock.mode != NoLock {
 		return writeRows(ctx, q.connName(), f)
 	}
 	return readRows(ctx, q.connName(), f)

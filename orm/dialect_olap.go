@@ -162,7 +162,7 @@ func (clickhouseDialect) Returning() bool { return false }
 
 func (clickhouseDialect) AutoKeys() bool { return false }
 
-func (clickhouseDialect) Lock(LockMode) string { return "" }
+func (clickhouseDialect) Lock(LockMode, LockWait) string { return "" }
 
 func (clickhouseDialect) Random() string { return "rand()" }
 
