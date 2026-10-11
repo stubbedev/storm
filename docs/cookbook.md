@@ -394,6 +394,18 @@ Relation options: `Scoped(...)` for constrained relations, `WithAttributes(...)`
 (attributes set on create), `Chaperone(...)` (sets the inverse on children),
 `WherePivot(...)`, and `PostAuthor.Touches()` (`$touches`).
 
+`OfMany(col, useMax)` turns a `HasOne` into Eloquent's `latestOfMany` /
+`oldestOfMany` / `ofMany`: of the related rows the relation's own
+constraints allow, it keeps the one with the greatest (or least) `col`, ties
+going to the greatest (or least) key. `col` can be any ordered column,
+`time.Time` included. The pick is made in SQL, so an eager load fetches one
+row per parent, `WhereHas(UserLatestPost, ...)` and `WithCount` look at the
+picked row only, and the scopes of `With(UserLatestPost, scope)` filter the
+pick rather than choosing among the rows they keep: a user whose latest post
+fails the scope gets nil. (Document stores have no correlated subqueries, so
+there the candidates are loaded and the pick is made in Go, with the same
+result.)
+
 ## Eager loading
 
 ```go

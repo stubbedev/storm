@@ -646,7 +646,7 @@ valid operators after `orm.`.
 | `hasOne`, `hasMany`, `belongsTo`, `belongsToMany` (+ pivot) | `orm.HasOne`, `HasMany`, `BelongsTo`, `BelongsToMany` (typed pivot model) |
 | `hasOneThrough`, `hasManyThrough` | `orm.HasOneThrough`, `HasManyThrough` |
 | `morphOne`, `morphMany`, `morphTo`, `morphToMany`, `morphedByMany` | same names |
-| `latestOfMany`, `ofMany`, `withDefault`, `chaperone`, `touches` | `OfMany`, `WithDefault`, `Chaperone`, `Touches` |
+| `latestOfMany`, `oldestOfMany`, `ofMany` (picked in SQL), `withDefault`, `chaperone`, `touches` | `OfMany(col, useMax)`, `WithDefault`, `Chaperone`, `Touches` |
 | `with`, nested and constrained eager loading, `load` | `With(rel, scopes...)`, `orm.Load` |
 | `has`, `whereHas`, `doesntHave`, `whereRelation`, `whereHasMorph`, `whereMorphedTo` | `HasCount`, `WhereHas`, `WhereDoesntHave`, `WhereRelation`, `Rel.HasMorph`, `Rel.Is` |
 | `whereBelongsTo`, `whereAttachedTo` | `PostAuthor.Is(&u)`, `UserRoles.AttachedTo(&role)` |

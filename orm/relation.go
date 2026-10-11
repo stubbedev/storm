@@ -1,9 +1,13 @@
 package orm
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
+	"strings"
+	"time"
 )
 
 // Loader is a relation that can be eager loaded onto a slice of M.
@@ -27,6 +31,9 @@ const selfAlias = "laravel_reserved_0"
 // throughAlias aliases a through relation's intermediate table when it is
 // the parent's own.
 const throughAlias = "laravel_reserved_1"
+
+// ofManyAlias aliases the related table inside an ofMany pick's subquery.
+const ofManyAlias = "laravel_reserved_2"
 
 // ---------------------------------------------------------------------------
 // Query methods using relations
@@ -293,8 +300,17 @@ func (r *HasManyRel[M, MK, R, RK, J]) SaveMany(parent *M, children []R) error {
 // HasOneRel is a one-to-one relation (hasOne / morphOne / ofMany).
 type HasOneRel[M any, MK comparable, R any, RK comparable, J comparable] struct {
 	hasBase[M, MK, R, RK, J]
-	set    func(*M, *R)
-	better func(a, b *R) bool // ofMany: whether a beats b
+	set func(*M, *R)
+	of  *ofMany[R]
+}
+
+// ofMany picks one related row per parent: the first in orders among the
+// rows sharing its foreign key, as Eloquent's ofMany does. better reports
+// whether a comes before b in that order, for document stores, which have
+// no correlated subqueries.
+type ofMany[R any] struct {
+	orders []Order[R]
+	better func(a, b *R) bool
 }
 
 func HasOne[M any, MK comparable, R any, RK comparable, J comparable](local Column[M, MK, J], foreign Column[R, RK, J], set func(*M, *R)) *HasOneRel[M, MK, R, RK, J] {
@@ -307,8 +323,6 @@ func MorphOne[M any, MK comparable, R any, RK comparable, J comparable](local Co
 	return r
 }
 
-// OfMany picks one of many related rows by the max (or min) of col —
-// latestOfMany / oldestOfMany / ofMany('price', 'max').
 // WithContext returns the relation running its writes (Create, Save)
 // with ctx: inside the transaction ctx carries.
 func (r *HasOneRel[M, MK, R, RK, J]) WithContext(ctx context.Context) *HasOneRel[M, MK, R, RK, J] {
@@ -317,21 +331,71 @@ func (r *HasOneRel[M, MK, R, RK, J]) WithContext(ctx context.Context) *HasOneRel
 	return &c
 }
 
-func (r *HasOneRel[M, MK, R, RK, J]) OfMany[V interface {
-	~int | ~int64 | ~float64 | ~string
-}](col Column[R, RK, V], useMax bool) *HasOneRel[M, MK, R, RK, J] {
+// OfMany picks, of many related rows, the one with the greatest (useMax)
+// or least col, ties going to the greatest or least key — latestOfMany /
+// oldestOfMany / ofMany('price', 'max'). The pick is made in SQL among the
+// rows the relation's own constraints allow, so WhereHas and WithCount see
+// only it, and an eager load's scopes filter the picked row rather than
+// choosing among the rows they keep.
+func (r *HasOneRel[M, MK, R, RK, J]) OfMany[V cmp.Ordered | time.Time](col Column[R, RK, V], useMax bool) *HasOneRel[M, MK, R, RK, J] {
 	c := *r
-	c.better = func(a, b *R) bool {
-		if useMax {
-			return col.Get(a) > col.Get(b)
-		}
-		return col.Get(a) < col.Get(b)
+	t := r.related
+	key := t.keyColumn()
+	first, sign := []Order[R]{col.Asc(), key.Asc()}, -1
+	if useMax {
+		first, sign = []Order[R]{col.Desc(), key.Desc()}, 1
 	}
+	c.of = &ofMany[R]{orders: first, better: func(a, b *R) bool {
+		return sign*cmp.Or(compareValues(col.Get(a), col.Get(b)), compareValues(t.key(a), t.key(b))) > 0
+	}}
 	return &c
 }
 
+// picked is the condition that a related row is its parent's pick: its key
+// is the key of the first row, in the pick's order, among the rows that
+// share its foreign key and pass the relation's constraints.
+func (r *HasOneRel[M, MK, R, RK, J]) picked() Cond[R] {
+	t, foreign := r.related, r.foreign.name
+	return Cond[R]{f: func(b *SQL) {
+		if t.PrimaryKey == "" {
+			b.fail(fmt.Errorf("orm: OfMany on %s needs a primary key to break ties", t.Name))
+			return
+		}
+		outer := cmp.Or(b.alias[t.Name], t.Name)
+		sibling := Cond[R]{f: func(b *SQL) {
+			b.Col(t.Name, foreign)
+			b.Write(" = ")
+			b.Ident(outer)
+			b.Write(".")
+			b.Ident(foreign)
+		}}
+		inner := r.constrain(t.Query().Where(sibling)).OrderBy(r.of.orders...).Limit(1)
+		inner.alias = ofManyAlias
+		b.Col(t.Name, t.PrimaryKey)
+		b.Write(" = (")
+		inner.renderSelect(b, func(b *SQL) { b.Col(t.Name, t.PrimaryKey) })
+		b.Write(")")
+	}}
+}
+
+func (r *HasOneRel[M, MK, R, RK, J]) correlate(scope func(Query[R, RK]) Query[R, RK]) Query[R, RK] {
+	if r.of == nil {
+		return r.hasBase.correlate(scope)
+	}
+	return r.hasBase.correlate(func(q Query[R, RK]) Query[R, RK] { return scope(q.Where(r.picked())) })
+}
+
+// Of is the relationship query for one parent ($user->latestPost()).
+func (r *HasOneRel[M, MK, R, RK, J]) Of(parent *M) Query[R, RK] {
+	q := r.hasBase.Of(parent)
+	if r.of != nil {
+		q = q.Where(r.picked())
+	}
+	return q
+}
+
 func (r *HasOneRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error {
-	byKey, err := r.load(ctx, conn, parents, scope)
+	byKey, err := r.loadPicked(ctx, conn, parents, scope)
 	if err != nil {
 		return err
 	}
@@ -341,19 +405,62 @@ func (r *HasOneRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string,
 			r.set(&parents[i], nil)
 			continue
 		}
-		best := &children[0]
-		for j := range children[1:] {
-			if r.better != nil && r.better(&children[j+1], best) {
-				best = &children[j+1]
-			}
-		}
-		pick := *best
+		pick := children[0]
 		if r.inverse != nil {
 			r.inverse(&pick, &parents[i])
 		}
 		r.set(&parents[i], &pick)
 	}
 	return nil
+}
+
+// loadPicked loads the related rows, at most one per parent for an ofMany
+// relation. A document store cannot correlate the pick, so there every
+// candidate is loaded, the pick made in Go, and scope applied to the picks.
+func (r *HasOneRel[M, MK, R, RK, J]) loadPicked(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) (map[J][]R, error) {
+	if r.of == nil {
+		return r.load(ctx, conn, parents, scope)
+	}
+	if _, doc, err := docStoreFor(ctx, cmp.Or(conn, r.related.connection())); err != nil || !doc {
+		if err != nil {
+			return nil, err
+		}
+		return r.load(ctx, conn, parents, func(q Query[R, RK]) Query[R, RK] { return scope(q.Where(r.picked())) })
+	}
+	if !orderable(reflect.TypeFor[RK]()) {
+		return nil, fmt.Errorf("orm: OfMany on %s picks in Go on a document store, and cannot order its %s keys to break ties", r.related.Name, reflect.TypeFor[RK]())
+	}
+	candidates, err := r.load(ctx, conn, parents, func(q Query[R, RK]) Query[R, RK] { return q })
+	if err != nil {
+		return nil, err
+	}
+	var keys []RK
+	for _, rows := range candidates {
+		best := &rows[0]
+		for i := range rows[1:] {
+			if r.of.better(&rows[i+1], best) {
+				best = &rows[i+1]
+			}
+		}
+		k, err := r.related.keyOf(r.related.key(best))
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	picks, err := scope(relQuery(r.related, conn).WhereKey(keys...)).WithContext(ctx).Get()
+	if err != nil {
+		return nil, err
+	}
+	byKey := map[J][]R{}
+	for i := range picks {
+		k := r.foreign.Get(&picks[i])
+		byKey[k] = append(byKey[k], picks[i])
+	}
+	return byKey, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,4 +1147,35 @@ func uniqueKeys[M any, MK comparable, J comparable](models []M, col Column[M, MK
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+func orderable(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.String:
+		return true
+	}
+	return t == reflect.TypeFor[time.Time]()
+}
+
+// compareValues orders two values of the same orderable type.
+func compareValues(a, b any) int {
+	ta, aTime := a.(time.Time)
+	tb, bTime := b.(time.Time)
+	if aTime && bTime {
+		return ta.Compare(tb)
+	}
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	switch {
+	case va.CanInt():
+		return cmp.Compare(va.Int(), vb.Int())
+	case va.CanUint():
+		return cmp.Compare(va.Uint(), vb.Uint())
+	case va.CanFloat():
+		return cmp.Compare(va.Float(), vb.Float())
+	case va.Kind() == reflect.String:
+		return strings.Compare(va.String(), vb.String())
+	}
+	panic(fmt.Sprintf("orm: cannot order values of type %T", a))
 }

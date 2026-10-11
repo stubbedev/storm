@@ -87,6 +87,8 @@ type Doc struct {
 	Title string             `db:"title"`
 	Views int64              `db:"views"`
 	Vec   orm.Vector[orm.D3] `db:"vec"`
+
+	Best *Doc
 }
 
 var docTable = &orm.Table[Doc, string]{
@@ -894,6 +896,15 @@ func TestMongo(t *testing.T) {
 	_, err = Notes.Query().On("mongo").Update(Notes.Seen.Set(&fine))
 	eq(t, "sub-millisecond times refused", err != nil && strings.Contains(err.Error(), "finer than the millisecond"), true)
 	assertDocModelQueries(t, ctx, "mongo")
+
+	mostViewed := orm.HasOne(Docs.Title, Docs.Title, func(d, best *Doc) { d.Best = best }).OfMany(Docs.Views, true)
+	busier := Doc{Title: "near", Views: 1000}
+	ok(Docs.Query().On("mongo").Create(&busier))
+	near := must(Docs.Query().On("mongo").Where(Docs.Title.Eq("near"), Docs.Views.Lt(1000)).With(mostViewed).First())
+	eq(t, "ofMany picks on a document store", near.Best.ID, busier.ID)
+	near = must(Docs.Query().On("mongo").Where(Docs.Title.Eq("near"), Docs.Views.Lt(1000)).With(mostViewed, func(q orm.Query[Doc, string]) orm.Query[Doc, string] { return q.Where(Docs.Views.Lt(1000)) }).First())
+	eq(t, "an eager scope filters the document store's pick", near.Best == nil, true)
+	ok(Docs.Query().On("mongo").DeleteModel(&busier))
 
 	txDocs := orm.From("tx_docs").On("mongo")
 	ok(txDocs.Insert(map[string]any{"id": "seed"}))
