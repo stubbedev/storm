@@ -372,6 +372,30 @@ func TestRunCLI(t *testing.T) {
 	check(t, Run(ctx, m, []string{"migrate:rollback"}, &out))
 	want(t, "rollback output", strings.Contains(out.String(), "Rolled back"), true)
 
+	check(t, Run(ctx, m, []string{"migrate"}, &out))
+	for _, args := range [][]string{
+		{"rollback", "-pretend"},
+		{"reset", "-pretend"},
+		{"migrate:rollback:dry"},
+		{"fresh:seed"},
+		{"wipe", "-step"},
+		{"status", "-seed"},
+		{"bogus"},
+	} {
+		err := Run(ctx, m, args, &out)
+		want(t, strings.Join(args, " ")+" refused", err != nil, true)
+	}
+	tables, err := Default().Tables(ctx)
+	check(t, err)
+	want(t, "refused commands left the schema alone", slices.Contains(tables, "a"), true)
+
+	check(t, Default().CreateView(ctx, "a_view", "SELECT * FROM a"))
+	out.Reset()
+	check(t, Run(ctx, m, []string{"wipe", "-drop-views"}, &out))
+	views, err := Default().Views(ctx)
+	check(t, err)
+	want(t, "wipe -drop-views drops views", len(views), 0)
+
 	dir := t.TempDir()
 	out.Reset()
 	check(t, Run(ctx, m, []string{"make", "create_flights_table", "-dir", dir}, &out))

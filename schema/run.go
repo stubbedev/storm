@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"text/template"
 	"time"
@@ -36,7 +37,7 @@ import (
 //	reset                         revert all migrations
 //	refresh [-steps N] [-seed]    revert all (or N) migrations, migrate again
 //	fresh [-seed] [-drop-views]   drop all tables (and views), migrate (and seed)
-//	wipe                          drop all tables (db:wipe)
+//	wipe [-drop-views]            drop all tables (and views) (db:wipe)
 //	status                        list migrations and whether they ran
 //	db:seed [-class X]            run every seeder (or just X)
 //	make <name>                   scaffold a migration file
@@ -73,6 +74,9 @@ func Run(ctx context.Context, m *Migrator, args []string, out io.Writer) error {
 		}
 	}
 
+	if err := checkCommand(fs, head, sub); err != nil {
+		return err
+	}
 	if *database != "" || *dropViews {
 		c := *m
 		c.Connection = cmp.Or(*database, c.Connection)
@@ -154,6 +158,11 @@ func Run(ctx context.Context, m *Migrator, args []string, out io.Writer) error {
 		}
 		return SeedReportOn(ctx, out, seedConn, names...)
 	case "wipe":
+		if *dropViews {
+			if err := On(m.conn()).DropAllViews(ctx); err != nil {
+				return err
+			}
+		}
 		if err := On(m.conn()).DropAllTables(ctx); err != nil {
 			return err
 		}
@@ -170,9 +179,6 @@ func Run(ctx context.Context, m *Migrator, args []string, out io.Writer) error {
 		}
 		return err
 	case "db":
-		if sub != "seed" {
-			return fmt.Errorf("unknown db command %q", sub)
-		}
 		return SeedReportOn(ctx, out, seedConn, names...)
 	case "make":
 		if len(positional) != 1 {
@@ -189,8 +195,6 @@ func Run(ctx context.Context, m *Migrator, args []string, out io.Writer) error {
 			path, err = MakeSeeder(*dir, *pkg, positional[0])
 		case "model":
 			path, err = MakeModel(*dir, *pkg, positional[0])
-		default:
-			return fmt.Errorf("unknown make command %q", sub)
 		}
 		if err == nil {
 			fmt.Fprintln(out, "Created", path)
@@ -198,6 +202,44 @@ func Run(ctx context.Context, m *Migrator, args []string, out io.Writer) error {
 		return err
 	}
 	return fmt.Errorf("unknown command %q", cmd)
+}
+
+// commandFlags lists the flags each command reads; any other flag, or a
+// sub-command where none exists, is refused rather than ignored (a
+// rollback -pretend must not roll back for real).
+var commandFlags = map[string][]string{
+	"migrate":  {"step", "pretend", "isolated", "seed", "class", "database"},
+	"install":  {"database"},
+	"rollback": {"steps", "batch", "database"},
+	"reset":    {"database"},
+	"refresh":  {"steps", "seed", "class", "database"},
+	"fresh":    {"seed", "class", "drop-views", "database"},
+	"wipe":     {"drop-views", "database"},
+	"status":   {"database"},
+	"db":       {"class", "database"},
+	"make":     {"dir", "package"},
+}
+
+var subCommands = map[string][]string{"db": {"seed"}, "make": {"", "migration", "seeder", "model"}}
+
+func checkCommand(fs *flag.FlagSet, head, sub string) error {
+	allowed, known := commandFlags[head]
+	if !known {
+		return fmt.Errorf("unknown command %q", head)
+	}
+	if subs := subCommands[head]; !slices.Contains(subs, sub) && (sub != "" || subs != nil) {
+		return fmt.Errorf("unknown command %q", head+":"+sub)
+	}
+	var refused []string
+	fs.Visit(func(f *flag.Flag) {
+		if !slices.Contains(allowed, f.Name) {
+			refused = append(refused, "-"+f.Name)
+		}
+	})
+	if len(refused) > 0 {
+		return fmt.Errorf("%s does not take %s", strings.TrimSuffix(head+":"+sub, ":"), strings.Join(refused, ", "))
+	}
+	return nil
 }
 
 var (
