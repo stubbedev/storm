@@ -24,6 +24,10 @@ type Relation[M, R any] interface {
 // selfAlias aliases the inner table when a relation points at its own table.
 const selfAlias = "laravel_reserved_0"
 
+// throughAlias aliases a through relation's intermediate table when it is
+// the parent's own.
+const throughAlias = "laravel_reserved_1"
+
 // ---------------------------------------------------------------------------
 // Query methods using relations
 // ---------------------------------------------------------------------------
@@ -759,8 +763,24 @@ func (h throughBase[M, T, R, K, TK]) joined(q Query[R]) Query[R] {
 	return q
 }
 
+// correlate matches R rows whose secondKey is among the intermediate keys
+// of the outer parent: an IN subquery over T rather than a join, so either
+// table can be the parent's own and be aliased away from it.
 func (h throughBase[M, T, R, K, TK]) correlate(scope func(Query[R]) Query[R]) Query[R] {
-	return scope(h.joined(h.related.Query()).WhereOf(h.firstKey.EqCol(h.localKey.outer())))
+	t := h.through
+	keys := t.Query().WithoutGlobalScopes()
+	if t.Name == h.localKey.table.Name {
+		keys.alias = throughAlias
+	}
+	if t.softDeletes() {
+		keys = keys.Where(t.column(t.DeletedAt).IsNull())
+	}
+	keys = keys.Where(h.firstKey.EqCol(h.localKey.outer()))
+	q := h.related.Query()
+	if h.related.Name == h.localKey.table.Name {
+		q.alias = selfAlias
+	}
+	return scope(q.Where(h.secondKey.InSub(keys.Subquery(h.secondLocal))))
 }
 
 // Of is the relationship query for one parent.
