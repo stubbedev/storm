@@ -578,7 +578,7 @@ func IsUniqueViolation(err error) bool {
 	if err == nil {
 		return false
 	}
-	if _, ok := errors.AsType[*DuplicateKeyError](err); ok {
+	if _, ok := errors.AsType[*DuplicateKeyError](err); ok || mongo.IsDuplicateKeyError(err) {
 		return true
 	}
 	msg := err.Error()
