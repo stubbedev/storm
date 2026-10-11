@@ -123,6 +123,13 @@ func TestLiveFixes(t *testing.T) {
 		want(t, "a renamed table's foreign keys follow it", fks[0].Name, "old_planes_keyed_id_foreign")
 	}
 
+	execOn(t, ctx, conn, "CREATE VIEW a_view AS SELECT id FROM planes")
+	execOn(t, ctx, conn, "CREATE VIEW b_view AS SELECT id FROM a_view")
+	check(t, s.DropAllViews(ctx))
+	views, err := s.Views(ctx)
+	check(t, err)
+	want(t, "views that depend on each other all drop", len(views), 0)
+
 	if x.g.mysqlFamily() {
 		check(t, s.Create(ctx, "defaults", func(t *Blueprint) {
 			t.String("b").Default("abc")

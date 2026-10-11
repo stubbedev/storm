@@ -297,8 +297,11 @@ func (s *Builder) DropAllViews(ctx context.Context) error {
 		return err
 	}
 	views, err := x.views(ctx)
-	if err != nil {
+	if err != nil || len(views) == 0 {
 		return err
+	}
+	if x.g.engine == enginePostgres {
+		return x.exec(ctx, "DROP VIEW IF EXISTS "+x.g.list(views)+" CASCADE")
 	}
 	for _, v := range views {
 		if err := x.exec(ctx, "DROP VIEW IF EXISTS "+x.g.quote(v)); err != nil {
