@@ -44,6 +44,12 @@ func assertDocMigrations(t *testing.T, ctx context.Context, conn string) {
 	pets := orm.From("pets").On(conn)
 	valid := map[string]any{"id": "0198c0de-0000-7000-8000-0000000000a1", "name": "Rex", "age": 3, "kind": "dog", "bio": "good"}
 	ok(pets.Insert(valid))
+	err := s.Table(ctx, "pets", func(t *schema.Blueprint) {
+		t.DropColumn("bio")
+		t.Integer("score").Default(0)
+	})
+	eq(t, conn+" a refused alter fails", err != nil, true)
+	eq(t, conn+" a refused alter touches no document", must(pets.Where("id", orm.Eq, valid["id"]).Value("bio")), any("good"))
 
 	if mongo {
 		eq(t, "declared columns", must(s.Columns(ctx, "pets")), []string{"id", "name", "age", "kind", "bio"})
@@ -128,7 +134,7 @@ func assertDocMigrations(t *testing.T, ctx context.Context, conn string) {
 		ok(s.Drop(ctx, "embeds"))
 	}
 
-	err := s.Drop(ctx, "pets")
+	err = s.Drop(ctx, "pets")
 	eq(t, conn+" drop missing", err != nil && strings.Contains(err.Error(), "does not exist"), true)
 	refused("auto-increment", s.Create(ctx, "bad", func(t *schema.Blueprint) { t.ID() }), "generated integer keys")
 	refused("default", s.Create(ctx, "bad", func(t *schema.Blueprint) { t.Boolean("on").Default(true) }), "defaults")

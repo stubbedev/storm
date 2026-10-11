@@ -211,9 +211,11 @@ func docCollections(ctx context.Context, ds orm.DocSchema) ([]string, error) {
 	return names, nil
 }
 
-// docAlter applies an alter blueprint to a collection: renamed fields
-// first, then dropped ones, then added and changed declarations, then the
-// index changes.
+// docAlter applies an alter blueprint to a collection. It plans the whole
+// change first — the resulting fields and the indexes to drop and create —
+// so a refused declaration fails before any document is touched, then
+// applies it: renamed fields, dropped ones, the field declarations, then
+// the index changes.
 func (s *Builder) docAlter(ctx context.Context, ds orm.DocSchema, bp *Blueprint) error {
 	if err := bp.err(); err != nil {
 		return err
@@ -222,75 +224,103 @@ func (s *Builder) docAlter(ctx context.Context, ds orm.DocSchema, bp *Blueprint)
 	if err != nil {
 		return docRefusal(ds, bp.table, "describe collection", err)
 	}
+	plan, err := planDocAlter(ds, bp, current)
+	if err != nil {
+		return err
+	}
+	for _, cmd := range plan.renames {
+		if err := ds.RenameField(ctx, bp.table, cmd.from, cmd.to); err != nil {
+			return docRefusal(ds, bp.table, cmd.kind.String(), err)
+		}
+	}
+	for _, cmd := range plan.drops {
+		if err := ds.DropFields(ctx, bp.table, cmd.columns); err != nil {
+			return docRefusal(ds, bp.table, cmd.kind.String(), err)
+		}
+	}
+	if !slices.EqualFunc(plan.fields, current.Fields, docFieldEqual) {
+		if err := ds.SetFields(ctx, bp.table, plan.fields); err != nil {
+			return docRefusal(ds, bp.table, "declare fields", err)
+		}
+	}
+	for _, idx := range plan.dropIndexes {
+		if err := ds.DropIndex(ctx, bp.table, idx); err != nil {
+			return docRefusal(ds, bp.table, cmdDropIndex.String(), err)
+		}
+	}
+	for _, idx := range plan.createIndexes {
+		if err := ds.CreateIndex(ctx, bp.table, idx); err != nil {
+			return docRefusal(ds, bp.table, "create index", err)
+		}
+	}
+	return nil
+}
+
+// docAlterPlan is a validated collection change, ready to apply.
+type docAlterPlan struct {
+	renames, drops             []*command
+	fields                     []orm.DocField
+	dropIndexes, createIndexes []orm.DocIndex
+}
+
+func planDocAlter(ds orm.DocSchema, bp *Blueprint, current orm.Collection) (docAlterPlan, error) {
+	var plan docAlterPlan
 	fields := slices.Clone(current.Fields)
 	at := func(name string) int {
 		return slices.IndexFunc(fields, func(f orm.DocField) bool { return f.Name == name })
 	}
 	for _, cmd := range bp.commands {
-		if cmd.kind != cmdRenameColumn {
-			continue
+		switch cmd.kind {
+		case cmdRenameColumn:
+			if at(cmd.to) >= 0 {
+				return plan, fmt.Errorf("schema: cannot rename column %s to %s on collection %s: %s is already declared", cmd.from, cmd.to, bp.table, cmd.to)
+			}
+			if i := at(cmd.from); i >= 0 {
+				fields[i].Name = cmd.to
+			}
+			plan.renames = append(plan.renames, cmd)
+		case cmdDropColumn:
+			fields = slices.DeleteFunc(fields, func(f orm.DocField) bool { return slices.Contains(cmd.columns, f.Name) })
+			plan.drops = append(plan.drops, cmd)
 		}
-		if err := ds.RenameField(ctx, bp.table, cmd.from, cmd.to); err != nil {
-			return docRefusal(ds, bp.table, cmd.kind.String(), err)
-		}
-		if i := at(cmd.from); i >= 0 {
-			fields[i].Name = cmd.to
-		}
-	}
-	for _, cmd := range bp.commands {
-		if cmd.kind != cmdDropColumn {
-			continue
-		}
-		if err := ds.DropFields(ctx, bp.table, cmd.columns); err != nil {
-			return docRefusal(ds, bp.table, cmd.kind.String(), err)
-		}
-		fields = slices.DeleteFunc(fields, func(f orm.DocField) bool { return slices.Contains(cmd.columns, f.Name) })
 	}
 	for _, col := range bp.columns {
 		f, err := docField(ds, bp.table, col)
 		if err != nil {
-			return err
+			return plan, err
 		}
 		switch i := at(col.Name); {
 		case col.Changed && i < 0:
-			return fmt.Errorf("schema: cannot change column %s on collection %s: it is not declared", col.Name, bp.table)
+			return plan, fmt.Errorf("schema: cannot change column %s on collection %s: it is not declared", col.Name, bp.table)
 		case col.Changed:
 			fields[i] = f
 		case i >= 0:
-			return fmt.Errorf("schema: cannot add column %s to collection %s: it is already declared", col.Name, bp.table)
+			return plan, fmt.Errorf("schema: cannot add column %s to collection %s: it is already declared", col.Name, bp.table)
 		default:
 			fields = append(fields, f)
 		}
 	}
-	if !slices.EqualFunc(fields, current.Fields, docFieldEqual) {
-		if err := ds.SetFields(ctx, bp.table, fields); err != nil {
-			return docRefusal(ds, bp.table, "declare fields", err)
-		}
-	}
+	plan.fields = fields
 	for _, cmd := range bp.commands {
 		switch {
 		case cmd.kind == cmdRenameColumn || cmd.kind == cmdDropColumn:
 		case cmd.kind == cmdDropIndex:
 			idx, ok := docFindIndex(current.Indexes, bp.table, cmd.index)
 			if !ok {
-				return fmt.Errorf("schema: cannot drop index %s on collection %s: no such index", cmd.index.IndexName, bp.table)
+				return plan, fmt.Errorf("schema: cannot drop index %s on collection %s: no such index", cmd.index.IndexName, bp.table)
 			}
-			if err := ds.DropIndex(ctx, bp.table, idx); err != nil {
-				return docRefusal(ds, bp.table, cmd.kind.String(), err)
-			}
+			plan.dropIndexes = append(plan.dropIndexes, idx)
 		case cmd.kind == cmdPrimary || cmd.kind.createsIndex():
 			idx, err := docIndex(ds, bp.table, cmd, fields)
 			if err != nil {
-				return err
+				return plan, err
 			}
-			if err := ds.CreateIndex(ctx, bp.table, idx); err != nil {
-				return docRefusal(ds, bp.table, cmd.kind.String(), err)
-			}
+			plan.createIndexes = append(plan.createIndexes, idx)
 		default:
-			return docUnsupported(ds, bp.table, cmd.kind.String(), "documents have no such constraint")
+			return plan, docUnsupported(ds, bp.table, cmd.kind.String(), "documents have no such constraint")
 		}
 	}
-	return nil
+	return plan, nil
 }
 
 func docFieldEqual(a, b orm.DocField) bool {
