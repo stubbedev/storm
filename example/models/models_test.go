@@ -67,7 +67,7 @@ func setup(t *testing.T) context.Context {
 	ctx := context.Background()
 	if driver == "" || driver == "sqlite" {
 		open := func() *sql.DB {
-			db, err := sql.Open("sqlite", "file::memory:?_time_format=sqlite")
+			db, err := sql.Open("sqlite", "file::memory:?_time_format=sqlite&_dqs=0")
 			if err != nil {
 				t.Fatal(err)
 			}

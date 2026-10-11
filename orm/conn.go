@@ -102,38 +102,76 @@ var (
 // A MySQL or MariaDB DSN gets clientFoundRows=true unless it sets that parameter, so
 // Update and Delete report the rows they matched, as every other engine
 // does, rather than only the rows whose values changed.
+//
+// A SQLite connection must not read a double-quoted name that matches no
+// column as a string literal (SQLite's DQS quirk), which would turn a
+// misspelled column into a constant instead of an error. modernc.org/sqlite
+// ("sqlite") gets _dqs=0 unless the DSN sets it, and Open refuses any
+// SQLite connection that still has the quirk on.
 func Open(name, driver, dsn string) (*sql.DB, error) {
 	d, ok := DialectFor(driver)
 	if !ok {
 		return nil, fmt.Errorf("orm: no dialect known for driver %q; use AddConnection with an explicit dialect", driver)
 	}
-	if d == MySQL || d == MariaDB {
-		dsn = withFoundRows(dsn)
-	}
-	db, err := sql.Open(driver, dsn)
+	db, d, err := openPool(driver, dsn, d)
 	if err != nil {
-		return nil, err
-	}
-	if d, err = flavour(d, db); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("orm: opening %s: %w", name, err)
 	}
 	AddConnection(name, db, d)
 	return db, nil
 }
 
-func withFoundRows(dsn string) string {
-	if strings.Contains(dsn, "clientFoundRows=") {
+// openPool opens one pool the way Open documents: the DSN adjusted for
+// the dialect, MariaDB told from MySQL, and SQLite's DQS quirk refused.
+func openPool(driver, dsn string, d Dialect) (*sql.DB, Dialect, error) {
+	switch {
+	case d == MySQL || d == MariaDB:
+		dsn = withParam(dsn, "clientFoundRows", "true")
+	case driver == "sqlite":
+		dsn = withParam(dsn, "_dqs", "0")
+	}
+	db, err := sql.Open(driver, dsn)
+	if err != nil {
+		return nil, nil, err
+	}
+	if d, err = flavour(d, db); err == nil && d == SQLite {
+		err = refuseDoubleQuotedStrings(db)
+	}
+	if err != nil {
+		return nil, nil, errors.Join(err, db.Close())
+	}
+	return db, d, nil
+}
+
+// withParam adds key=value to dsn's query unless it sets key already.
+func withParam(dsn, key, value string) string {
+	if strings.Contains(dsn, key+"=") {
 		return dsn
 	}
 	if strings.Contains(dsn, "?") {
-		return dsn + "&clientFoundRows=true"
+		return dsn + "&" + key + "=" + value
 	}
-	return dsn + "?clientFoundRows=true"
+	return dsn + "?" + key + "=" + value
 }
 
-// flavourTimeout bounds the server version query flavour runs.
-const flavourTimeout = 10 * time.Second
+// refuseDoubleQuotedStrings fails when the connection reads a double-quoted
+// name that matches no column as a string.
+func refuseDoubleQuotedStrings(db *sql.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	var v any
+	err := db.QueryRowContext(ctx, `SELECT "storm_dqs_probe"`).Scan(&v)
+	switch {
+	case err == nil:
+		return errors.New(`the SQLite connection reads a double-quoted name that matches no column as a string (the DQS quirk), which hides misspelled columns; set _dqs=0 (modernc.org/sqlite) or use an SQLite built with SQLITE_DQS=0`)
+	case strings.Contains(err.Error(), "no such column"):
+		return nil
+	}
+	return fmt.Errorf("probing SQLite's double-quoted strings: %w", err)
+}
+
+// probeTimeout bounds each query Open runs to learn about the server.
+const probeTimeout = 10 * time.Second
 
 // flavour tells MariaDB from MySQL — they share a driver — by asking the
 // server, so Open connects for the MySQL driver. Other dialects pass
@@ -142,7 +180,7 @@ func flavour(d Dialect, db *sql.DB) (Dialect, error) {
 	if d != MySQL {
 		return d, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), flavourTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 	var version string
 	if err := db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
@@ -157,27 +195,21 @@ func flavour(d Dialect, db *sql.DB) (Dialect, error) {
 // SetDefault registers the default connection.
 func SetDefault(db DB, d Dialect) { AddConnection(DefaultConnection, db, d) }
 
-// OpenReadWrite opens two pools for one connection: SELECTs run against
-// readDSN, everything else against writeDSN (Laravel's 'read'/'write'
-// configuration). The returned *sql.DB is the write pool.
+// OpenReadWrite opens two pools for one connection, each as Open does:
+// SELECTs run against readDSN, everything else against writeDSN (Laravel's
+// 'read'/'write' configuration). The returned *sql.DB is the write pool.
 func OpenReadWrite(name, driver, readDSN, writeDSN string) (*sql.DB, error) {
 	d, ok := DialectFor(driver)
 	if !ok {
 		return nil, fmt.Errorf("orm: no dialect known for driver %q; use AddConnection with an explicit dialect", driver)
 	}
-	read, err := sql.Open(driver, readDSN)
+	read, _, err := openPool(driver, readDSN, d)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("orm: opening %s for reads: %w", name, err)
 	}
-	write, err := sql.Open(driver, writeDSN)
+	write, d, err := openPool(driver, writeDSN, d)
 	if err != nil {
-		_ = read.Close()
-		return nil, err
-	}
-	if d, err = flavour(d, write); err != nil {
-		_ = read.Close()
-		_ = write.Close()
-		return nil, fmt.Errorf("orm: opening %s: %w", name, err)
+		return nil, errors.Join(fmt.Errorf("orm: opening %s for writes: %w", name, err), read.Close())
 	}
 	connMu.Lock()
 	conns[name] = Conn{DB: write, Read: read, Dialect: d}

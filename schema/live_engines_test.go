@@ -297,7 +297,7 @@ func TestSQLiteRebuild(t *testing.T) {
 		t.Skip("SQLite only")
 	}
 	ctx := context.Background()
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "rebuild.db")+"?_pragma=foreign_keys(1)&_time_format=sqlite")
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "rebuild.db")+"?_pragma=foreign_keys(1)&_time_format=sqlite&_dqs=0")
 	check(t, err)
 	t.Cleanup(func() { db.Close() })
 	db.SetMaxOpenConns(3)

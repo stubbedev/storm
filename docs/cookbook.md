@@ -57,6 +57,11 @@ other `*sql.DB`, register it with `orm.AddConnection(name, db, orm.Postgres)`.
 > `time.Time` values are stored in the format SQLite's date functions
 > understand.
 
+`orm.Open` also turns off SQLite's double-quoted string quirk (`_dqs=0` for
+`modernc.org/sqlite`), under which a misspelled `"column"` silently reads
+as the string `'column'`, and refuses a SQLite connection that still has it
+on. For a `*sql.DB` you open yourself, add `_dqs=0` to the DSN.
+
 ## Models
 
 ```go

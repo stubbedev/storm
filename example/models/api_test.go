@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 
 	. "github.com/stubbedev/storm/example/models"
 	"github.com/stubbedev/storm/orm"
+	"github.com/stubbedev/storm/schema"
 )
 
 func TestScalarExpressions(t *testing.T) {
@@ -497,4 +499,35 @@ func TestMaintainedTimePrecision(t *testing.T) {
 	fresh := Post{UserID: 1, Title: "whole seconds"}
 	ok(Posts.Create(&fresh))
 	eq(t, "default precision is whole seconds", fresh.CreatedAt.Nanosecond(), 0)
+}
+
+func TestSQLiteMisspelledColumns(t *testing.T) {
+	if driver != "" {
+		t.Skip("SQLite only")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	db := must(orm.Open("dqs", "sqlite", "file:"+dir+"/dqs.db"))
+	t.Cleanup(func() { _ = db.Close() })
+	ok(schema.On("dqs").Create(ctx, "things", func(t *schema.Blueprint) {
+		t.ID()
+		t.String("name")
+	}))
+	_, err := orm.From("things").On("dqs").Where("nam", orm.Eq, "x").Count()
+	eq(t, "a misspelled column fails instead of reading as a string", err != nil && strings.Contains(err.Error(), "no such column"), true)
+	_, err = orm.Open("dqs-on", "sqlite", "file:"+dir+"/dqs.db?_dqs=1")
+	eq(t, "a connection reading double-quoted strings is refused", err != nil && strings.Contains(err.Error(), "DQS"), true)
+}
+
+func TestReadWriteReportsMatchedRows(t *testing.T) {
+	if driver != "mysql" {
+		t.Skip("MySQL and MariaDB only")
+	}
+	setup(t)
+	dsn := os.Getenv("STORM_TEST_DSN")
+	write := must(orm.OpenReadWrite("rw-mysql", driver, dsn, dsn))
+	t.Cleanup(func() { _ = write.Close() })
+	alice := must(Users.Find(1))
+	n := must(orm.From("users").On("rw-mysql").Where("id", orm.Eq, 1).Update(map[string]any{"name": alice.Name}))
+	eq(t, "an unchanged row still counts as updated", n, int64(1))
 }

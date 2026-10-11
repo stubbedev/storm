@@ -34,7 +34,7 @@ func setup(t *testing.T) (context.Context, *Builder) {
 	t.Helper()
 	ctx := context.Background()
 	if driver == "" || driver == "sqlite" {
-		db, err := sql.Open("sqlite", "file::memory:?_time_format=sqlite&_pragma=foreign_keys(1)")
+		db, err := sql.Open("sqlite", "file::memory:?_time_format=sqlite&_pragma=foreign_keys(1)&_dqs=0")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -453,7 +453,7 @@ func TestRunCLI(t *testing.T) {
 func TestMigrationOnItsOwnConnection(t *testing.T) {
 	ctx := context.Background()
 	for _, name := range []string{"own-main", "own-other"} {
-		db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), name+".db"))
+		db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), name+".db")+"?_dqs=0")
 		check(t, err)
 		t.Cleanup(func() { db.Close() })
 		orm.AddConnection(name, db, orm.SQLite)
