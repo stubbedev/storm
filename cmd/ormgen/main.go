@@ -73,6 +73,16 @@ type field struct {
 	PK, Virtual, NullZero bool
 }
 
+// KeyField is the field holding m's primary key, or nil without one.
+func (m model) KeyField() *field {
+	for i := range m.Fields {
+		if m.Key != "" && m.Fields[i].Column == m.Key {
+			return &m.Fields[i]
+		}
+	}
+	return nil
+}
+
 func main() {
 	dir := flag.String("dir", ".", "package directory to scan")
 	out := flag.String("out", "orm_gen.go", "output file name, relative to -dir")
@@ -407,10 +417,46 @@ var {{.Schema}} = {{.Schema}}Schema{
 	{{.Name}}: orm.{{if .Virtual}}NewVirtualColumn{{else}}NewColumn{{end}}({{$m.Var}}, "{{.Column}}", func(m *{{$m.Struct}}) *{{.Type}} { return &m.{{.Name}} }),
 {{- end}}
 }
+{{- with $m.KeyField}}
+
+// Find returns the {{$m.Struct}} whose primary key is id.
+func (s {{$m.Schema}}Schema) Find(ctx context.Context, id {{.Type}}) ({{$m.Struct}}, error) {
+	return s.Table.Find(ctx, id)
+}
+
+// FindOr returns the {{$m.Struct}} whose primary key is id, or fn's result
+// when there is none.
+func (s {{$m.Schema}}Schema) FindOr(ctx context.Context, id {{.Type}}, fn func() ({{$m.Struct}}, error)) ({{$m.Struct}}, error) {
+	return s.Query().FindOr(ctx, id, fn)
+}
+
+// FindMany returns the {{$m.Struct}} rows whose primary keys are ids.
+func (s {{$m.Schema}}Schema) FindMany(ctx context.Context, ids ...{{.Type}}) ([]{{$m.Struct}}, error) {
+	return s.Query().FindMany(ctx, orm.Keys(ids)...)
+}
+
+// Destroy deletes the {{$m.Struct}} rows whose primary keys are ids,
+// firing their events.
+func (s {{$m.Schema}}Schema) Destroy(ctx context.Context, ids ...{{.Type}}) (int, error) {
+	return s.Table.Destroy(ctx, orm.Keys(ids)...)
+}
+
+// WhereKey filters by primary key; WhereKeyNot excludes those keys.
+func (s {{$m.Schema}}Schema) WhereKey(ids ...{{.Type}}) orm.Query[{{$m.Struct}}] {
+	return s.Query().WhereKey(orm.Keys(ids)...)
+}
+
+func (s {{$m.Schema}}Schema) WhereKeyNot(ids ...{{.Type}}) orm.Query[{{$m.Struct}}] {
+	return s.Query().WhereKeyNot(orm.Keys(ids)...)
+}
+{{- end}}
 {{end}}`))
 
 func render(pkg string, models []model, imports map[string]string) ([]byte, error) {
 	imports[ormImport] = ""
+	if slices.ContainsFunc(models, func(m model) bool { return m.KeyField() != nil }) {
+		imports["context"] = ""
+	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, map[string]any{"Pkg": pkg, "Models": models, "Imports": imports}); err != nil {
 		return nil, err

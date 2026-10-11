@@ -123,7 +123,7 @@ u.Password.Matches("secret") // verify
 ```go
 all, err := Users.All(ctx)
 u, err := Users.Find(ctx, 1)                         // orm.ErrNotFound if missing
-us, err := Users.Query().FindMany(ctx, 1, 2, 3)
+us, err := Users.FindMany(ctx, 1, 2, 3)
 first, err := Users.Where(Users.Active.Eq(true)).First(ctx)
 only, err := Users.Where(Users.Email.Eq("a@b.c")).Sole(ctx) // ErrNotFound / ErrMultipleRecords
 u, err = Users.Where(Users.Name.Eq("x")).FirstOr(ctx, func() (User, error) { return User{}, nil })
@@ -132,6 +132,13 @@ byEmail, err := Users.Query().KeyBy(ctx, Users.Email)  // map[string]User
 byUser, err := Posts.Query().Grouped(ctx, Posts.UserID) // map[int64][]Post
 names, err := Users.Query().Map(ctx, func(u User) string { return u.Name })
 ```
+
+The schema ormgen generates takes keys of the model's key type:
+`Users.Find(ctx, "1")` does not compile when the key is an `int64`, and
+the same holds for `FindMany`, `FindOr`, `Destroy`, `WhereKey` and
+`WhereKeyNot`. The query forms (`Users.Where(...).Find(ctx, id)`) take
+`any`, convert an integer of another width, and fail the query on any
+other type.
 
 ## Where clauses
 

@@ -88,6 +88,54 @@ func (t *Table[M]) morphAlias() string { return cmp.Or(t.MorphAlias, t.Name) }
 
 func (t *Table[M]) softDeletes() bool { return t.DeletedAt != "" }
 
+// keyValues converts ids to the primary key's Go type. An integer of any
+// width converts to an integer key when it fits, text to a text-kinded
+// key; anything else is an error naming both types.
+func (t *Table[M]) keyValues(ids []any) ([]any, error) {
+	if t.PrimaryKey == "" {
+		return nil, fmt.Errorf("orm: %s has no primary key to look up by", t.Name)
+	}
+	kt := reflect.TypeOf(t.Ptr(new(M), t.PrimaryKey)).Elem()
+	out := make([]any, len(ids))
+	for i, id := range ids {
+		v, err := convertKey(id, kt)
+		if err != nil {
+			return nil, fmt.Errorf("orm: key %v for %s.%s: %w", id, t.Name, t.PrimaryKey, err)
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+func convertKey(id any, kt reflect.Type) (any, error) {
+	if id == nil {
+		return nil, errors.New("a key cannot be nil")
+	}
+	v := reflect.ValueOf(id)
+	switch {
+	case v.Type() == kt:
+		return id, nil
+	case isIntegerKind(v.Kind()) && isIntegerKind(kt.Kind()):
+		dst := reflect.New(kt).Elem()
+		if err := assign(dst, id); err != nil {
+			return nil, err
+		}
+		return dst.Interface(), nil
+	case v.Kind() == reflect.String && kt.Kind() == reflect.String:
+		return v.Convert(kt).Interface(), nil
+	}
+	return nil, fmt.Errorf("it is a %s, but the key is a %s", v.Type(), kt)
+}
+
+func isIntegerKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return true
+	}
+	return false
+}
+
 func (t *Table[M]) column(name string) Scalar[M, any] {
 	return Scalar[M, any]{f: func(b *SQL) { b.Col(t.Name, name) }, tab: t.Name, col: name}
 }

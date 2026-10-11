@@ -94,12 +94,30 @@ func (q Query[M]) WhereOf[O any](conds ...Cond[O]) Query[M] {
 }
 
 // WhereKey filters by primary key.
-func (q Query[M]) WhereKey(ids ...any) Query[M] { return q.Where(q.keyIn("IN", ids)) }
+// Each id must be of the key's Go type: an integer of any width for an
+// integer key, text for a text key; another fails the query. The schema
+// ormgen generates offers the same filters typed (Users.WhereKey(1, 2)).
+func (q Query[M]) WhereKey(ids ...any) Query[M] { return q.keyIn("IN", ids) }
 
-func (q Query[M]) WhereKeyNot(ids ...any) Query[M] { return q.Where(q.keyIn("NOT IN", ids)) }
+func (q Query[M]) WhereKeyNot(ids ...any) Query[M] { return q.keyIn("NOT IN", ids) }
 
-func (q Query[M]) keyIn(op string, ids []any) Cond[M] {
-	return q.table.column(q.table.PrimaryKey).in(op, ids)
+func (q Query[M]) keyIn(op string, ids []any) Query[M] {
+	keys, err := q.table.keyValues(ids)
+	if err != nil {
+		q.err = cmp.Or(q.err, err)
+		return q
+	}
+	return q.Where(q.table.column(q.table.PrimaryKey).in(op, keys))
+}
+
+// Keys turns typed keys into the arguments WhereKey, FindMany and Destroy
+// take.
+func Keys[K any](ids []K) []any {
+	out := make([]any, len(ids))
+	for i, id := range ids {
+		out[i] = id
+	}
+	return out
 }
 
 // When applies fn only if cond is true (conditional clauses).
