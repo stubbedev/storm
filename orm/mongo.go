@@ -750,6 +750,75 @@ func undoInserted(ctx context.Context, coll *mongo.Collection, ids bson.A, err e
 	return nil
 }
 
+// mongoMatching reads the documents any of filters matches, by _id.
+func mongoMatching(ctx context.Context, coll *mongo.Collection, filters bson.A) (map[any]bson.D, error) {
+	cur, err := coll.Find(ctx, bson.D{{Key: "$or", Value: filters}})
+	if err != nil {
+		return nil, fmt.Errorf("reading the documents the upsert matches: %w", err)
+	}
+	var docs []bson.D
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("reading the documents the upsert matches: %w", err)
+	}
+	byID := make(map[any]bson.D, len(docs))
+	for _, d := range docs {
+		byID[mongoID(d)] = d
+	}
+	return byID, nil
+}
+
+func mongoID(d bson.D) any {
+	for _, e := range d {
+		if e.Key == "_id" {
+			return e.Value
+		}
+	}
+	return nil
+}
+
+// undoUpserted reverts what an ordered bulk upsert applied before the
+// write error err: the documents its filters matched before (before) get
+// their earlier versions back, and the documents it inserted are deleted.
+// Without a write error every filter may have applied, so every one is
+// reverted.
+func undoUpserted(ctx context.Context, coll *mongo.Collection, filters bson.A, before map[any]bson.D, err error) error {
+	applied := filters
+	if bulk, ok := errors.AsType[mongo.BulkWriteException](err); ok && len(bulk.WriteErrors) > 0 {
+		applied = filters[:slices.MinFunc(bulk.WriteErrors, func(a, b mongo.BulkWriteError) int { return a.Index - b.Index }).Index]
+	}
+	if len(applied) == 0 {
+		return nil
+	}
+	ids := make(bson.A, 0, len(before))
+	for id := range before {
+		ids = append(ids, id)
+	}
+	touched, err := mongoMatching(ctx, coll, append(slices.Clone(applied), bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}}))
+	if err != nil {
+		return fmt.Errorf("undoing the upsert: %w", err)
+	}
+	var restores []mongo.WriteModel
+	var inserted bson.A
+	for id := range touched {
+		if old, ok := before[id]; ok {
+			restores = append(restores, mongo.NewReplaceOneModel().SetFilter(bson.D{{Key: "_id", Value: id}}).SetReplacement(old))
+		} else {
+			inserted = append(inserted, id)
+		}
+	}
+	if len(inserted) > 0 {
+		if _, err := coll.DeleteMany(ctx, bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: inserted}}}}); err != nil {
+			return fmt.Errorf("undoing the %d documents the upsert inserted: %w", len(inserted), err)
+		}
+	}
+	if len(restores) > 0 {
+		if _, err := coll.BulkWrite(ctx, restores); err != nil {
+			return fmt.Errorf("restoring the %d documents the upsert updated: %w", len(restores), err)
+		}
+	}
+	return nil
+}
+
 // UpsertDocs writes every document in one bulk write: a document matching
 // on uniqueBy gets only its update columns set, a new one is inserted
 // whole under _id = its key.
@@ -758,6 +827,7 @@ func (s *MongoStore) UpsertDocs(ctx context.Context, table, key string, docs []m
 		return nil
 	}
 	models := make([]mongo.WriteModel, len(docs))
+	filters := make(bson.A, len(docs))
 	for i, doc := range docs {
 		filter := bson.D{}
 		for _, c := range uniqueBy {
@@ -792,14 +862,20 @@ func (s *MongoStore) UpsertDocs(ctx context.Context, table, key string, docs []m
 			changes = append(bson.D{{Key: "$set", Value: fields}}, changes...)
 		}
 		models[i] = mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(changes).SetUpsert(true)
+		filters[i] = filter
 	}
 	coll := s.coll(table)
+	var before map[any]bson.D
 	err := s.allOrNothing(ctx, len(models), func(ctx context.Context) error {
+		if len(models) > 1 && mongo.SessionFromContext(ctx) == nil {
+			var err error
+			if before, err = mongoMatching(ctx, coll, filters); err != nil {
+				return err
+			}
+		}
 		_, err := coll.BulkWrite(ctx, models)
 		return err
-	}, func(context.Context, error) error {
-		return errors.New("a standalone MongoDB server has no transactions, so upserts before the failure stay")
-	})
+	}, func(ctx context.Context, err error) error { return undoUpserted(ctx, coll, filters, before, err) })
 	if err != nil {
 		return fmt.Errorf("orm: mongo upsert into %s: %w", table, err)
 	}

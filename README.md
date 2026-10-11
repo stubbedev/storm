@@ -468,10 +468,12 @@ stores it as `_id` too, and Qdrant uses it as the point id, so inserting a
 taken key fails with an error `orm.IsUniqueViolation` recognises. `Upsert`
 sets only its update columns on a matching document. A multi-document
 insert or upsert on MongoDB is all or nothing: it runs in a transaction on
-a replica set or sharded cluster, and on a standalone server a failed
-insert removes the documents it stored before failing (a standalone
-server cannot undo upserted updates, so a failed upsert batch reports
-that). Conditions follow SQL's
+a replica set or sharded cluster. A standalone server has no
+transactions, so there a failed insert removes the documents it stored
+before failing, and an upsert reads the documents it will match first and,
+when it fails, puts them back and removes the ones it inserted — all or
+nothing for one writer, though a concurrent writer to the same documents
+can be overwritten by the undo. Conditions follow SQL's
 three-valued logic, so `Ne`, `NotIn` and `Not(...)` never match a document
 missing the field, and a comparison with `nil` matches nothing. Keys must be
 UUID, ULID or manual (assigned automatically when missing); a Qdrant key

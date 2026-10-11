@@ -41,3 +41,42 @@ func TestMongoStandaloneInsertUndo(t *testing.T) {
 		t.Fatalf("the failed batch left documents behind: %d stored, want 1", n)
 	}
 }
+
+// TestMongoStandaloneUpsertUndo forces the standalone path: an upsert
+// batch failing part-way must put back the documents it updated and remove
+// those it inserted.
+func TestMongoStandaloneUpsertUndo(t *testing.T) {
+	uri := os.Getenv("STORM_TEST_MONGO")
+	if uri == "" {
+		t.Skip("set STORM_TEST_MONGO to run")
+	}
+	ctx := context.Background()
+	s, err := OpenMongo("mongo_standalone_upsert", uri, "stormupsert"+strconv.FormatInt(time.Now().UnixNano()%100000, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = s.db.Drop(ctx)
+		_ = s.Close(ctx)
+	})
+	s.topologySet, s.canTransact = true, false
+	if err := s.InsertDocs(ctx, "people", "id", []map[string]any{{"id": "x", "email": "x@example.com", "name": "old"}}); err != nil {
+		t.Fatal(err)
+	}
+	err = s.UpsertDocs(ctx, "people", "id", []map[string]any{
+		{"id": "a", "email": "a@example.com", "name": "A"},
+		{"id": "y", "email": "x@example.com", "name": "new"},
+		{"id": "x", "email": "other@example.com", "name": "clash"},
+		{"id": "z", "email": "z@example.com", "name": "Z"},
+	}, []string{"email"}, []string{"name"})
+	if !IsUniqueViolation(err) {
+		t.Fatalf("want a unique violation, got %v", err)
+	}
+	docs, err := s.FindDocs(ctx, Plan{Table: "people", Key: "id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 1 || docs[0]["name"] != "old" || docs[0]["email"] != "x@example.com" {
+		t.Fatalf("the failed upsert was not undone: %v", docs)
+	}
+}
