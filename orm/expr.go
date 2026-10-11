@@ -551,7 +551,7 @@ func join[M any](sep string, conds []Cond[M]) Cond[M] {
 	var ir Node
 	switch len(conds) {
 	case 0:
-		return Raw[M]("1 = 1")
+		return Cond[M]{f: func(b *SQL) { b.Write(map[string]string{" AND ": "1 = 1", " OR ": "1 = 0"}[sep]) }, ir: Composite{Or: sep == " OR "}}
 	case 1:
 		return conds[0]
 	}

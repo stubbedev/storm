@@ -166,6 +166,7 @@ Users.Where(Users.Karma.Gt(10), Users.Active.Eq(true))          // AND
 Users.Where(Users.Karma.Gt(90)).OrWhere(Users.Name.Eq("Bob"))
 Users.Query().WhereNot(Users.Active.Eq(true))
 Users.Where(orm.Or(Users.Karma.Lt(5), Users.Karma.Gt(40)))      // nested group
+Users.Where(orm.Or(filters...))                                 // no filters: no rows; orm.And() of none: every row
 Users.Where(Users.ID.In(1, 2), Users.Karma.Between(10, 50), Users.Email.Like("%@example.com"))
 Users.Where(Users.Settings.IsNull())
 Users.Query().WhereKey(1, 4)
