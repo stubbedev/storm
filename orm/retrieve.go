@@ -776,7 +776,7 @@ func (q Query[M, K]) CursorPaginate(perPage int, cursor string) (CursorPage[M], 
 		if o.col == nil {
 			return CursorPage[M]{}, errors.New("orm: CursorPaginate needs column orders")
 		}
-		terms[i] = keysetTerm{e: o.col, col: o.col.Name(), desc: o.desc}
+		terms[i] = keysetTerm{e: o.col, col: o.col.Name(), desc: o.desc, pos: i}
 		if nullableColumn(o.col) || slices.Contains(q.table.NullZero, o.col.Name()) {
 			terms[i].nulls = NullsLast
 		}
@@ -793,7 +793,7 @@ func (q Query[M, K]) CursorPaginate(perPage int, cursor string) (CursorPage[M], 
 		func(terms []keysetTerm, after *Cond[M], limit int) ([]M, error) {
 			ordered := make([]Order[M], len(terms))
 			for i, t := range terms {
-				ordered[i] = t.order(orders[i])
+				ordered[i] = t.order(orders[t.pos])
 			}
 			page := q.Reorder(ordered...).Limit(limit)
 			if after != nil {
@@ -811,6 +811,7 @@ type keysetTerm struct {
 	col   string
 	desc  bool
 	nulls Nulls
+	pos   int
 }
 
 // write renders the term as an ORDER BY item.
@@ -860,25 +861,29 @@ func cursorPaginate[T, M any](perPage int, encoded string, terms []keysetTerm,
 	if perPage < 1 {
 		return CursorPage[T]{}, fmt.Errorf("orm: CursorPaginate needs perPage of at least 1, got %d", perPage)
 	}
-	order, prev := terms, false
-	var after *Cond[M]
+	order, vals, prev := terms, []any(nil), false
+	var err error
 	if encoded != "" {
-		vals, back, err := decodeCursor(encoded, len(terms), decode)
-		if err != nil {
+		if vals, prev, err = decodeCursor(encoded, len(terms), decode); err != nil {
 			return CursorPage[T]{}, err
 		}
-		if prev = back; prev {
+		if prev {
 			order = make([]keysetTerm, len(terms))
 			for i, t := range terms {
 				order[i] = t.reversed()
 			}
 		}
-		c := keysetAfter[M](order, vals)
-		after = &c
 	}
-	items, err := fetch(order, after, perPage+1)
-	if err != nil {
-		return CursorPage[T]{}, err
+	var items []T
+	for _, seg := range keysetSegments[M](order, vals) {
+		var got []T
+		got, err = fetch(seg.order, seg.after, perPage+1-len(items))
+		if err != nil {
+			return CursorPage[T]{}, err
+		}
+		if items = append(items, got...); len(items) > perPage {
+			break
+		}
 	}
 	more := len(items) > perPage
 	if more {
@@ -943,52 +948,91 @@ func decodeCursor(encoded string, n int, decode func(i int, raw json.RawMessage)
 	return vals, c.Prev, nil
 }
 
-// keysetAfter is the condition for rows after vals in the order of terms —
-// (a > x) OR (a = x AND b > y) ..., with < for descending terms — in its
-// SQL and document-store forms. A term with NULLs last has after a value
-// the larger values and the NULLs, and after a NULL nothing; one with NULLs
-// first has after a NULL every value, and after a value only the larger
-// values. A NULL equals a NULL.
-func keysetAfter[M any](terms []keysetTerm, vals []any) Cond[M] {
-	ors := make([]Cond[M], len(terms))
-	for i := range terms {
-		ands := make([]Cond[M], i+1)
-		for j := 0; j <= i; j++ {
-			ands[j] = keysetCond[M](terms[j], vals[j], j == i)
-		}
-		ors[i] = And(ands...)
-	}
-	return Or(ors...)
+type keysetSegment[M any] struct {
+	after *Cond[M]
+	order []keysetTerm
 }
 
-// keysetCond is term t past value v (after) or equal to it.
-func keysetCond[M any](t keysetTerm, v any, after bool) Cond[M] {
-	null := func(not bool) Cond[M] {
-		return Cond[M]{
-			f:  func(b *SQL) { t.e.build(b); b.Write(map[bool]string{false: " IS NULL", true: " IS NOT NULL"}[not]) },
-			ir: NullTest{Column: t.col, Not: not},
+func keysetSegments[M any](terms []keysetTerm, vals []any) []keysetSegment[M] {
+	t := terms[0]
+	if t.nulls == NullsDefault || len(terms) == 1 {
+		if vals == nil {
+			return []keysetSegment[M]{{order: terms}}
 		}
+		after := keysetAfter[M](terms, vals)
+		return []keysetSegment[M]{{after: &after, order: terms}}
+	}
+	plain := t
+	plain.nulls = NullsDefault
+	valued := slices.Concat([]keysetTerm{plain}, terms[1:])
+	notNull := keysetNull[M](t, true)
+	nulls := func(restVals []any) []keysetSegment[M] {
+		segs := keysetSegments[M](terms[1:], restVals)
+		for i, seg := range segs {
+			after := keysetNull[M](t, false)
+			if seg.after != nil {
+				after = And(after, *seg.after)
+			}
+			segs[i] = keysetSegment[M]{after: &after, order: seg.order}
+		}
+		return segs
 	}
 	switch {
-	case v == nil && after && t.nulls == NullsLast:
-		return Cond[M]{f: func(b *SQL) { b.Write("1 = 0") }, ir: List{Column: t.col}}
-	case v == nil && after && t.nulls == NullsFirst:
-		return null(true)
-	case v == nil:
-		return null(false)
+	case vals == nil && t.nulls == NullsLast:
+		return append([]keysetSegment[M]{{after: &notNull, order: valued}}, nulls(nil)...)
+	case vals == nil:
+		return append(nulls(nil), keysetSegment[M]{after: &notNull, order: valued})
+	case vals[0] != nil:
+		after := keysetAfter[M](valued, vals)
+		values := keysetSegment[M]{after: &after, order: valued}
+		if t.nulls == NullsLast {
+			return append([]keysetSegment[M]{values}, nulls(nil)...)
+		}
+		return []keysetSegment[M]{values}
+	case t.nulls == NullsLast:
+		return nulls(vals[1:])
 	}
-	op := "="
-	if after {
-		op = map[bool]string{false: ">", true: "<"}[t.desc]
+	return append(nulls(vals[1:]), keysetSegment[M]{after: &notNull, order: valued})
+}
+
+func keysetAfter[M any](terms []keysetTerm, vals []any) Cond[M] {
+	t, v := terms[0], vals[0]
+	if len(terms) == 1 {
+		return keysetPast[M](t, v, false)
 	}
+	rest := keysetAfter[M](terms[1:], vals[1:])
+	switch {
+	case v != nil:
+		return And(keysetPast[M](t, v, true), Or(keysetPast[M](t, v, false), rest))
+	case t.nulls == NullsLast:
+		return And(keysetNull[M](t, false), rest)
+	}
+	return Or(And(keysetNull[M](t, false), rest), keysetNull[M](t, true))
+}
+
+func keysetPast[M any](t keysetTerm, v any, orEqual bool) Cond[M] {
+	if v == nil {
+		if t.nulls == NullsLast {
+			return Or[M]()
+		}
+		return keysetNull[M](t, true)
+	}
+	op := map[bool]string{false: ">", true: "<"}[t.desc] + map[bool]string{false: "", true: "="}[orEqual]
 	c := Cond[M]{
 		f:  func(b *SQL) { t.e.build(b); b.Write(" ", op, " "); b.Arg(v) },
 		ir: Field{Column: t.col, Op: op, Value: v},
 	}
-	if after && t.nulls == NullsLast {
-		return Or(c, null(false))
+	if t.nulls == NullsLast {
+		return Or(c, keysetNull[M](t, false))
 	}
 	return c
+}
+
+func keysetNull[M any](t keysetTerm, not bool) Cond[M] {
+	return Cond[M]{
+		f:  func(b *SQL) { t.e.build(b); b.Write(map[bool]string{false: " IS NULL", true: " IS NOT NULL"}[not]) },
+		ir: NullTest{Column: t.col, Not: not},
+	}
 }
 
 func decodeInto(raw json.RawMessage, ptr any) (any, error) {

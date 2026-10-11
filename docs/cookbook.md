@@ -319,7 +319,11 @@ indexed payload field, ordering by the key (or not at all) uses its native
 point-id scroll. A cursor page serialises as `data`, `per_page`, `next_cursor` and
 `prev_cursor`: `PrevCursor` walks back towards the first page (which has
 none), and `NextCursor` is empty on the last page. Nullable order columns
-page with their NULLs last in either direction. Qdrant scrolls forward
+page with their NULLs last in either direction. Every page seeks to its
+cursor through an index on the order columns (`a >= ? AND (a > ? OR
+...)`) rather than reading the rows before it, and a nullable leading
+column pages its values and its NULLs as separate seeks, so no page sorts
+on an "is null" expression an index cannot serve. Qdrant scrolls forward
 only, so it refuses a previous-page cursor as not translatable.
 
 ```go
