@@ -310,7 +310,9 @@ func TestScanners(t *testing.T) {
 	eq(t, "json from null", j.V == nil, true)
 	eq(t, "json from an unencodable value", j.Scan(make(chan int)) != nil, true)
 
-	orm.SetEncryptionKey([]byte("scanner test key"))
+	eq(t, "an empty encryption key is refused", orm.SetEncryptionKey(nil) != nil, true)
+	eq(t, "a short encryption key is refused", orm.SetEncryptionKey([]byte("scanner test key")) != nil, true)
+	ok(orm.SetEncryptionKey([]byte("0123456789abcdef0123456789abcdef")))
 	sealedText := must(orm.Encrypted[string]{V: "s3cret"}.Value()).(string)
 	var e orm.Encrypted[string]
 	ok(e.Scan(sealedText))
@@ -327,15 +329,20 @@ func TestScanners(t *testing.T) {
 	eq(t, "encrypted from too little", e.Scan("AAAA") != nil, true)
 	eq(t, "encrypted from an unsupported type", e.Scan(42) != nil, true)
 
+	password := must(orm.HashPassword("hunter2"))
+	eq(t, "a new hash matches", password.Matches("hunter2"), true)
+	asJSON := string(must(json.Marshal(password)))
+	eq(t, "json carries the hash, not the password", strings.HasPrefix(asJSON, `"$2`) && !strings.Contains(asJSON, "hunter2"), true)
 	var h orm.Hashed
-	hash := must(orm.Hashed("hunter2").Value()).(string)
+	hash := must(password.Value()).(string)
+	eq(t, "a non-hash is refused", h.Scan("hunter2") != nil, true)
 	ok(h.Scan(hash))
 	eq(t, "hashed from text", h.Matches("hunter2"), true)
 	ok(h.Scan([]byte(hash)))
 	eq(t, "hashed from bytes", h.Matches("wrong"), false)
 	eq(t, "hashed keeps an existing hash", must(h.Value()), any(hash))
 	ok(h.Scan(nil))
-	eq(t, "hashed from null", h, orm.Hashed(""))
+	eq(t, "hashed from null", h.IsZero() && !h.Matches(""), true)
 	eq(t, "hashed from an unsupported type", h.Scan(42) != nil, true)
 }
 

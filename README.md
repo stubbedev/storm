@@ -535,7 +535,8 @@ size or metric.
 ## Encrypted and hashed columns
 
 ```go
-orm.SetEncryptionKey([]byte(os.Getenv("APP_KEY"))) // call once at startup
+key, err := base64.StdEncoding.DecodeString(os.Getenv("APP_KEY")) // 32 random bytes
+err = orm.SetEncryptionKey(key)                                    // once at startup; any other length is refused
 
 // type User struct {
 // 	orm.Model
@@ -543,12 +544,14 @@ orm.SetEncryptionKey([]byte(os.Getenv("APP_KEY"))) // call once at startup
 // 	Password orm.Hashed                     `db:"password"`    // bcrypt at rest
 // }
 
-u.Password = "secret"          // assigning plain text hashes it on write
-u.Password.Matches("secret")   // verify
+u.Password, err = orm.HashPassword("secret") // the model only ever holds the hash
+u.Password.Matches("secret")                 // verify
 ```
 
-`orm.Encrypted[V]` works for any JSON-encodable value; `orm.Hashed` stores a
-loaded hash as-is, so re-saving a model never double-hashes. `orm.JSON[V]`
+`orm.Encrypted[V]` works for any JSON-encodable value. `orm.Hashed` only
+ever holds a bcrypt hash — made by `HashPassword` or read from the column —
+so a model never carries or serialises a plain password, and a value that
+is not a bcrypt hash is refused. `orm.JSON[V]`
 remains the cast for plain JSON columns, and any `sql.Scanner` /
 `driver.Valuer` type slots in as a custom cast.
 

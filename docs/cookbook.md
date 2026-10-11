@@ -108,13 +108,14 @@ a field).
 ```go
 // Encrypted columns (Laravel's 'encrypted' / 'encrypted:array' casts):
 // AES-256-GCM of the JSON encoding, keyed by orm.SetEncryptionKey.
-orm.SetEncryptionKey([]byte(os.Getenv("APP_KEY")))
+key, err := base64.StdEncoding.DecodeString(os.Getenv("APP_KEY")) // 32 random bytes
+err = orm.SetEncryptionKey(key)
 // ApiToken orm.Encrypted[map[string]string] `db:"api_token"`
 
-// Hashed passwords (the 'hashed' cast): assigning a plain password
-// bcrypt-hashes it on write; an already-hashed value is stored as-is.
+// Hashed passwords (the 'hashed' cast): the field only ever holds a
+// bcrypt hash, so the plain password never sits in the model.
 // Password orm.Hashed `db:"password"`
-u.Password = "secret"
+u.Password, err = orm.HashPassword("secret")
 u.Password.Matches("secret") // verify
 ```
 

@@ -1,17 +1,17 @@
 package orm
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"strings"
+	"sync/atomic"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -47,22 +47,32 @@ func (j *JSON[V]) Scan(src any) error {
 func (j JSON[V]) MarshalJSON() ([]byte, error)  { return json.Marshal(j.V) }
 func (j *JSON[V]) UnmarshalJSON(b []byte) error { return json.Unmarshal(b, &j.V) }
 
-var encryptionKey []byte
+var encryptionKey atomic.Pointer[[]byte]
 
-// SetEncryptionKey sets the key Encrypted seals values with. Any length is
-// accepted; it is stretched to 32 bytes (AES-256). Call it once at startup,
-// before the first Encrypted value is stored or read.
-func SetEncryptionKey(key []byte) {
-	sum := sha256.Sum256(key)
-	encryptionKey = sum[:]
+// EncryptionKeySize is the length of the key Encrypted seals with: an
+// AES-256 key, 32 random bytes.
+const EncryptionKeySize = 32
+
+// SetEncryptionKey sets the key Encrypted seals values with: exactly 32
+// random bytes (generate them once with crypto/rand and keep them in a
+// secret store, e.g. base64 in APP_KEY). Any other length — an empty
+// key from an unset environment variable included — is refused.
+func SetEncryptionKey(key []byte) error {
+	if len(key) != EncryptionKeySize {
+		return fmt.Errorf("orm: an encryption key must be %d bytes, got %d", EncryptionKeySize, len(key))
+	}
+	k := bytes.Clone(key)
+	encryptionKey.Store(&k)
+	return nil
 }
 
 // aead is the cipher Encrypted seals with, keyed by SetEncryptionKey.
 func aead() (cipher.AEAD, error) {
-	if encryptionKey == nil {
+	key := encryptionKey.Load()
+	if key == nil {
 		return nil, errors.New("orm: call orm.SetEncryptionKey before using Encrypted")
 	}
-	block, err := aes.NewCipher(encryptionKey)
+	block, err := aes.NewCipher(*key)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +113,8 @@ func opened(s string) ([]byte, error) {
 // Encrypted stores V as an authenticated AES-GCM encrypted JSON payload —
 // Eloquent's 'encrypted' and 'encrypted:array' casts.
 //
-//	orm.SetEncryptionKey([]byte(os.Getenv("APP_KEY")))
+//	key, err := base64.StdEncoding.DecodeString(os.Getenv("APP_KEY"))
+//	err = orm.SetEncryptionKey(key) // 32 random bytes
 //	// Secret string `db:"secret"`
 //
 // Secret orm.Encrypted[map[string]string] `db:"secret"`
@@ -143,48 +154,82 @@ func (e *Encrypted[V]) Scan(src any) error {
 func (e Encrypted[V]) MarshalJSON() ([]byte, error)  { return json.Marshal(e.V) }
 func (e *Encrypted[V]) UnmarshalJSON(b []byte) error { return json.Unmarshal(b, &e.V) }
 
-// Hashed stores a bcrypt hash of the string — Eloquent's 'hashed' cast.
-// Assigning a plain password hashes it; assigning a value that is already
-// a bcrypt hash stores it as-is, so loaded models can be re-saved without
-// double hashing.
+// Hashed is a bcrypt password hash — Eloquent's 'hashed' cast. It only
+// ever holds a hash: HashPassword makes one from a plain password, and
+// reading the column loads one, so a model never carries (or serialises)
+// the plain password, and a value that is not a bcrypt hash is refused on
+// write.
 //
 //	type User struct {
 //		orm.Model
 //		Password orm.Hashed `db:"password"`
 //	}
 //
-//	u.Password = "secret"
-//	u.Password.Matches("secret") // true after saving or assigning
-type Hashed string
+//	u.Password, err = orm.HashPassword("secret")
+//	u.Password.Matches("secret") // true
+type Hashed struct{ hash string }
+
+// HashPassword hashes plain with bcrypt at its default cost.
+func HashPassword(plain string) (Hashed, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+	if err != nil {
+		return Hashed{}, fmt.Errorf("orm: hashing a password: %w", err)
+	}
+	return Hashed{string(hash)}, nil
+}
+
+// IsZero reports whether no password is set.
+func (h Hashed) IsZero() bool { return h.hash == "" }
 
 func (h Hashed) Value() (driver.Value, error) {
-	if h == "" || isBcrypt(string(h)) {
-		return string(h), nil
+	if h.hash == "" {
+		return nil, nil
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(h), bcrypt.DefaultCost)
-	return string(hash), err
+	return h.hash, nil
 }
 
 func (h *Hashed) Scan(src any) error {
-	switch s := src.(type) {
+	var s string
+	switch v := src.(type) {
 	case nil:
-		*h = ""
+		*h = Hashed{}
 		return nil
 	case string:
-		*h = Hashed(s)
-		return nil
+		s = v
 	case []byte:
-		*h = Hashed(s)
-		return nil
+		s = string(v)
+	default:
+		return fmt.Errorf("orm: cannot scan %T into Hashed", src)
 	}
-	return fmt.Errorf("orm: cannot scan %T into Hashed", src)
+	if !isBcrypt(s) {
+		return errors.New("orm: the stored value is not a bcrypt hash")
+	}
+	*h = Hashed{s}
+	return nil
 }
 
 // Matches reports whether plain verifies against the stored hash.
 func (h Hashed) Matches(plain string) bool {
-	return bcrypt.CompareHashAndPassword([]byte(h), []byte(plain)) == nil
+	return h.hash != "" && bcrypt.CompareHashAndPassword([]byte(h.hash), []byte(plain)) == nil
+}
+
+// MarshalJSON writes the hash, never a password; UnmarshalJSON accepts
+// only a bcrypt hash.
+func (h Hashed) MarshalJSON() ([]byte, error) { return json.Marshal(h.hash) }
+
+func (h *Hashed) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	if s == "" {
+		*h = Hashed{}
+		return nil
+	}
+	return h.Scan(s)
 }
 
 func isBcrypt(s string) bool {
-	return len(s) == 60 && (strings.HasPrefix(s, "$2a$") || strings.HasPrefix(s, "$2b$") || strings.HasPrefix(s, "$2y$"))
+	_, err := bcrypt.Cost([]byte(s))
+	return len(s) == 60 && err == nil
 }

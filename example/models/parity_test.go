@@ -493,10 +493,10 @@ func TestEncryptedAndHashedCasts(t *testing.T) {
 		t.String("token")
 		t.String("pw")
 	}))
-	orm.SetEncryptionKey([]byte("test key"))
+	ok(orm.SetEncryptionKey([]byte("0123456789abcdef0123456789abcdef")))
 
 	tok := orm.Encrypted[map[string]string]{V: map[string]string{"api_key": "s3cret"}}
-	var pw orm.Hashed = "hunter2"
+	pw := must(orm.HashPassword("hunter2"))
 	ok(orm.From("secrets").Insert(map[string]any{"token": tok, "pw": pw}))
 
 	row := must(orm.From("secrets").First())
