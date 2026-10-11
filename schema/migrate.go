@@ -238,20 +238,20 @@ func (m *Migrator) lockTable() string { return m.table() + "_lock" }
 func (m *Migrator) takeLock(ctx context.Context) error {
 	locks := orm.From(m.lockTable()).On(m.conn())
 	now := time.Now().UTC().Truncate(time.Second)
-	insertErr := locks.Insert(ctx, map[string]any{"id": lockID, "acquired_at": now})
+	insertErr := locks.WithContext(ctx).Insert(map[string]any{"id": lockID, "acquired_at": now})
 	if insertErr == nil {
 		return nil
 	}
 	held := locks.Where("id", orm.Eq, lockID)
 	taken, err := held.Where("acquired_at", orm.Lt, now.Add(-cmp.Or(m.LockTimeout, time.Hour))).
-		Update(ctx, map[string]any{"acquired_at": now})
+		WithContext(ctx).Update(map[string]any{"acquired_at": now})
 	if err != nil {
 		return fmt.Errorf("schema: taking over a stale migration lock: %w", errors.Join(insertErr, err))
 	}
 	if taken > 0 {
 		return nil
 	}
-	exists, err := held.Exists(ctx)
+	exists, err := held.WithContext(ctx).Exists()
 	switch {
 	case err != nil:
 		return fmt.Errorf("schema: reading the migration lock: %w", errors.Join(insertErr, err))
@@ -262,7 +262,7 @@ func (m *Migrator) takeLock(ctx context.Context) error {
 }
 
 func (m *Migrator) releaseLock(ctx context.Context) error {
-	if _, err := orm.From(m.lockTable()).On(m.conn()).Where("id", orm.Eq, lockID).Delete(ctx); err != nil {
+	if _, err := orm.From(m.lockTable()).On(m.conn()).Where("id", orm.Eq, lockID).WithContext(ctx).Delete(); err != nil {
 		return fmt.Errorf("schema: releasing the migration lock: %w", err)
 	}
 	return nil
@@ -474,7 +474,7 @@ func (m *Migrator) record(ctx context.Context, format string, cols []string, arg
 
 // ranDocs reads the migrations log from a document store.
 func (m *Migrator) ranDocs(ctx context.Context) (map[string]int, error) {
-	rows, err := orm.From(m.table()).On(m.conn()).Get(ctx)
+	rows, err := orm.From(m.table()).On(m.conn()).WithContext(ctx).Get()
 	if err != nil {
 		return nil, fmt.Errorf("schema: reading migrations collection %s on %q: %w", m.table(), m.conn(), err)
 	}
@@ -499,7 +499,7 @@ func (m *Migrator) ranDocs(ctx context.Context) (map[string]int, error) {
 func (m *Migrator) logRan(ctx context.Context, name string, batch int) error {
 	if _, doc, err := On(m.conn()).docStore(ctx); err != nil || doc {
 		return thenRun(err, func() error {
-			return orm.From(m.table()).On(m.conn()).Insert(ctx, map[string]any{"id": nameID(name), "migration": name, "batch": batch})
+			return orm.From(m.table()).On(m.conn()).WithContext(ctx).Insert(map[string]any{"id": nameID(name), "migration": name, "batch": batch})
 		})
 	}
 	return m.record(ctx, "INSERT INTO %s (%s, %s) VALUES (%s, %s)", []string{"migration", "batch"}, name, batch)
@@ -509,7 +509,7 @@ func (m *Migrator) logRan(ctx context.Context, name string, batch int) error {
 func (m *Migrator) logReverted(ctx context.Context, name string) error {
 	if _, doc, err := On(m.conn()).docStore(ctx); err != nil || doc {
 		return thenRun(err, func() error {
-			_, err := orm.From(m.table()).On(m.conn()).Where("migration", orm.Eq, name).Delete(ctx)
+			_, err := orm.From(m.table()).On(m.conn()).Where("migration", orm.Eq, name).WithContext(ctx).Delete()
 			return err
 		})
 	}

@@ -43,7 +43,7 @@ func assertDocMigrations(t *testing.T, ctx context.Context, conn string) {
 
 	pets := orm.From("pets").On(conn)
 	valid := map[string]any{"id": "0198c0de-0000-7000-8000-0000000000a1", "name": "Rex", "age": 3, "kind": "dog", "bio": "good"}
-	ok(pets.Insert(ctx, valid))
+	ok(pets.Insert(valid))
 
 	if mongo {
 		eq(t, "declared columns", must(s.Columns(ctx, "pets")), []string{"id", "name", "age", "kind", "bio"})
@@ -55,9 +55,9 @@ func assertDocMigrations(t *testing.T, ctx context.Context, conn string) {
 			"missing field": {"id": "x4", "age": 1},
 			"null not null": {"id": "x5", "name": nil, "age": 1},
 		} {
-			eq(t, "validator rejects "+what, pets.Insert(ctx, doc) != nil, true)
+			eq(t, "validator rejects "+what, pets.Insert(doc) != nil, true)
 		}
-		ok(pets.Insert(ctx, map[string]any{"id": "x6", "name": "Tom", "age": 2, "kind": nil, "bio": nil}))
+		ok(pets.Insert(map[string]any{"id": "x6", "name": "Tom", "age": 2, "kind": nil, "bio": nil}))
 		ok(s.Table(ctx, "pets", func(t *schema.Blueprint) {
 			t.String("color").Nullable()
 			t.RenameColumn("bio", "about")
@@ -66,9 +66,9 @@ func assertDocMigrations(t *testing.T, ctx context.Context, conn string) {
 			t.Unique("name")
 		}))
 		eq(t, "altered columns", must(s.Columns(ctx, "pets")), []string{"id", "name", "kind", "about", "color"})
-		rex := must(pets.Where("id", orm.Eq, valid["id"]).First(ctx))
+		rex := must(pets.Where("id", orm.Eq, valid["id"]).First())
 		eq(t, "rename and drop rewrite documents", fmt.Sprintf("%v %v", rex["about"], rex["age"]), "good <nil>")
-		eq(t, "new unique index enforced", pets.Insert(ctx, map[string]any{"id": "x7", "name": "Rex"}) != nil, true)
+		eq(t, "new unique index enforced", pets.Insert(map[string]any{"id": "x7", "name": "Rex"}) != nil, true)
 		ok(s.Table(ctx, "pets", func(t *schema.Blueprint) { t.String("color").Change() }))
 		eq(t, "changed column", must(s.GetColumns(ctx, "pets"))[4].Nullable, false)
 		pretend, log := s.Pretend()
@@ -106,7 +106,7 @@ func assertDocMigrations(t *testing.T, ctx context.Context, conn string) {
 			t.DropIndexOn("name")
 			t.Integer("age").Index()
 		}))
-		rex := must(pets.Where("id", orm.Eq, valid["id"]).First(ctx))
+		rex := must(pets.Where("id", orm.Eq, valid["id"]).First())
 		eq(t, "dropped payload field", rex["bio"], nil)
 		eq(t, "index swapped", must(s.Columns(ctx, "pets")), []string{"age"})
 		refused("rename collection", s.Rename(ctx, "pets", "animals"), "no rename")
@@ -119,12 +119,12 @@ func assertDocMigrations(t *testing.T, ctx context.Context, conn string) {
 			t.HnswIndex("vec", orm.L2)
 		}))
 		embeds := orm.From("embeds").On(conn)
-		ok(embeds.Insert(ctx,
+		ok(embeds.Insert(
 			map[string]any{"id": "0198c0de-0000-7000-8000-0000000000b1", "label": "x", "vec": orm.NewVector3(1, 0, 0)},
 			map[string]any{"id": "0198c0de-0000-7000-8000-0000000000b2", "label": "y", "vec": orm.NewVector3(0, 1, 0)}))
 		described := must(must(orm.Connection(ctx, conn)).Doc.(orm.DocSchema).DescribeCollection(ctx, "embeds"))
 		eq(t, "vector from the blueprint", *described.Vector, orm.DocVector{Size: 3, Metric: orm.L2})
-		eq(t, "vector points stored", must(embeds.Count(ctx)), int64(2))
+		eq(t, "vector points stored", must(embeds.Count()), int64(2))
 		ok(s.Drop(ctx, "embeds"))
 	}
 

@@ -135,11 +135,11 @@ func TestLiveFixes(t *testing.T) {
 			t.ForeignID("owner_id").Constrained()
 		}))
 		orphan := map[string]any{"owner_id": 404}
-		failed(t, "foreign keys enforced outside", orm.From("pets").Insert(ctx, orphan))
+		failed(t, "foreign keys enforced outside", orm.From("pets").Insert(orphan))
 		check(t, s.WithoutForeignKeyConstraints(ctx, func(ctx context.Context) error {
-			return orm.From("pets").Insert(ctx, orphan)
+			return orm.From("pets").WithContext(ctx).Insert(orphan)
 		}))
-		pets, err := orm.From("pets").Count(ctx)
+		pets, err := orm.From("pets").Count()
 		check(t, err)
 		want(t, "orm writes inside WithoutForeignKeyConstraints run on the held connection", pets, int64(1))
 	}

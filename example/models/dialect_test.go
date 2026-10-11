@@ -87,11 +87,11 @@ func TestSQLiteVectors(t *testing.T) {
 		t.Vector("vec", 3)
 	}))
 	for i, v := range []orm.Vector[orm.D3]{orm.NewVector3(0, 5, 0), orm.NewVector3(1, 0, 0), orm.NewVector3(3, 4, 0)} {
-		ok(Events.Create(ctx, &Event{ID: int64(i + 1), At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Vec: v}))
+		ok(Events.Create(&Event{ID: int64(i + 1), At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Vec: v}))
 	}
-	near := must(Events.Query().OrderBy(orm.Nearest(Events.Vec, orm.NewVector3(1, 1, 0), orm.L2)).Pluck(ctx, Events.ID))
+	near := must(Events.Query().OrderBy(orm.Nearest(Events.Vec, orm.NewVector3(1, 1, 0), orm.L2)).Pluck(Events.ID))
 	eq(t, "sqlite l2 order", near, []int64{2, 3, 1})
-	_, err := Events.Query().OrderBy(orm.Nearest(Events.Vec, orm.NewVector3(1, 1, 0), orm.Cosine)).Get(ctx)
+	_, err := Events.Query().OrderBy(orm.Nearest(Events.Vec, orm.NewVector3(1, 1, 0), orm.Cosine)).Get()
 	eq(t, "sqlite refuses other metrics", err != nil, true)
 
 	stmt, _ := rendered(Events.Query().OrderBy(orm.Nearest(Events.Vec, orm.NewVector3(1, 1, 0), orm.Cosine)).ToSQLFor(orm.MySQL))
@@ -150,12 +150,12 @@ func assertJSON(t *testing.T, ctx context.Context, conn string) {
 		t.JSON("tags").Nullable()
 	}))
 	t.Cleanup(func() { tCheck(t, schema.On(conn).DropIfExists(context.Background(), "jdocs")) })
-	ok(JDocs.Query().On(conn).Insert(ctx,
+	ok(JDocs.Query().On(conn).Insert(
 		JDoc{ID: 1, Doc: &orm.JSON[map[string]any]{V: map[string]any{"n": 7, "f": 1.5, "on": true}}, Tags: &orm.JSON[[]any]{V: []any{"a", 1}}},
 		JDoc{ID: 2, Doc: &orm.JSON[map[string]any]{V: map[string]any{"n": 2, "on": false}}, Tags: &orm.JSON[[]any]{V: []any{2}}},
 		JDoc{ID: 3}))
 	ids := func(c orm.Cond[JDoc]) []int64 {
-		return must(JDocs.Query().On(conn).Where(c).OrderBy(JDocs.ID.Asc()).Pluck(ctx, JDocs.ID))
+		return must(JDocs.Query().On(conn).Where(c).OrderBy(JDocs.ID.Asc()).Pluck(JDocs.ID))
 	}
 	eq(t, conn+" json int", ids(JDocs.Doc.JSON[int64]("n").Gt(5)), []int64{1})
 	eq(t, conn+" json float", ids(JDocs.Doc.JSON[float64]("f").Gt(1.0)), []int64{1})
@@ -166,7 +166,7 @@ func assertJSON(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" not overlaps skips NULL", ids(orm.Not(JDocs.Tags.JSONOverlaps("a"))), []int64{2})
 	eq(t, conn+" not contains skips NULL", ids(JDocs.Tags.JSONDoesntContain(2)), []int64{1})
 	eq(t, conn+" not has key skips NULL", ids(orm.Not(JDocs.Doc.JSONHasKey("f"))), []int64{2})
-	_, err := JDocs.Query().On(conn).Where(JDocs.Tags.JSONContains(func() {})).Get(ctx)
+	_, err := JDocs.Query().On(conn).Where(JDocs.Tags.JSONContains(func() {})).Get()
 	eq(t, conn+" unencodable JSON refused", err != nil, true)
 }
 
@@ -195,10 +195,10 @@ func assertEvents(t *testing.T, ctx context.Context, conn string) {
 			At:   time.Date(2025, 12, 31, 23, 0, 0, 0, time.UTC), Vec: orm.NewVector3(0, 1, 0),
 		},
 	} {
-		ok(Events.Query().On(conn).Create(ctx, &e))
+		ok(Events.Query().On(conn).Create(&e))
 	}
 	ids := func(conds ...orm.Cond[Event]) []int64 {
-		return must(Events.Query().On(conn).Where(conds...).OrderBy(Events.ID.Asc()).Pluck(ctx, Events.ID))
+		return must(Events.Query().On(conn).Where(conds...).OrderBy(Events.ID.Asc()).Pluck(Events.ID))
 	}
 
 	eq(t, conn+" year", ids(orm.Year(Events.At).Eq(2026)), []int64{1})
@@ -216,10 +216,10 @@ func assertEvents(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" full text", ids(orm.FullTextMatch("STORM", Events.Body)), []int64{1})
 
 	for _, m := range []orm.VectorMetric{orm.L2, orm.Cosine, orm.InnerProduct} {
-		nearest := must(Events.Query().On(conn).OrderBy(orm.Nearest(Events.Vec, orm.NewVector3(0.9, 0.1, 0), m)).Pluck(ctx, Events.ID))
+		nearest := must(Events.Query().On(conn).OrderBy(orm.Nearest(Events.Vec, orm.NewVector3(0.9, 0.1, 0), m)).Pluck(Events.ID))
 		eq(t, fmt.Sprintf("%s nearest by metric %d", conn, m), nearest, []int64{1, 2})
 	}
-	eq(t, conn+" random order", len(must(Events.Query().On(conn).InRandomOrder().Get(ctx))), 2)
+	eq(t, conn+" random order", len(must(Events.Query().On(conn).InRandomOrder().Get())), 2)
 
 	raw := must(Events.Query().On(conn).Where(Events.Active.Eq(true), Events.Body.Contains("warn")).ToRawSQL())
 	c := must(orm.Connection(ctx, conn))
@@ -232,8 +232,8 @@ func assertEvents(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" raw sql runs as rendered", matched, 1)
 	eq(t, conn+" raw sql inlines the values", strings.Contains(raw, "'%warn%'"), true)
 
-	ok(Events.Query().On(conn).Truncate(ctx))
-	eq(t, conn+" truncate", must(Events.Query().On(conn).Count(ctx)), int64(0))
+	ok(Events.Query().On(conn).Truncate())
+	eq(t, conn+" truncate", must(Events.Query().On(conn).Count()), int64(0))
 }
 
 func TestMySQLFlavour(t *testing.T) {
@@ -270,15 +270,15 @@ func TestMySQLFlavour(t *testing.T) {
 		{Title: "far", Vec: orm.NewVector3(10, 10, 10)},
 		{Title: "middle", Vec: orm.NewVector3(5, 5, 5)},
 	} {
-		ok(Docs.Query().Create(ctx, &d))
+		ok(Docs.Query().Create(&d))
 	}
-	near := must(Docs.Query().Where(Docs.Title.Eq("near")).First(ctx))
+	near := must(Docs.Query().Where(Docs.Title.Eq("near")).First())
 	eq(t, "mariadb vectors read back", near.Vec.String(), "[1,0,0]")
 	for _, m := range []orm.VectorMetric{orm.L2, orm.Cosine} {
-		titles := must(Docs.Query().OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(0.9, 0.1, 0), m)).Pluck(ctx, Docs.Title))
+		titles := must(Docs.Query().OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(0.9, 0.1, 0), m)).Pluck(Docs.Title))
 		eq(t, fmt.Sprintf("mariadb nearest by metric %d", m), titles[0], "near")
 	}
-	_, err := Docs.Query().OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(1, 0, 0), orm.InnerProduct)).Get(ctx)
+	_, err := Docs.Query().OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(1, 0, 0), orm.InnerProduct)).Get()
 	eq(t, "mariadb has no inner product", err != nil, true)
 	err = schema.Table(ctx, "documents", func(t *schema.Blueprint) { t.HnswIndex("vec", orm.InnerProduct) })
 	_, refused := errors.AsType[*schema.UnsupportedError](err)

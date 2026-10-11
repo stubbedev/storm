@@ -21,7 +21,7 @@ import (
 //		schema.RegisterSeeder(schema.Seeder{
 //			Name: "Users",
 //			Run: func(ctx context.Context) error {
-//				_, err := UserFactory.Count(50).Create(ctx)
+//				_, err := UserFactory.Count(50).WithContext(ctx).Create()
 //				return err
 //			},
 //		})

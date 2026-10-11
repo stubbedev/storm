@@ -87,16 +87,16 @@ func TestSelfReferentialThrough(t *testing.T) {
 			tCheck(t, s.DropIfExists(ctx, table))
 		}
 	})
-	ok(employeeTable.Query().Insert(ctx,
+	ok(employeeTable.Query().Insert(
 		Employee{ID: 1, Name: "Ann"},
 		Employee{ID: 2, Name: "Bob", DepartmentID: 1, MentorID: 1},
 		Employee{ID: 3, Name: "Cy", DepartmentID: 1, MentorID: 2},
 		Employee{ID: 4, Name: "Dee"}))
-	ok(departmentTable.Query().Insert(ctx, Department{ID: 1, ManagerID: 1}))
-	ok(badgeTable.Query().Insert(ctx, Badge{ID: 1, EmployeeID: 2, Name: "gold"}, Badge{ID: 2, EmployeeID: 3, Name: "silver"}))
+	ok(departmentTable.Query().Insert(Department{ID: 1, ManagerID: 1}))
+	ok(badgeTable.Query().Insert(Badge{ID: 1, EmployeeID: 2, Name: "gold"}, Badge{ID: 2, EmployeeID: 3, Name: "silver"}))
 
 	names := func(q orm.Query[Employee, int64]) []string {
-		return must(q.OrderBy(employeeID.Asc()).Pluck(ctx, employeeName))
+		return must(q.OrderBy(employeeID.Asc()).Pluck(employeeName))
 	}
 	eq(t, "whereHas through the parent's own table as related", names(employeeTable.Query().WhereHas(managedEmployees)), []string{"Ann"})
 	eq(t, "hasCount through the parent's own table", names(employeeTable.Query().HasCount(managedEmployees, orm.Gte, 2)), []string{"Ann"})

@@ -13,10 +13,10 @@ users, err := Users.Query().
 	}).
 	WithCount(UserPosts, Users.PostsCount).
 	Latest().
-	Paginate(ctx, 20, page)
+	Paginate(20, page)
 
-emails, err := Users.Query().Pluck(ctx, Users.Email) // []string, inferred from the column
-total, err := Posts.Query().Sum(ctx, Posts.Views)     // int64; Sum(ctx, Users.Email) does not compile
+emails, err := Users.Query().Pluck(Users.Email) // []string, inferred from the column
+total, err := Posts.Query().Sum(Posts.Views)     // int64; Sum(Users.Email) does not compile
 ```
 
 Every column is typed (`orm.Column[User, int64, string]` — model, key type, value type), so these mistakes are
@@ -25,7 +25,7 @@ compile errors rather than runtime SQL errors:
 ```go
 Users.Query().Where(Posts.Title.Eq("x"))       // a Post condition in a User query
 Users.Query().Where(Users.Karma.Eq("lots"))    // string for an int column
-Users.Query().Sum(ctx, Users.Email)            // string does not satisfy orm.Number
+Users.Query().Sum(Users.Email)            // string does not satisfy orm.Number
 Users.Query().With(PostComments)               // a Post relation on a User query
 ```
 
@@ -40,7 +40,7 @@ renders correctly for each, and the full test suite runs against all eight.
 
 - [Requirements and install](#requirements-and-install)
 - [Quick start](#quick-start)
-- [Replicas, sticky reads and transactions](#replicas-sticky-reads-and-transactions)
+- [Contexts, replicas, sticky reads and transactions](#contexts-replicas-sticky-reads-and-transactions)
 - [Seeding](#seeding)
 - [Library-only usage](#library-only-usage)
 - [Queries without a model](#queries-without-a-model)
@@ -118,7 +118,7 @@ orm.Open("analytics", "mysql", os.Getenv("ANALYTICS_DSN")) // used by //orm:tabl
 schema.Register(schema.Migration{
 	Name: "2026_01_01_000000_create_users_table",
 	Up: func(ctx context.Context, s *schema.Builder) error {
-		return s.Create(ctx, "users", func(t *schema.Blueprint) {
+		return s.WithContext(ctx).Create("users", func(t *schema.Blueprint) {
 			t.ID()
 			t.ForeignID("country_id").Nullable().Constrained().NullOnDelete()
 			t.String("name")
@@ -139,11 +139,11 @@ name, and transactions travel in `ctx`.
 
 ```go
 u := User{Name: "Ada", Email: "ada@example.com"}
-err := Users.Create(ctx, &u)               // u.ID, timestamps filled in
+err := Users.Create(&u)               // u.ID, timestamps filled in
 
 err = orm.Transaction(ctx, func(ctx context.Context) error {
 	u.Name = "Ada Lovelace"
-	return Users.Save(ctx, &u)              // updates only dirty columns
+	return Users.WithContext(ctx).Save(&u)              // updates only dirty columns
 })
 ```
 
@@ -151,7 +151,20 @@ The `example/` directory contains a complete schema covering every relation
 type, its migrations, a migration CLI (`go run ./example/migrate`), and the
 test suite that exercises all of it.
 
-## Replicas, sticky reads and transactions
+## Contexts, replicas, sticky reads and transactions
+
+Builders carry their context instead of taking one per call:
+`Users.Find(5)` and `Posts.Where(...).Get()` run on the background context —
+no transaction, no deadline. Bind one with `WithContext` wherever it
+matters: inside a transaction, under a request deadline, or with a context
+option (`orm.Sticky`, `orm.WithoutEvents`, `orm.WithoutTimestamps`,
+`orm.WithConn`). `Users.WithContext(ctx)` is the table bound to ctx (its
+`Find`, `Create`, `Save`, `Delete`, queries ...), and queries, row queries,
+relations (`UserRoles.WithContext(ctx).Attach(...)`) and factories have the
+same method. A query run without the transaction's ctx runs outside the
+transaction — on a single-connection pool (SQLite) while the transaction
+holds that connection, it waits for it.
+
 
 One connection can carry two pools: `SELECT`s run against the read DSN,
 everything else (including `INSERT ... RETURNING`) against the write DSN.
@@ -168,13 +181,14 @@ the write pool. Open the scope once where the request's ctx is created
 
 ```go
 ctx := orm.Sticky(r.Context()) // in middleware
+users := Users.WithContext(ctx)
 
 // reads hit the replica...
-users, err := Users.Query().Get(ctx)
+all, err := users.Query().Get()
 // ...until a write happens
-err = Users.Create(ctx, &u)
+err = users.Create(&u)
 // ...after which this read sees u despite replication lag
-users, err = Users.Query().Get(ctx)
+all, err = users.Query().Get()
 ```
 
 A plain ctx keeps reading the replica; other requests are unaffected.
@@ -185,13 +199,13 @@ deadlock:
 
 ```go
 err := orm.RetryingTransaction(ctx, 3, func(ctx context.Context) error {
-	return Users.Save(ctx, &u) // re-run on deadlock or lock timeout, up to 3 times
+	return Users.WithContext(ctx).Save(&u) // re-run on deadlock or lock timeout, up to 3 times
 })
 ```
 
 Every executed statement is reported to `orm.Listen` callbacks, and
 `orm.EnableQueryLog` / `orm.QueryLog` / `orm.FlushQueryLog` record them for
-debugging; `Query.Explain(ctx)` returns the database's plan as maps.
+debugging; `Query.Explain()` returns the database's plan as maps.
 
 ## Seeding
 
@@ -208,7 +222,7 @@ func init() {
 	schema.RegisterSeeder(schema.Seeder{
 		Name: "Users",
 		Run: func(ctx context.Context) error {
-			_, err := UserFactory.Count(50).Create(ctx)
+			_, err := UserFactory.Count(50).WithContext(ctx).Create()
 			return err
 		},
 	})
@@ -274,11 +288,11 @@ rows, err := orm.From("users").
 	WhereRaw("karma > ?", 10).
 	OrderBy("name").
 	Limit(10).
-	Get(ctx) // []map[string]any
+	Get() // []map[string]any
 
-id, err := orm.From("users").InsertGetID(ctx, map[string]any{"name": "Ada", "email": "a@x.io"})
-n, err := orm.From("users").Where("id", orm.Eq, id).Update(ctx, map[string]any{"name": "Ada L"})
-err = orm.From("users").UpdateOrInsert(ctx,
+id, err := orm.From("users").InsertGetID(map[string]any{"name": "Ada", "email": "a@x.io"})
+n, err := orm.From("users").Where("id", orm.Eq, id).Update(map[string]any{"name": "Ada L"})
+err = orm.From("users").UpdateOrInsert(
 	map[string]any{"email": "a@x.io"},
 	map[string]any{"name": "Ada L"})
 ```
@@ -301,12 +315,12 @@ rows, err := orm.FromTable(Users). // table and connection from the model
 	Join(Countries, Countries.ID.EqCol(Users.CountryID)).
 	WhereCond(Users.Karma.Gt(10)).
 	OrderByCol(Users.Name).
-	Get(ctx) // []map[string]any{{"user": "Alice", "country": "Denmark"}, ...}
+	Get() // []map[string]any{{"user": "Alice", "country": "Denmark"}, ...}
 
-emails, err := orm.FromTable(Users).PluckCol(ctx, Users.Email) // []string
-err = orm.FromTable(Users).InsertCols(ctx, Users.Name.Set("Ada"), Users.Email.Set("a@x.io"))
+emails, err := orm.FromTable(Users).PluckCol(Users.Email) // []string
+err = orm.FromTable(Users).InsertCols(Users.Name.Set("Ada"), Users.Email.Set("a@x.io"))
 n, err := orm.FromTable(Users).WhereCond(Users.Email.Eq("a@x.io")).
-	UpdateCols(ctx, Users.Name.Set("Ada L"), Users.Karma.SetExpr(orm.Plus(Users.Karma, 1)))
+	UpdateCols(Users.Name.Set("Ada L"), Users.Karma.SetExpr(orm.Plus(Users.Karma, 1)))
 ```
 
 Grouping takes typed aggregates named with `As`, and every page comes back
@@ -317,9 +331,9 @@ perCountry, err := orm.FromTable(Users).
 	SelectCols(Users.CountryID, orm.Count[User]().As("users"), orm.Sum(Users.Karma).As("karma")).
 	GroupByCols(Users.CountryID).
 	HavingCond(orm.Count[User]().Gt(1)).
-	Get(ctx)
+	Get()
 
-page, err := orm.FromTable(Users).OrderByCol(Users.ID).Paginate(ctx, 20, 2)
+page, err := orm.FromTable(Users).OrderByCol(Users.ID).Paginate(20, 2)
 // page.Items, page.Total, page.LastPage, page.From, page.To, page.HasMore
 ```
 
@@ -360,7 +374,7 @@ orm.Open("lake", "duckdb", "analytics.duckdb")
 
 n, err := orm.FromRaw("read_csv(?)", "events.csv").On("lake").
 	Where("kind", "=", "click").
-	Count(ctx)
+	Count()
 ```
 
 Auto-increment keys draw from per-table sequences the schema builder
@@ -405,7 +419,7 @@ type Doc struct {
 docs, err := Docs.Query().
 	OrderBy(orm.Nearest(Docs.Embedding, orm.NewVector3(0.2, 0.1, 0.9), orm.Cosine)).
 	Limit(10).
-	Get(ctx)
+	Get()
 ```
 
 Metrics are `orm.L2` (pgvector `<->`), `orm.Cosine` (`<=>`) and
@@ -430,8 +444,8 @@ type Event struct {
 	Kind string `db:"kind"`
 }
 
-events, err := Events.Query().Where(Events.Kind.Eq("click")).Limit(10).Get(ctx)
-err = Events.Query().Where(Events.Kind.Eq("click")).Update(ctx, Events.Kind.Set("tap"))
+events, err := Events.Query().Where(Events.Kind.Eq("click")).Limit(10).Get()
+err = Events.Query().Where(Events.Kind.Eq("click")).Update(Events.Kind.Set("tap"))
 ```
 
 What translates: `Where` (comparisons, `In`, `Between`, null tests,
@@ -476,7 +490,7 @@ store, _ := orm.OpenQdrant("qdrant", "http://localhost:6333")
 docs, err := Docs.Query().
 	OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(1, 0, 0), orm.Cosine)).
 	Limit(10).
-	Get(ctx)
+	Get()
 ```
 
 On Qdrant a NULL test matches a field that is missing, null or an empty
@@ -489,13 +503,13 @@ The schema builder and migrator drive MongoDB and Qdrant with the same
 blueprints as SQL, so one migration set covers every store:
 
 ```go
-schema.On("mongo").Create(ctx, "events", func(t *schema.Blueprint) {
+schema.On("mongo").Create("events", func(t *schema.Blueprint) {
 	t.UUID("id").Primary()
 	t.String("kind").Index()
 	t.Integer("score").Unsigned()
 	t.Enum("level", "info", "warn").Nullable()
 })
-schema.On("qdrant").Create(ctx, "documents", func(t *schema.Blueprint) {
+schema.On("qdrant").Create("documents", func(t *schema.Blueprint) {
 	t.UUID("id").Primary()           // the point id
 	t.String("title").Index()        // a keyword payload index
 	t.Vector("vec", 3)
@@ -567,7 +581,7 @@ design and belong in migration code, not input.
 
 The whole API is generic over the model, so gopls carries the model type
 through every chain: hovering a query variable shows
-`orm.Query[models.User, int64]`, `Pluck(ctx, Users.Email)` shows `[]string`, and a
+`orm.Query[models.User, int64]`, `Pluck(Users.Email)` shows `[]string`, and a
 condition shows `orm.Cond[models.User]`. ormgen also documents every
 generated symbol, so hovering `Users.Email` shows the column, table and
 field type at once.
@@ -591,7 +605,7 @@ Completion after `Users.` lists every column with its type in the popup;
 wrong value type (`Users.Karma.Gt("ten")`) is a compile error, not a
 runtime one. The same holds inside `orm.From` chains:
 `WhereCond(Users.Karma.Gt(10))`, `SelectCols(Users.Email)` and
-`UpdateCols(ctx, Users.Karma.Set(5))` take the same typed columns, and `Where("active", orm.Eq, true)` completes the
+`UpdateCols(Users.Karma.Set(5))` take the same typed columns, and `Where("active", orm.Eq, true)` completes the
 valid operators after `orm.`.
 
 ## Eloquent feature map
@@ -638,9 +652,9 @@ valid operators after `orm.`.
 | `attach`, `detach`, `sync`, `toggle`, `updateExistingPivot` | same names |
 | Casts (array/json, dates, enums, encrypted, hashed, custom) | `orm.JSON[T]`, `orm.Encrypted[V]` (`orm.SetEncryptionKey`), `orm.Hashed`, `time.Time`, typed string enums, any `sql.Scanner` / `driver.Valuer` |
 | Model factories, seeders, `db:seed`, `--seed` | `orm.NewFactory(...).Count(n).State(...).Sequence(...).Create(ctx)`; `schema.Seeder` + `RegisterSeeder` + `schema.Seed`, `db:seed [-class]`, `fresh -seed` |
-| Prunable / MassPrunable | `Prune(ctx, chunk)` / `Delete` |
+| Prunable / MassPrunable | `Prune(chunk)` / `Delete` |
 | `DB::transaction`, nested savepoints, `afterCommit`, deadlock retry | `orm.Transaction` (nests), `orm.AfterCommit`, `orm.RetryingTransaction(ctx, attempts, fn)` |
-| `DB::listen`, `toSql`, `toRawSql`, `explain`, query log | `orm.Listen`, `ToSQL`, `ToRawSQL`, `Explain(ctx)`, `orm.EnableQueryLog` / `QueryLog` / `FlushQueryLog` |
+| `DB::listen`, `toSql`, `toRawSql`, `explain`, query log | `orm.Listen`, `ToSQL`, `ToRawSQL`, `Explain()`, `orm.EnableQueryLog` / `QueryLog` / `FlushQueryLog` |
 | Connections, `Model::on()`, read/write split, `sticky` | `orm.Open` / `AddConnection` / `OpenReadWrite`, `connection=` directive, `Query.On(name)`, `orm.Sticky(ctx)` |
 | `DB::table('users')` (no model) | `orm.From("users")` / `orm.FromTable(Users)`: wheres, joins, orders, aggregates, `Get` as `[]map[string]any`, `Insert`, `InsertOrIgnore`, `Upsert`, `InsertGetID`, `Update`, `Increment`, `Decrement`, `UpdateOrInsert`, `Delete` |
 | `Schema::create/table/drop/rename/hasTable/hasColumn(s)/hasIndex` | `schema.Create`, `Table`, `Drop`, `Rename`, `HasTable`, `HasColumns`, `HasIndex` |
@@ -681,7 +695,7 @@ Each has a typed equivalent:
 - **Mass assignment / `$fillable`**. Unnecessary, since models are structs and
   updates are typed `Column.Set(v)` assignments.
 - **Inheriting static methods** (`User::find()` via `extends Model`). The
-  generated schema value plays that role: `Users.Find(ctx, id)`.
+  generated schema value plays that role: `Users.Find(id)`.
 - **Variadic generic tuples** (`select(a, b, c)` into an anonymous row). Select into a
   struct's columns, use `PluckMap` for pairs, or add virtual columns.
 - **Interfaces with generic methods**. Relation behaviour is reached through

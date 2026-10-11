@@ -326,9 +326,9 @@ func TestMigrator(t *testing.T) {
 	want(t, "isolated ran", inside, true)
 	check(t, m.Isolated(ctx, func(context.Context) error { return nil }))
 	stale := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
-	check(t, orm.From("migrations_lock").Insert(ctx, map[string]any{"id": "migrate", "acquired_at": stale}))
+	check(t, orm.From("migrations_lock").Insert(map[string]any{"id": "migrate", "acquired_at": stale}))
 	check(t, m.Isolated(ctx, func(context.Context) error { return nil }))
-	held, err := orm.From("migrations_lock").Count(ctx)
+	held, err := orm.From("migrations_lock").Count()
 	check(t, err)
 	want(t, "stale lock taken over and released", held, int64(0))
 	check(t, s.Drop(ctx, "migrations_lock"))
@@ -428,7 +428,7 @@ func TestSeeders(t *testing.T) {
 		Name: "Widgets",
 		Run: func(ctx context.Context) error {
 			ran++
-			if err := orm.From("widgets").Insert(ctx, map[string]any{"name": fmt.Sprintf("widget %d", ran)}); err != nil {
+			if err := orm.From("widgets").WithContext(ctx).Insert(map[string]any{"name": fmt.Sprintf("widget %d", ran)}); err != nil {
 				return err
 			}
 			return nil

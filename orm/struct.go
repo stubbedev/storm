@@ -28,6 +28,7 @@ import (
 //
 // Like Query, every method returns a new RowQuery, so builders can be shared.
 type RowQuery struct {
+	bound
 	conn     string
 	name     string
 	source   frag   // a raw table source (FromRaw), rendered instead of name
@@ -76,6 +77,12 @@ func (r RowQuery) writable(method string) error {
 func FromTable[M any](ref TableRef[M]) RowQuery {
 	t := ref.tableRef()
 	return RowQuery{name: t.Name, conn: t.Connection, key: cmp.Or(t.PrimaryKey, "id")}
+}
+
+// WithContext runs the query with ctx (see Query.WithContext).
+func (r RowQuery) WithContext(ctx context.Context) RowQuery {
+	r.bound = boundTo(ctx)
+	return r
 }
 
 // On targets a named connection (DB::table(...)->on('analytics')).
@@ -490,13 +497,15 @@ func (r RowQuery) ForPage(page, perPage int) RowQuery {
 // Paginate returns page (from 1) of perPage rows with the total count, on
 // every engine, document stores included; with GroupBy or Distinct the
 // total counts groups or distinct rows.
-func (r RowQuery) Paginate(ctx context.Context, perPage, page int) (Page[map[string]any], error) {
-	return paginate(perPage, page, func() (int64, error) { return r.Count(ctx) }, r.pageOf(ctx))
+func (r RowQuery) Paginate(perPage, page int) (Page[map[string]any], error) {
+	ctx := r.context()
+	return paginate(perPage, page, func() (int64, error) { return r.WithContext(ctx).Count() }, r.pageOf(ctx))
 }
 
 // SimplePaginate is Paginate without the count query: it only reports
 // whether another page follows.
-func (r RowQuery) SimplePaginate(ctx context.Context, perPage, page int) (SimplePage[map[string]any], error) {
+func (r RowQuery) SimplePaginate(perPage, page int) (SimplePage[map[string]any], error) {
+	ctx := r.context()
 	return simplePaginate(perPage, page, r.pageOf(ctx))
 }
 
@@ -506,13 +515,16 @@ func (r RowQuery) pageOf(ctx context.Context) func(limit, offset int) ([]map[str
 	if len(r.orders) == 0 && len(r.groups) == 0 && !r.distinct && len(r.unions) == 0 {
 		r = r.OrderBy(r.keyColumn())
 	}
-	return func(limit, offset int) ([]map[string]any, error) { return r.Limit(limit).Offset(offset).Get(ctx) }
+	return func(limit, offset int) ([]map[string]any, error) {
+		return r.Limit(limit).Offset(offset).WithContext(ctx).Get()
+	}
 }
 
 // CursorPaginate pages by the values of the ORDER BY columns (keyset
 // pagination), the key column ascending when there is none; the next
 // page starts after NextCursor. It runs on document stores too.
-func (r RowQuery) CursorPaginate(ctx context.Context, perPage int, cursor string) (CursorPage[map[string]any], error) {
+func (r RowQuery) CursorPaginate(perPage int, cursor string) (CursorPage[map[string]any], error) {
+	ctx := r.context()
 	if len(r.orders) == 0 {
 		r = r.OrderBy(r.keyColumn())
 	}
@@ -530,7 +542,7 @@ func (r RowQuery) CursorPaginate(ctx context.Context, perPage int, cursor string
 			if after != nil {
 				page = page.addWhere(after.f, after.ir)
 			}
-			return page.Get(ctx)
+			return page.WithContext(ctx).Get()
 		},
 		func(row map[string]any, i int) any { return cursorValue(row[resultName(r.orders[i].col)]) })
 }
@@ -588,18 +600,21 @@ func (r RowQuery) keyColumn() string {
 
 // Chunk hands fn the rows size at a time, paging by offset; order the
 // query for stable pages. Return ErrStop from fn to stop early.
-func (r RowQuery) Chunk(ctx context.Context, size int, fn func([]map[string]any) error) error {
+func (r RowQuery) Chunk(size int, fn func([]map[string]any) error) error {
+	ctx := r.context()
 	return chunkPages(size, r.pageOf(ctx), fn)
 }
 
 // ChunkByID pages by the key column (WithKey, default "id"), which must be
 // selected; safe when fn modifies the rows it gets.
-func (r RowQuery) ChunkByID(ctx context.Context, size int, fn func([]map[string]any) error) error {
+func (r RowQuery) ChunkByID(size int, fn func([]map[string]any) error) error {
+	ctx := r.context()
 	return eachChunk(r.chunksByID(ctx, size), fn)
 }
 
 // Lazy streams rows chunk by chunk by key column (lazyById).
-func (r RowQuery) Lazy(ctx context.Context, size int) iter.Seq2[map[string]any, error] {
+func (r RowQuery) Lazy(size int) iter.Seq2[map[string]any, error] {
+	ctx := r.context()
 	return flatten(r.chunksByID(ctx, size))
 }
 
@@ -610,9 +625,9 @@ func (r RowQuery) chunksByID(ctx context.Context, size int) iter.Seq2[[]map[stri
 	page = page.OrderBy(col).Limit(size)
 	return keysetChunks(size, func(after any) ([]map[string]any, error) {
 		if after == nil {
-			return page.Get(ctx)
+			return page.WithContext(ctx).Get()
 		}
-		return page.Where(col, Gt, after).Get(ctx)
+		return page.Where(col, Gt, after).WithContext(ctx).Get()
 	}, func(row map[string]any) (any, error) {
 		if v := row[r.key]; v != nil {
 			return v, nil
@@ -622,10 +637,11 @@ func (r RowQuery) chunksByID(ctx context.Context, size int) iter.Seq2[[]map[stri
 }
 
 // Cursor streams the rows of one query as they are read (cursor()).
-func (r RowQuery) Cursor(ctx context.Context) iter.Seq2[map[string]any, error] {
+func (r RowQuery) Cursor() iter.Seq2[map[string]any, error] {
+	ctx := r.context()
 	return func(yield func(map[string]any, error) bool) {
 		if _, ok, err := r.docConn(ctx); err != nil || ok {
-			flatten(func(yield func([]map[string]any, error) bool) { yield(r.Get(ctx)) })(yield)
+			flatten(func(yield func([]map[string]any, error) bool) { yield(r.WithContext(ctx).Get()) })(yield)
 			return
 		}
 		rows, err := r.read(ctx, func(b *SQL) { r.render(b, nil) })
@@ -791,7 +807,8 @@ func (r RowQuery) planOf() (Plan, error) {
 }
 
 // Get runs the query and returns every row as a map of column to value.
-func (r RowQuery) Get(ctx context.Context) ([]map[string]any, error) {
+func (r RowQuery) Get() ([]map[string]any, error) {
+	ctx := r.context()
 	if ds, ok, err := r.docConn(ctx); err != nil {
 		return nil, err
 	} else if ok {
@@ -814,26 +831,32 @@ func (r RowQuery) Get(ctx context.Context) ([]map[string]any, error) {
 
 // Find returns the row whose key column (WithKey, default "id") is id, or
 // ErrNotFound.
-func (r RowQuery) Find(ctx context.Context, id any) (map[string]any, error) {
-	return r.Where(r.keyColumn(), Eq, id).First(ctx)
+func (r RowQuery) Find(id any) (map[string]any, error) {
+	ctx := r.context()
+	return r.Where(r.keyColumn(), Eq, id).WithContext(ctx).First()
 }
 
 // Sole returns the only matching row: ErrNotFound for none,
 // ErrMultipleRecords for more.
-func (r RowQuery) Sole(ctx context.Context) (map[string]any, error) { return sole(r.Limit(2).Get(ctx)) }
+func (r RowQuery) Sole() (map[string]any, error) {
+	ctx := r.context()
+	return sole(r.Limit(2).WithContext(ctx).Get())
+}
 
 // Value returns col of the first row (value()), or ErrNotFound; ValueCol
 // is the typed form.
-func (r RowQuery) Value(ctx context.Context, col string) (any, error) {
-	row, err := r.Select(col).First(ctx)
+func (r RowQuery) Value(col string) (any, error) {
+	ctx := r.context()
+	row, err := r.Select(col).WithContext(ctx).First()
 	if err != nil {
 		return nil, err
 	}
 	return row[resultName(col)], nil
 }
 
-func (r RowQuery) ValueCol[M any, K comparable, V any](ctx context.Context, c Column[M, K, V]) (V, error) {
-	vs, err := r.Limit(1).PluckCol(ctx, c)
+func (r RowQuery) ValueCol[M any, K comparable, V any](c Column[M, K, V]) (V, error) {
+	ctx := r.context()
+	vs, err := r.Limit(1).WithContext(ctx).PluckCol(c)
 	if err != nil || len(vs) == 0 {
 		var zero V
 		return zero, cmp.Or(err, ErrNotFound)
@@ -842,7 +865,8 @@ func (r RowQuery) ValueCol[M any, K comparable, V any](ctx context.Context, c Co
 }
 
 // InsertUsing inserts the rows sub selects into cols (insertUsing).
-func (r RowQuery) InsertUsing(ctx context.Context, cols []string, sub RowQuery) (int64, error) {
+func (r RowQuery) InsertUsing(cols []string, sub RowQuery) (int64, error) {
+	ctx := r.context()
 	if err := r.writable("insert"); err != nil {
 		return 0, err
 	}
@@ -851,13 +875,15 @@ func (r RowQuery) InsertUsing(ctx context.Context, cols []string, sub RowQuery) 
 
 // Explain returns the engine's plan for the query; document stores have
 // none.
-func (r RowQuery) Explain(ctx context.Context) ([]map[string]any, error) {
+func (r RowQuery) Explain() ([]map[string]any, error) {
+	ctx := r.context()
 	return explainOn(ctx, r.connName(), func(b *SQL) { r.render(b, nil) })
 }
 
 // First returns the first row or ErrNotFound.
-func (r RowQuery) First(ctx context.Context) (map[string]any, error) {
-	rows, err := r.Limit(1).Get(ctx)
+func (r RowQuery) First() (map[string]any, error) {
+	ctx := r.context()
+	rows, err := r.Limit(1).WithContext(ctx).Get()
 	if err != nil || len(rows) == 0 {
 		return nil, cmp.Or(err, ErrNotFound)
 	}
@@ -865,8 +891,9 @@ func (r RowQuery) First(ctx context.Context) (map[string]any, error) {
 }
 
 // Pluck returns one column per row.
-func (r RowQuery) Pluck(ctx context.Context, col string) ([]any, error) {
-	rows, err := r.Select(col).Get(ctx)
+func (r RowQuery) Pluck(col string) ([]any, error) {
+	ctx := r.context()
+	rows, err := r.Select(col).WithContext(ctx).Get()
 	if err != nil {
 		return nil, err
 	}
@@ -879,8 +906,9 @@ func (r RowQuery) Pluck(ctx context.Context, col string) ([]any, error) {
 
 // PluckCol returns one typed column per row: PluckCol(ctx, Users.Email) is
 // a []string.
-func (r RowQuery) PluckCol[M any, K comparable, V any](ctx context.Context, c Column[M, K, V]) ([]V, error) {
-	rows, err := r.SelectCols(c).Get(ctx)
+func (r RowQuery) PluckCol[M any, K comparable, V any](c Column[M, K, V]) ([]V, error) {
+	ctx := r.context()
+	rows, err := r.SelectCols(c).WithContext(ctx).Get()
 	if err != nil {
 		return nil, err
 	}
@@ -895,7 +923,8 @@ func (r RowQuery) PluckCol[M any, K comparable, V any](ctx context.Context, c Co
 
 // Count returns the number of matching rows; with Distinct, the number of
 // distinct selected rows; with GroupBy, the number of groups.
-func (r RowQuery) Count(ctx context.Context) (int64, error) {
+func (r RowQuery) Count() (int64, error) {
+	ctx := r.context()
 	if ds, ok, err := r.docConn(ctx); err != nil {
 		return 0, err
 	} else if ok {
@@ -927,37 +956,45 @@ func (r RowQuery) Count(ctx context.Context) (int64, error) {
 // Sum, Avg, Min and Max aggregate a column; the result type is chosen at
 // the call site: Sum[int64](ctx, "karma"). The *Col forms infer it from a
 // typed column. Document stores aggregate server-side where they can.
-func (r RowQuery) Sum[V Number](ctx context.Context, col string) (V, error) {
+func (r RowQuery) Sum[V Number](col string) (V, error) {
+	ctx := r.context()
 	return rowAggregate[V](ctx, r, AggregateSum, identExpr(col))
 }
 
-func (r RowQuery) Avg(ctx context.Context, col string) (float64, error) {
+func (r RowQuery) Avg(col string) (float64, error) {
+	ctx := r.context()
 	return rowAggregate[float64](ctx, r, AggregateAvg, identExpr(col))
 }
 
-func (r RowQuery) Min[V any](ctx context.Context, col string) (V, error) {
+func (r RowQuery) Min[V any](col string) (V, error) {
+	ctx := r.context()
 	return rowAggregate[V](ctx, r, AggregateMin, identExpr(col))
 }
 
-func (r RowQuery) Max[V any](ctx context.Context, col string) (V, error) {
+func (r RowQuery) Max[V any](col string) (V, error) {
+	ctx := r.context()
 	return rowAggregate[V](ctx, r, AggregateMax, identExpr(col))
 }
 
 // SumCol, AvgCol, MinCol and MaxCol aggregate a typed column:
 // SumCol(ctx, Users.Karma) is an int64.
-func (r RowQuery) SumCol[M any, K comparable, V Number](ctx context.Context, c Column[M, K, V]) (V, error) {
+func (r RowQuery) SumCol[M any, K comparable, V Number](c Column[M, K, V]) (V, error) {
+	ctx := r.context()
 	return rowAggregate[V](ctx, r, AggregateSum, c)
 }
 
-func (r RowQuery) AvgCol[M any, K comparable, V Number](ctx context.Context, c Column[M, K, V]) (float64, error) {
+func (r RowQuery) AvgCol[M any, K comparable, V Number](c Column[M, K, V]) (float64, error) {
+	ctx := r.context()
 	return rowAggregate[float64](ctx, r, AggregateAvg, c)
 }
 
-func (r RowQuery) MinCol[M any, K comparable, V any](ctx context.Context, c Column[M, K, V]) (V, error) {
+func (r RowQuery) MinCol[M any, K comparable, V any](c Column[M, K, V]) (V, error) {
+	ctx := r.context()
 	return rowAggregate[V](ctx, r, AggregateMin, c)
 }
 
-func (r RowQuery) MaxCol[M any, K comparable, V any](ctx context.Context, c Column[M, K, V]) (V, error) {
+func (r RowQuery) MaxCol[M any, K comparable, V any](c Column[M, K, V]) (V, error) {
+	ctx := r.context()
 	return rowAggregate[V](ctx, r, AggregateMax, c)
 }
 
@@ -994,11 +1031,12 @@ func rowScalar[V any](ctx context.Context, r RowQuery, list frag) (V, error) {
 }
 
 // Exists reports whether any row matches; DoesntExist is its inverse.
-func (r RowQuery) Exists(ctx context.Context) (bool, error) {
+func (r RowQuery) Exists() (bool, error) {
+	ctx := r.context()
 	if _, ok, err := r.docConn(ctx); err != nil {
 		return false, err
 	} else if ok {
-		rows, err := r.Limit(1).Get(ctx)
+		rows, err := r.Limit(1).WithContext(ctx).Get()
 		return len(rows) > 0, err
 	}
 	rows, err := r.read(ctx, func(b *SQL) { r.Limit(1).render(b, selectOne) })
@@ -1009,32 +1047,37 @@ func (r RowQuery) Exists(ctx context.Context) (bool, error) {
 	return rows.Next(), rows.Err()
 }
 
-func (r RowQuery) DoesntExist(ctx context.Context) (bool, error) {
-	ok, err := r.Exists(ctx)
+func (r RowQuery) DoesntExist() (bool, error) {
+	ctx := r.context()
+	ok, err := r.WithContext(ctx).Exists()
 	return !ok, err
 }
 
 // Insert inserts the given rows as-is.
-func (r RowQuery) Insert(ctx context.Context, ms ...map[string]any) error {
+func (r RowQuery) Insert(ms ...map[string]any) error {
+	ctx := r.context()
 	return r.insertRows(ctx, "insert", mapRows(ms), conflict{})
 }
 
 // InsertCols inserts one row from typed assignments:
 // InsertCols(ctx, Users.Name.Set("Ada"), Users.Email.Set("ada@example.com")).
-func (r RowQuery) InsertCols[M any](ctx context.Context, sets ...Assignment[M]) error {
+func (r RowQuery) InsertCols[M any](sets ...Assignment[M]) error {
+	ctx := r.context()
 	return r.insertRows(ctx, "insert", [][]colSet{colSets(sets)}, conflict{})
 }
 
 // InsertOrIgnore inserts rows, skipping any that violate a unique
 // constraint (on a document store: whose key, see WithKey, exists).
-func (r RowQuery) InsertOrIgnore(ctx context.Context, ms ...map[string]any) error {
+func (r RowQuery) InsertOrIgnore(ms ...map[string]any) error {
+	ctx := r.context()
 	return r.insertRows(ctx, "insertOrIgnore", mapRows(ms), conflict{kind: conflictIgnore})
 }
 
 // Upsert inserts rows, or updates the update columns (default: every
 // inserted column outside uniqueBy) of the row a uniqueBy combination
 // already names: Upsert(ctx, rows, []string{"email"}, "name").
-func (r RowQuery) Upsert(ctx context.Context, ms []map[string]any, uniqueBy []string, update ...string) error {
+func (r RowQuery) Upsert(ms []map[string]any, uniqueBy []string, update ...string) error {
+	ctx := r.context()
 	rows := mapRows(ms)
 	if len(update) == 0 {
 		update = slices.DeleteFunc(rowColumns(rows), func(c string) bool { return slices.Contains(uniqueBy, c) })
@@ -1067,7 +1110,8 @@ func (r RowQuery) insertRows(ctx context.Context, method string, rows [][]colSet
 // InsertGetID inserts one row and returns the database-generated key,
 // from the key column ("id" unless changed with WithKey). Document stores
 // generate no keys, so it has no document-store form.
-func (r RowQuery) InsertGetID(ctx context.Context, m map[string]any) (int64, error) {
+func (r RowQuery) InsertGetID(m map[string]any) (int64, error) {
+	ctx := r.context()
 	if err := r.writable("insert"); err != nil {
 		return 0, err
 	}
@@ -1129,25 +1173,29 @@ func sortedKeys[V any](m map[string]V) []string {
 
 // Update sets the given values on every matching row and reports how many
 // changed.
-func (r RowQuery) Update(ctx context.Context, m map[string]any) (int64, error) {
+func (r RowQuery) Update(m map[string]any) (int64, error) {
+	ctx := r.context()
 	return r.update(ctx, mapSets(m))
 }
 
 // UpdateCols is Update with typed assignments:
 // UpdateCols(ctx, Users.Name.Set("Ada"), Users.Karma.Set(5)). Unlike the
 // model query's Update it leaves updated-at alone, as Update does.
-func (r RowQuery) UpdateCols[M any](ctx context.Context, sets ...Assignment[M]) (int64, error) {
+func (r RowQuery) UpdateCols[M any](sets ...Assignment[M]) (int64, error) {
+	ctx := r.context()
 	return r.update(ctx, colSets(sets))
 }
 
 // Increment adds by to a column on every matching row; Decrement
 // subtracts. Document stores apply them natively where they can ($inc on
 // MongoDB).
-func (r RowQuery) Increment[V Number](ctx context.Context, col string, by V) (int64, error) {
+func (r RowQuery) Increment[V Number](col string, by V) (int64, error) {
+	ctx := r.context()
 	return r.update(ctx, []colSet{increment(identExpr(col), col, by)})
 }
 
-func (r RowQuery) Decrement[V Number](ctx context.Context, col string, by V) (int64, error) {
+func (r RowQuery) Decrement[V Number](col string, by V) (int64, error) {
+	ctx := r.context()
 	return r.update(ctx, []colSet{decrement(identExpr(col), col, by)})
 }
 
@@ -1175,29 +1223,31 @@ func (r RowQuery) update(ctx context.Context, sets []colSet) (int64, error) {
 // values, or inserts attrs and values when none matches. Existence is
 // checked first, so engines that count only changed rows (MySQL) or none
 // (ClickHouse) do not insert duplicates.
-func (r RowQuery) UpdateOrInsert(ctx context.Context, attrs, values map[string]any) error {
+func (r RowQuery) UpdateOrInsert(attrs, values map[string]any) error {
+	ctx := r.context()
 	match := r
 	for _, c := range sortedKeys(attrs) {
 		match = match.Where(c, Eq, attrs[c])
 	}
-	exists, err := match.Exists(ctx)
+	exists, err := match.WithContext(ctx).Exists()
 	if err != nil {
 		return err
 	}
 	if !exists {
 		merged := maps.Clone(attrs)
 		maps.Copy(merged, values)
-		return r.Insert(ctx, merged)
+		return r.WithContext(ctx).Insert(merged)
 	}
 	if len(values) == 0 {
 		return nil
 	}
-	_, err = match.Update(ctx, values)
+	_, err = match.WithContext(ctx).Update(values)
 	return err
 }
 
 // Delete removes every matching row and reports how many went.
-func (r RowQuery) Delete(ctx context.Context) (int64, error) {
+func (r RowQuery) Delete() (int64, error) {
+	ctx := r.context()
 	if err := r.writable("delete"); err != nil {
 		return 0, err
 	}

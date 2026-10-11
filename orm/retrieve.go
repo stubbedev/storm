@@ -19,7 +19,8 @@ import (
 var ErrStop = errors.New("orm: stop iteration")
 
 // Get runs the query and returns all matching models with eager loads applied.
-func (q Query[M, K]) Get(ctx context.Context) ([]M, error) {
+func (q Query[M, K]) Get() ([]M, error) {
+	ctx := q.context()
 	q = q.prepared()
 	if models, err := q.findDocs(ctx); err != nil || models != nil {
 		return models, err
@@ -77,11 +78,15 @@ func (q Query[M, K]) finish(ctx context.Context, models []M) error {
 }
 
 // All returns every row (Model::all()).
-func (t *Table[M, K]) All(ctx context.Context) ([]M, error) { return t.Query().Get(ctx) }
+func (s Session[M, K]) All() ([]M, error) {
+	t, ctx := s.t, s.context()
+	return t.Query().WithContext(ctx).Get()
+}
 
 // First returns the first matching model or ErrNotFound (first / firstOrFail).
-func (q Query[M, K]) First(ctx context.Context) (M, error) {
-	models, err := q.Limit(1).Get(ctx)
+func (q Query[M, K]) First() (M, error) {
+	ctx := q.context()
+	models, err := q.Limit(1).WithContext(ctx).Get()
 	if err != nil || len(models) == 0 {
 		var zero M
 		return zero, cmp.Or(err, ErrNotFound)
@@ -90,8 +95,9 @@ func (q Query[M, K]) First(ctx context.Context) (M, error) {
 }
 
 // FirstOr returns the first match, or the result of fn if there is none.
-func (q Query[M, K]) FirstOr(ctx context.Context, fn func() (M, error)) (M, error) {
-	m, err := q.First(ctx)
+func (q Query[M, K]) FirstOr(fn func() (M, error)) (M, error) {
+	ctx := q.context()
+	m, err := q.WithContext(ctx).First()
 	if errors.Is(err, ErrNotFound) {
 		return fn()
 	}
@@ -99,7 +105,10 @@ func (q Query[M, K]) FirstOr(ctx context.Context, fn func() (M, error)) (M, erro
 }
 
 // Sole returns the only matching model; ErrNotFound or ErrMultipleRecords otherwise.
-func (q Query[M, K]) Sole(ctx context.Context) (M, error) { return sole(q.Limit(2).Get(ctx)) }
+func (q Query[M, K]) Sole() (M, error) {
+	ctx := q.context()
+	return sole(q.Limit(2).WithContext(ctx).Get())
+}
 
 // sole is the one item of items: ErrNotFound for none, ErrMultipleRecords
 // for more.
@@ -117,12 +126,16 @@ func sole[T any](items []T, err error) (T, error) {
 }
 
 // Find returns the model with the given primary key (find / findOrFail).
-func (q Query[M, K]) Find(ctx context.Context, id K) (M, error) { return q.WhereKey(id).First(ctx) }
+func (q Query[M, K]) Find(id K) (M, error) {
+	ctx := q.context()
+	return q.WhereKey(id).WithContext(ctx).First()
+}
 
 // FindOr returns the model with the given primary key, or the result of fn
 // when there is none (findOr).
-func (q Query[M, K]) FindOr(ctx context.Context, id K, fn func() (M, error)) (M, error) {
-	m, err := q.Find(ctx, id)
+func (q Query[M, K]) FindOr(id K, fn func() (M, error)) (M, error) {
+	ctx := q.context()
+	m, err := q.WithContext(ctx).Find(id)
 	if errors.Is(err, ErrNotFound) {
 		return fn()
 	}
@@ -130,18 +143,24 @@ func (q Query[M, K]) FindOr(ctx context.Context, id K, fn func() (M, error)) (M,
 }
 
 // FindMany returns the models with the given primary keys.
-func (q Query[M, K]) FindMany(ctx context.Context, ids ...K) ([]M, error) {
-	return q.WhereKey(ids...).Get(ctx)
+func (q Query[M, K]) FindMany(ids ...K) ([]M, error) {
+	ctx := q.context()
+	return q.WhereKey(ids...).WithContext(ctx).Get()
 }
 
-func (t *Table[M, K]) Find(ctx context.Context, id K) (M, error) { return t.Query().Find(ctx, id) }
-
-func (t *Table[M, K]) FindOr(ctx context.Context, id K, fn func() (M, error)) (M, error) {
-	return t.Query().FindOr(ctx, id, fn)
+func (s Session[M, K]) Find(id K) (M, error) {
+	t, ctx := s.t, s.context()
+	return t.Query().WithContext(ctx).Find(id)
 }
 
-func (t *Table[M, K]) FindMany(ctx context.Context, ids ...K) ([]M, error) {
-	return t.Query().FindMany(ctx, ids...)
+func (s Session[M, K]) FindOr(id K, fn func() (M, error)) (M, error) {
+	t, ctx := s.t, s.context()
+	return t.Query().WithContext(ctx).FindOr(id, fn)
+}
+
+func (s Session[M, K]) FindMany(ids ...K) ([]M, error) {
+	t, ctx := s.t, s.context()
+	return t.Query().WithContext(ctx).FindMany(ids...)
 }
 
 func (t *Table[M, K]) WhereKey(ids ...K) Query[M, K] { return t.Query().WhereKey(ids...) }
@@ -154,7 +173,8 @@ func (t *Table[M, K]) Where(conds ...Cond[M]) Query[M, K] { return t.Query().Whe
 // Aggregates and single values
 // ---------------------------------------------------------------------------
 
-func (q Query[M, K]) Exists(ctx context.Context) (bool, error) {
+func (q Query[M, K]) Exists() (bool, error) {
+	ctx := q.context()
 	q = q.prepared()
 	if n, ok, err := q.countDocs(ctx); ok {
 		return err == nil && n > 0, err
@@ -168,12 +188,14 @@ func (q Query[M, K]) Exists(ctx context.Context) (bool, error) {
 	return rows.Next(), rows.Err()
 }
 
-func (q Query[M, K]) DoesntExist(ctx context.Context) (bool, error) {
-	ok, err := q.Exists(ctx)
+func (q Query[M, K]) DoesntExist() (bool, error) {
+	ctx := q.context()
+	ok, err := q.WithContext(ctx).Exists()
 	return !ok, err
 }
 
-func (q Query[M, K]) Count(ctx context.Context) (int64, error) {
+func (q Query[M, K]) Count() (int64, error) {
+	ctx := q.context()
 	q = q.prepared()
 	if n, ok, err := q.countDocs(ctx); ok {
 		return n, err
@@ -191,25 +213,30 @@ func (q Query[M, K]) Count(ctx context.Context) (int64, error) {
 }
 
 // Sum only accepts numeric expressions: Sum(ctx, Users.Email) does not compile.
-func (q Query[M, K]) Sum[V Number](ctx context.Context, e Expr[M, V]) (V, error) {
+func (q Query[M, K]) Sum[V Number](e Expr[M, V]) (V, error) {
+	ctx := q.context()
 	return aggregate[V](ctx, q, AggregateSum, e)
 }
 
-func (q Query[M, K]) Avg[V Number](ctx context.Context, e Expr[M, V]) (float64, error) {
+func (q Query[M, K]) Avg[V Number](e Expr[M, V]) (float64, error) {
+	ctx := q.context()
 	return aggregate[float64](ctx, q, AggregateAvg, e)
 }
 
-func (q Query[M, K]) Min[V any](ctx context.Context, e Expr[M, V]) (V, error) {
+func (q Query[M, K]) Min[V any](e Expr[M, V]) (V, error) {
+	ctx := q.context()
 	return aggregate[V](ctx, q, AggregateMin, e)
 }
 
-func (q Query[M, K]) Max[V any](ctx context.Context, e Expr[M, V]) (V, error) {
+func (q Query[M, K]) Max[V any](e Expr[M, V]) (V, error) {
+	ctx := q.context()
 	return aggregate[V](ctx, q, AggregateMax, e)
 }
 
 // Pluck returns one expression per row; V comes from the expression, so
 // Pluck(ctx, Users.Email) is a []string.
-func (q Query[M, K]) Pluck[V any](ctx context.Context, e Expr[M, V]) ([]V, error) {
+func (q Query[M, K]) Pluck[V any](e Expr[M, V]) ([]V, error) {
+	ctx := q.context()
 	q = q.prepared()
 	if docs, cols, ok, err := q.pluckDocs(ctx, e); err != nil || ok {
 		if err != nil {
@@ -240,7 +267,8 @@ func (q Query[M, K]) Pluck[V any](ctx context.Context, e Expr[M, V]) ([]V, error
 }
 
 // PluckMap is pluck('value', 'key').
-func (q Query[M, K]) PluckMap[G comparable, V any](ctx context.Context, key Expr[M, G], val Expr[M, V]) (map[G]V, error) {
+func (q Query[M, K]) PluckMap[G comparable, V any](key Expr[M, G], val Expr[M, V]) (map[G]V, error) {
+	ctx := q.context()
 	q = q.prepared()
 	if docs, cols, ok, err := q.pluckDocs(ctx, val, key); err != nil || ok {
 		if err != nil {
@@ -304,8 +332,9 @@ func (q Query[M, K]) pluckDocs(ctx context.Context, exprs ...AnyExpr) ([]map[str
 }
 
 // Value returns one expression from the first row.
-func (q Query[M, K]) Value[V any](ctx context.Context, e Expr[M, V]) (V, error) {
-	vs, err := q.Limit(1).Pluck(ctx, e)
+func (q Query[M, K]) Value[V any](e Expr[M, V]) (V, error) {
+	ctx := q.context()
+	vs, err := q.Limit(1).WithContext(ctx).Pluck(e)
 	if err != nil || len(vs) == 0 {
 		var zero V
 		return zero, cmp.Or(err, ErrNotFound)
@@ -314,8 +343,9 @@ func (q Query[M, K]) Value[V any](ctx context.Context, e Expr[M, V]) (V, error) 
 }
 
 // KeyBy returns the models indexed by a column.
-func (q Query[M, K]) KeyBy[G comparable](ctx context.Context, col Column[M, K, G]) (map[G]M, error) {
-	models, err := q.Get(ctx)
+func (q Query[M, K]) KeyBy[G comparable](col Column[M, K, G]) (map[G]M, error) {
+	ctx := q.context()
+	models, err := q.WithContext(ctx).Get()
 	if err != nil {
 		return nil, err
 	}
@@ -328,8 +358,9 @@ func (q Query[M, K]) KeyBy[G comparable](ctx context.Context, col Column[M, K, G
 
 // Grouped returns the models grouped by a column (collection groupBy; the
 // name GroupBy is the SQL clause).
-func (q Query[M, K]) Grouped[G comparable](ctx context.Context, col Column[M, K, G]) (map[G][]M, error) {
-	models, err := q.Get(ctx)
+func (q Query[M, K]) Grouped[G comparable](col Column[M, K, G]) (map[G][]M, error) {
+	ctx := q.context()
+	models, err := q.WithContext(ctx).Get()
 	if err != nil {
 		return nil, err
 	}
@@ -342,8 +373,9 @@ func (q Query[M, K]) Grouped[G comparable](ctx context.Context, col Column[M, K,
 }
 
 // Map runs the query and transforms each model.
-func (q Query[M, K]) Map[R any](ctx context.Context, fn func(M) R) ([]R, error) {
-	models, err := q.Get(ctx)
+func (q Query[M, K]) Map[R any](fn func(M) R) ([]R, error) {
+	ctx := q.context()
+	models, err := q.WithContext(ctx).Get()
 	if err != nil {
 		return nil, err
 	}
@@ -396,7 +428,8 @@ func selectScalar[V, M any, K comparable](ctx context.Context, q Query[M, K], li
 
 // Explain returns the database's query plan for the query as one map of
 // column name to value per row (explain()).
-func (q Query[M, K]) Explain(ctx context.Context) ([]map[string]any, error) {
+func (q Query[M, K]) Explain() ([]map[string]any, error) {
+	ctx := q.context()
 	if _, ok, err := q.docstore(ctx); err != nil {
 		return nil, err
 	} else if ok {
@@ -426,9 +459,10 @@ func explainOn(ctx context.Context, conn string, query frag) ([]map[string]any, 
 
 // Chunk processes results in pages of size (ordered queries only).
 // Return ErrStop from fn to stop early.
-func (q Query[M, K]) Chunk(ctx context.Context, size int, fn func([]M) error) error {
+func (q Query[M, K]) Chunk(size int, fn func([]M) error) error {
+	ctx := q.context()
 	q = q.stableOrder(ctx)
-	return chunkPages(size, func(limit, offset int) ([]M, error) { return q.Limit(limit).Offset(offset).Get(ctx) }, fn)
+	return chunkPages(size, func(limit, offset int) ([]M, error) { return q.Limit(limit).Offset(offset).WithContext(ctx).Get() }, fn)
 }
 
 // stableOrder ends the order with the primary key, so offset pages
@@ -453,7 +487,8 @@ func (q Query[M, K]) stableOrder(ctx context.Context) Query[M, K] {
 }
 
 // ChunkByID pages by primary key, safe when fn modifies the rows it gets.
-func (q Query[M, K]) ChunkByID(ctx context.Context, size int, fn func([]M) error) error {
+func (q Query[M, K]) ChunkByID(size int, fn func([]M) error) error {
+	ctx := q.context()
 	return eachChunk(q.chunksByID(ctx, size), fn)
 }
 
@@ -538,8 +573,9 @@ func flatten[T any](chunks iter.Seq2[[]T, error]) iter.Seq2[T, error] {
 
 // Lazy streams models chunk by chunk (lazyById), with eager loads per chunk:
 //
-//	for u, err := range Users.Query().With(UserPosts).Lazy(ctx, 500) { ... }
-func (q Query[M, K]) Lazy(ctx context.Context, size int) iter.Seq2[M, error] {
+//	for u, err := range Users.Query().With(UserPosts).WithContext(ctx).Lazy(500) { ... }
+func (q Query[M, K]) Lazy(size int) iter.Seq2[M, error] {
+	ctx := q.context()
 	return flatten(q.chunksByID(ctx, size))
 }
 
@@ -547,16 +583,17 @@ func (q Query[M, K]) chunksByID(ctx context.Context, size int) iter.Seq2[[]M, er
 	page := q.Reorder(q.table.keyOrder()).Limit(size)
 	return keysetChunks(size, func(after any) ([]M, error) {
 		if after == nil {
-			return page.Get(ctx)
+			return page.WithContext(ctx).Get()
 		}
-		return page.Where(q.table.column(q.table.PrimaryKey).Gt(after)).Get(ctx)
+		return page.Where(q.table.column(q.table.PrimaryKey).Gt(after)).WithContext(ctx).Get()
 	}, func(m M) (any, error) { return q.table.key(&m), nil })
 }
 
 // ChunkWhile processes results ordered by primary key, splitting into a
 // new chunk whenever compare is false for two consecutive rows
 // (chunkWhile). Return ErrStop from fn to stop early.
-func (q Query[M, K]) ChunkWhile(ctx context.Context, compare func(prev, cur M) bool, fn func([]M) error) error {
+func (q Query[M, K]) ChunkWhile(compare func(prev, cur M) bool, fn func([]M) error) error {
+	ctx := q.context()
 	var batch []M
 	flush := func() error {
 		if len(batch) > 0 {
@@ -585,7 +622,8 @@ func (q Query[M, K]) ChunkWhile(ctx context.Context, compare func(prev, cur M) b
 
 // Cursor streams rows one at a time over a single query, without eager
 // loading (cursor()).
-func (q Query[M, K]) Cursor(ctx context.Context) iter.Seq2[M, error] {
+func (q Query[M, K]) Cursor() iter.Seq2[M, error] {
+	ctx := q.context()
 	return func(yield func(M, error) bool) {
 		var zero M
 		q := q.prepared()
@@ -663,17 +701,19 @@ type CursorPage[M any] struct {
 
 // Paginate returns page (from 1) of perPage models with the total count;
 // it works on every engine, document stores included.
-func (q Query[M, K]) Paginate(ctx context.Context, perPage, page int) (Page[M], error) {
+func (q Query[M, K]) Paginate(perPage, page int) (Page[M], error) {
+	ctx := q.context()
 	q = q.stableOrder(ctx)
-	return paginate(perPage, page, func() (int64, error) { return q.Count(ctx) },
-		func(limit, offset int) ([]M, error) { return q.Limit(limit).Offset(offset).Get(ctx) })
+	return paginate(perPage, page, func() (int64, error) { return q.WithContext(ctx).Count() },
+		func(limit, offset int) ([]M, error) { return q.Limit(limit).Offset(offset).WithContext(ctx).Get() })
 }
 
 // SimplePaginate is Paginate without the count query: it only reports
 // whether another page follows.
-func (q Query[M, K]) SimplePaginate(ctx context.Context, perPage, page int) (SimplePage[M], error) {
+func (q Query[M, K]) SimplePaginate(perPage, page int) (SimplePage[M], error) {
+	ctx := q.context()
 	q = q.stableOrder(ctx)
-	return simplePaginate(perPage, page, func(limit, offset int) ([]M, error) { return q.Limit(limit).Offset(offset).Get(ctx) })
+	return simplePaginate(perPage, page, func(limit, offset int) ([]M, error) { return q.Limit(limit).Offset(offset).WithContext(ctx).Get() })
 }
 
 func checkPage(perPage, page int) error {
@@ -722,7 +762,8 @@ func simplePaginate[T any](perPage, page int, get func(limit, offset int) ([]T, 
 
 // CursorPaginate pages by the values of the ORDER BY columns (keyset
 // pagination). Orders must be plain columns; with none, the primary key is used.
-func (q Query[M, K]) CursorPaginate(ctx context.Context, perPage int, cursor string) (CursorPage[M], error) {
+func (q Query[M, K]) CursorPaginate(perPage int, cursor string) (CursorPage[M], error) {
+	ctx := q.context()
 	orders := q.orders
 	if len(orders) == 0 {
 		orders = []Order[M]{q.table.keyOrder()}
@@ -753,7 +794,7 @@ func (q Query[M, K]) CursorPaginate(ctx context.Context, perPage int, cursor str
 			if after != nil {
 				page = page.Where(*after)
 			}
-			return page.Get(ctx)
+			return page.WithContext(ctx).Get()
 		},
 		value)
 }

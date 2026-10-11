@@ -121,22 +121,22 @@ u.Password.Matches("secret") // verify
 ## Retrieving
 
 ```go
-all, err := Users.All(ctx)
-u, err := Users.Find(ctx, 1)                         // orm.ErrNotFound if missing
-us, err := Users.FindMany(ctx, 1, 2, 3)
-first, err := Users.Where(Users.Active.Eq(true)).First(ctx)
-only, err := Users.Where(Users.Email.Eq("a@b.c")).Sole(ctx) // ErrNotFound / ErrMultipleRecords
-u, err = Users.Where(Users.Name.Eq("x")).FirstOr(ctx, func() (User, error) { return User{}, nil })
+all, err := Users.All()
+u, err := Users.Find(1)                         // orm.ErrNotFound if missing
+us, err := Users.FindMany(1, 2, 3)
+first, err := Users.Where(Users.Active.Eq(true)).First()
+only, err := Users.Where(Users.Email.Eq("a@b.c")).Sole() // ErrNotFound / ErrMultipleRecords
+u, err = Users.Where(Users.Name.Eq("x")).FirstOr(func() (User, error) { return User{}, nil })
 
-byEmail, err := Users.Query().KeyBy(ctx, Users.Email)  // map[string]User
-byUser, err := Posts.Query().Grouped(ctx, Posts.UserID) // map[int64][]Post
-names, err := Users.Query().Map(ctx, func(u User) string { return u.Name })
+byEmail, err := Users.Query().KeyBy(Users.Email)  // map[string]User
+byUser, err := Posts.Query().Grouped(Posts.UserID) // map[int64][]Post
+names, err := Users.Query().Map(func(u User) string { return u.Name })
 ```
 
 Tables, queries and columns carry the model's key type
 (`orm.Table[User, int64]`, `orm.Query[User, int64]`), so every key
-lookup is typed: `Users.Find(ctx, "1")` and
-`Users.Where(...).Find(ctx, "1")` do not compile when the key is an
+lookup is typed: `Users.Find("1")` and
+`Users.Where(...).Find("1")` do not compile when the key is an
 `int64`, and the same holds for `FindMany`, `FindOr`, `Destroy`,
 `WhereKey` and `WhereKeyNot`. A table without a primary key has key type
 `orm.NoKey`. ormgen also emits `UserQuery` (= `orm.Query[User, int64]`)
@@ -204,7 +204,7 @@ Users.Query().
 	WhereOf(Posts.Published.Eq(true)).    // conditions on the joined model
 	GroupBy(Users.ID).
 	Having(orm.Count[User]().Gte(2)).
-	Pluck(ctx, Users.Name)
+	Pluck(Users.Name)
 
 counts := Posts.Query().Select(Posts.UserID).AddSelectAs(Posts.Views, orm.Count[Post]()).GroupBy(Posts.UserID)
 Users.Query().JoinSub(counts, "pc", Posts.UserID.EqCol(Users.ID), Posts.Views.Gte(2))
@@ -218,14 +218,14 @@ Users.Query().Distinct().LockForUpdate() // SharedLock()
 ## Aggregates and single values
 
 ```go
-n, err := Users.Query().Count(ctx)
-sum, err := Users.Query().Sum(ctx, Users.Karma)      // int: Sum only takes numeric columns
-avg, err := Posts.Query().Avg(ctx, Posts.Views)      // float64
-newest, err := Posts.Query().Max(ctx, Posts.CreatedAt)
-ok, err := Users.Where(Users.Name.Eq("Alice")).Exists(ctx)
-emails, err := Users.Query().Pluck(ctx, Users.Email)  // []string
-perUser, err := Posts.Query().GroupBy(Posts.UserID).PluckMap(ctx, Posts.UserID, orm.Count[Post]())
-name, err := Users.Query().OrderBy(Users.Karma.Desc()).Value(ctx, Users.Name)
+n, err := Users.Query().Count()
+sum, err := Users.Query().Sum(Users.Karma)      // int: Sum only takes numeric columns
+avg, err := Posts.Query().Avg(Posts.Views)      // float64
+newest, err := Posts.Query().Max(Posts.CreatedAt)
+ok, err := Users.Where(Users.Name.Eq("Alice")).Exists()
+emails, err := Users.Query().Pluck(Users.Email)  // []string
+perUser, err := Posts.Query().GroupBy(Posts.UserID).PluckMap(Posts.UserID, orm.Count[Post]())
+name, err := Users.Query().OrderBy(Users.Karma.Desc()).Value(Users.Name)
 ```
 
 `Sum` of no rows is zero; `Min`, `Max` and `Avg` of no rows (or only
@@ -242,17 +242,17 @@ pagination sorts nullable columns NULLs last itself.
 ## Chunking, iterators, pagination
 
 ```go
-err := Posts.Query().OrderBy(Posts.ID.Asc()).Chunk(ctx, 100, func(ps []Post) error { return nil })
-err = Posts.Query().ChunkByID(ctx, 100, func(ps []Post) error { return orm.ErrStop }) // stop early
-err = Posts.Query().ChunkWhile(ctx, func(prev, cur Post) bool { return prev.UserID == cur.UserID },
+err := Posts.Query().OrderBy(Posts.ID.Asc()).Chunk(100, func(ps []Post) error { return nil })
+err = Posts.Query().ChunkByID(100, func(ps []Post) error { return orm.ErrStop }) // stop early
+err = Posts.Query().ChunkWhile(func(prev, cur Post) bool { return prev.UserID == cur.UserID },
 	func(ps []Post) error { return nil }) // chunkWhile, ordered by key
 
-for p, err := range Posts.Query().With(PostComments).Lazy(ctx, 500) { _, _ = p, err } // lazyById
-for p, err := range Posts.Query().Cursor(ctx) { _, _ = p, err }                       // one query, streamed
+for p, err := range Posts.Query().With(PostComments).Lazy(500) { _, _ = p, err } // lazyById
+for p, err := range Posts.Query().Cursor() { _, _ = p, err }                       // one query, streamed
 
-page, err := Posts.Query().Latest().Paginate(ctx, 20, 2)   // Items, Total, LastPage, From, To, HasMore
-simple, err := Posts.Query().SimplePaginate(ctx, 20, 2)    // HasMore, no count query
-cur, err := Posts.Query().OrderBy(Posts.Views.Desc(), Posts.ID.Asc()).CursorPaginate(ctx, 20, cursor)
+page, err := Posts.Query().Latest().Paginate(20, 2)   // Items, Total, LastPage, From, To, HasMore
+simple, err := Posts.Query().SimplePaginate(20, 2)    // HasMore, no count query
+cur, err := Posts.Query().OrderBy(Posts.Views.Desc(), Posts.ID.Asc()).CursorPaginate(20, cursor)
 next := cur.NextCursor
 ```
 
@@ -267,64 +267,64 @@ indexed payload field, ordering by the key (or not at all) uses its native
 point-id scroll.
 
 ```go
-page, err := orm.From("events").On("mongo").OrderBy("created_at").Paginate(ctx, 50, 3)
-err = orm.FromTable(Users).Chunk(ctx, 500, func(rows []map[string]any) error { return nil })
-for row, err := range orm.FromTable(Users).Lazy(ctx, 500) { _, _ = row, err } // by key column
-for row, err := range orm.From("users").Cursor(ctx) { _, _ = row, err }      // one query, streamed
+page, err := orm.From("events").On("mongo").OrderBy("created_at").Paginate(50, 3)
+err = orm.FromTable(Users).Chunk(500, func(rows []map[string]any) error { return nil })
+for row, err := range orm.FromTable(Users).Lazy(500) { _, _ = row, err } // by key column
+for row, err := range orm.From("users").Cursor() { _, _ = row, err }      // one query, streamed
 ```
 
 ## Inserting and updating
 
 ```go
 u := User{Name: "Frank", Email: "frank@example.com"}
-err := Users.Create(ctx, &u)   // auto id / uuid / ulid, timestamps, events
+err := Users.Create(&u)   // auto id / uuid / ulid, timestamps, events
 u.Karma = 10
-err = Users.Save(ctx, &u)      // UPDATE only dirty columns
+err = Users.Save(&u)      // UPDATE only dirty columns
 
-Users.Where(Users.CountryID.Eq(2)).Update(ctx, Users.Active.Set(false)) // mass update, maintains updated_at
-Posts.Where(Posts.ID.Eq(1)).Increment(ctx, Posts.Views, 10)
-Posts.Where(Posts.ID.Eq(1)).Decrement(ctx, Posts.Views, 1, Posts.Title.Set("edited"))
+Users.Where(Users.CountryID.Eq(2)).Update(Users.Active.Set(false)) // mass update, maintains updated_at
+Posts.Where(Posts.ID.Eq(1)).Increment(Posts.Views, 10)
+Posts.Where(Posts.ID.Eq(1)).Decrement(Posts.Views, 1, Posts.Title.Set("edited"))
 
-Videos.Query().Insert(ctx, Video{Title: "A"}, Video{Title: "B"})   // no events / timestamps
-id, err := Videos.Query().InsertGetID(ctx, Video{Title: "C"})       // insertGetId
-Tags.Query().InsertOrIgnore(ctx, Tag{Name: "go"})
-Roles.Query().Upsert(ctx, []Role{{ID: 1, Name: "superadmin"}}, []orm.AnyColumn[Role]{Roles.ID})
-Tags.Query().InsertUsing(ctx, []orm.AnyColumn[Tag]{Tags.Name}, Roles.Query(), orm.Upper(Roles.Name))
+Videos.Query().Insert(Video{Title: "A"}, Video{Title: "B"})   // no events / timestamps
+id, err := Videos.Query().InsertGetID(Video{Title: "C"})       // insertGetId
+Tags.Query().InsertOrIgnore(Tag{Name: "go"})
+Roles.Query().Upsert([]Role{{ID: 1, Name: "superadmin"}}, []orm.AnyColumn[Role]{Roles.ID})
+Tags.Query().InsertUsing([]orm.AnyColumn[Tag]{Tags.Name}, Roles.Query(), orm.Upper(Roles.Name))
 
-u, err = Users.Query().FirstOrNew(ctx, orm.Attrs(Users.Email.Set("a@b.c")), Users.Name.Set("A"))
-u, err = Users.Query().FirstOrCreate(ctx, orm.Attrs(Users.Email.Set("a@b.c")), Users.Name.Set("A"))
-u, err = Users.Query().UpdateOrCreate(ctx, orm.Attrs(Users.Email.Set("a@b.c")), Users.Karma.Set(1000))
-u, err = Users.Query().CreateOrFirst(ctx, orm.Attrs(Users.Email.Set("a@b.c")))
+u, err = Users.Query().FirstOrNew(orm.Attrs(Users.Email.Set("a@b.c")), Users.Name.Set("A"))
+u, err = Users.Query().FirstOrCreate(orm.Attrs(Users.Email.Set("a@b.c")), Users.Name.Set("A"))
+u, err = Users.Query().UpdateOrCreate(orm.Attrs(Users.Email.Set("a@b.c")), Users.Karma.Set(1000))
+u, err = Users.Query().CreateOrFirst(orm.Attrs(Users.Email.Set("a@b.c")))
 
-clone, err := Posts.Replicate(ctx, &post, Posts.Views)    // unsaved copy without key/timestamps/views
-err = Posts.Touch(ctx, &post)
-err = Posts.Refresh(ctx, &post)
-fresh, err := Posts.Fresh(ctx, &post)
+clone, err := Posts.Replicate(&post, Posts.Views)    // unsaved copy without key/timestamps/views
+err = Posts.Touch(&post)
+err = Posts.Refresh(&post)
+fresh, err := Posts.Fresh(&post)
 same := Posts.Is(&a, &b)
 
-fallback, err := Users.Query().FindOr(ctx, 99, func() (User, error) { return User{Name: "nobody"}, nil })
+fallback, err := Users.Query().FindOr(99, func() (User, error) { return User{Name: "nobody"}, nil })
 
-err = Users.Create(orm.WithoutTimestamps(ctx), &u)
-err = Images.Truncate(ctx)
-err = Images.Query().On("archive").Truncate(ctx) // on another connection; a document store deletes every document
+err = Users.WithContext(orm.WithoutTimestamps(ctx)).Create(&u)
+err = Images.Truncate()
+err = Images.Query().On("archive").Truncate() // on another connection; a document store deletes every document
 ```
 
 ## Deleting and soft deletes
 
 ```go
-err := Users.Delete(ctx, &u)              // soft delete (soft_deletes directive)
+err := Users.Delete(&u)              // soft delete (soft_deletes directive)
 Users.Trashed(&u)
-Users.Query().WithTrashed().Find(ctx, u.ID)
-Users.Query().OnlyTrashed().Get(ctx)
-err = Users.Restore(ctx, &u)
-err = Users.ForceDelete(ctx, &u)
-n, err := Users.Destroy(ctx, 4, 5)        // loads and deletes each, with events
+Users.Query().WithTrashed().Find(u.ID)
+Users.Query().OnlyTrashed().Get()
+err = Users.Restore(&u)
+err = Users.ForceDelete(&u)
+n, err := Users.Destroy(4, 5)        // loads and deletes each, with events
 
-Users.Where(Users.Name.Eq("Eve")).Delete(ctx)      // mass (soft) delete
-Users.Where(Users.Name.Eq("Eve")).Restore(ctx)
-Users.Where(Users.Name.Eq("Eve")).ForceDelete(ctx)
+Users.Where(Users.Name.Eq("Eve")).Delete()      // mass (soft) delete
+Users.Where(Users.Name.Eq("Eve")).Restore()
+Users.Where(Users.Name.Eq("Eve")).ForceDelete()
 
-n, err = Users.Where(Users.CreatedAt.Lt(cutoff)).Prune(ctx, 500) // Prunable: one by one, with events
+n, err = Users.Where(Users.CreatedAt.Lt(cutoff)).Prune(500) // Prunable: one by one, with events
 ```
 
 ## Dirty tracking
@@ -335,7 +335,7 @@ Users.Karma.IsDirty(&u)       // true
 Users.Karma.Original(&u)      // value when loaded
 Users.Dirty(&u)               // []string{"karma"}
 Users.IsDirty(&u, Users.Karma, Users.Name)
-Users.Save(ctx, &u)
+Users.Save(&u)
 Users.Karma.WasChanged(&u)    // true
 Users.IsClean(&u)
 u.Exists(); u.WasRecentlyCreated()
@@ -396,7 +396,7 @@ users, err := Users.Query().
 	}).
 	With(UserLatestPost).
 	With(UserRoles).
-	Get(ctx)
+	Get()
 
 err = orm.Load(ctx, users, UserCountry) // $users->load('country')
 ```
@@ -427,20 +427,20 @@ alias the inner table automatically.
 ## Writing through relationships
 
 ```go
-UserPosts.Of(&u).Where(Posts.Published.Eq(true)).Count(ctx) // $user->posts()->...
-UserPosts.Create(ctx, &u, &Post{Title: "Hi"})                // sets user_id
-UserPosts.SaveMany(ctx, &u, posts)
-PostComments.Create(ctx, &post, &Comment{Body: "first!"})     // sets id + type
+UserPosts.Of(&u).Where(Posts.Published.Eq(true)).Count() // $user->posts()->...
+UserPosts.Create(&u, &Post{Title: "Hi"})                // sets user_id
+UserPosts.SaveMany(&u, posts)
+PostComments.Create(&post, &Comment{Body: "first!"})     // sets id + type
 PostAuthor.Associate(&post, &bob); PostAuthor.Dissociate(&post)
 CommentCommentable.Associate(&comment, &video)
 
-UserRoles.AttachIDs(ctx, &u, 1, 2)
-UserRoles.Attach(ctx, &u, RoleUser{RoleID: 3, GrantedBy: "admin"}) // with pivot data
-UserRoles.Detach(ctx, &u, 2)
-res, err := UserRoles.Sync(ctx, &u, 1, 3)       // res.Attached, res.Detached
-UserRoles.SyncWithoutDetaching(ctx, &u, 4)
-UserRoles.Toggle(ctx, &u, 1, 2)
-UserRoles.UpdateExistingPivot(ctx, &u, 3, RoleUsers.GrantedBy.Set("changed"))
+UserRoles.AttachIDs(&u, 1, 2)
+UserRoles.Attach(&u, RoleUser{RoleID: 3, GrantedBy: "admin"}) // with pivot data
+UserRoles.Detach(&u, 2)
+res, err := UserRoles.Sync(&u, 1, 3)       // res.Attached, res.Detached
+UserRoles.SyncWithoutDetaching(&u, 4)
+UserRoles.Toggle(&u, 1, 2)
+UserRoles.UpdateExistingPivot(&u, 3, RoleUsers.GrantedBy.Set("changed"))
 ```
 
 ## Scopes
@@ -471,8 +471,8 @@ type UserObserver struct{}
 func (UserObserver) Created(ctx context.Context, u *User) error { return nil }
 Users.Observe(UserObserver{})
 
-Users.Create(orm.WithoutEvents(ctx), &u)
-Users.SaveQuietly(ctx, &u)
+Users.WithContext(orm.WithoutEvents(ctx)).Create(&u)
+Users.SaveQuietly(&u)
 ```
 
 The available events are `Retrieved`, `Creating`, `Created`, `Updating`, `Updated`, `Saving`, `Saved`,
@@ -483,7 +483,7 @@ The available events are `Retrieved`, `Creating`, `Created`, `Updating`, `Update
 
 ```go
 err := orm.Transaction(ctx, func(ctx context.Context) error {
-	if err := Users.Create(ctx, &u); err != nil {
+	if err := Users.WithContext(ctx).Create(&u); err != nil {
 		return err // rolls back
 	}
 	orm.AfterCommit(ctx, func(ctx context.Context) { sendWelcomeMail(u) })
@@ -494,7 +494,7 @@ err := orm.Transaction(ctx, func(ctx context.Context) error {
 
 // Re-run the whole transaction when the database reports a deadlock or
 // lock timeout, up to three times (DB::transaction's $attempts).
-err = orm.RetryingTransaction(ctx, 3, func(ctx context.Context) error { return Users.Save(ctx, &u) })
+err = orm.RetryingTransaction(ctx, 3, func(ctx context.Context) error { return Users.WithContext(ctx).Save(&u) })
 ```
 
 Every query that receives the transaction's `ctx` runs inside it.
@@ -525,8 +525,8 @@ write, err := orm.OpenReadWrite(orm.DefaultConnection, "mysql", readDSN, writeDS
 ctx := orm.Sticky(r.Context()) // in middleware, before calling the handler
 
 //orm:table audit_log connection=audit key_type=uuid timestamps=false
-AuditLog.Query().Count(ctx)               // runs on "audit"
-Users.Query().On("replica").Get(ctx)      // Model::on()
+AuditLog.Query().Count()               // runs on "audit"
+Users.Query().On("replica").Get()      // Model::on()
 
 sqlText, args, err := Users.Where(Users.Karma.Gt(10)).ToSQLFor(orm.Postgres)
 
@@ -554,13 +554,13 @@ rows, err := orm.From("users").
 	LeftJoin(Countries, Countries.ID.EqCol(Users.CountryID)).
 	OrderBy("name").
 	Limit(10).
-	Get(ctx) // []map[string]any
+	Get() // []map[string]any
 
-n, err := orm.From("users").Where("email", orm.Eq, "a@b.c").Count(ctx)
-id, err := orm.From("users").InsertGetID(ctx, map[string]any{"name": "Ada", "email": "ada@example.com"})
-n, err = orm.From("users").Where("id", orm.Eq, id).Update(ctx, map[string]any{"name": "Ada L"})
-n, err = orm.From("users").Where("id", "=", id).Delete(ctx)
-err = orm.From("users").UpdateOrInsert(ctx,
+n, err := orm.From("users").Where("email", orm.Eq, "a@b.c").Count()
+id, err := orm.From("users").InsertGetID(map[string]any{"name": "Ada", "email": "ada@example.com"})
+n, err = orm.From("users").Where("id", orm.Eq, id).Update(map[string]any{"name": "Ada L"})
+n, err = orm.From("users").Where("id", "=", id).Delete()
+err = orm.From("users").UpdateOrInsert(
 	map[string]any{"email": "ada@example.com"},
 	map[string]any{"name": "Ada L"})
 ```
@@ -577,7 +577,7 @@ rows, err := orm.From("users").
 	WhereCond(Users.Active.Eq(true), Users.Karma.Gt(10)).
 	OrderByColDesc(Users.Karma).
 	Limit(10).
-	Get(ctx)
+	Get()
 ```
 
 `orm.FromTable(Users)` takes the table name and its connection from
@@ -590,7 +590,7 @@ rows, err := orm.FromTable(Users).
 	SelectCols(Users.Name.As("user"), Countries.Name.As("country")).
 	Join(Countries, Countries.ID.EqCol(Users.CountryID)).
 	OrderByCol(Users.Name).
-	Get(ctx) // rows[0]["user"], rows[0]["country"]
+	Get() // rows[0]["user"], rows[0]["country"]
 ```
 
 Grouping selects typed aggregates under a name; `HavingCond` filters on
@@ -601,22 +601,22 @@ rows, err := orm.FromTable(Users).
 	SelectCols(Users.CountryID, orm.Count[User]().As("users")).
 	GroupByCols(Users.CountryID).
 	HavingCond(orm.Count[User]().Gt(1)).
-	Get(ctx)
+	Get()
 rows, err = orm.From("users").
 	SelectRaw("country_id, COUNT(*) AS n").
 	GroupBy("country_id").
 	HavingRaw("COUNT(*) > ?", 1).
-	Get(ctx)
+	Get()
 ```
 
 Typed writes and plucks reuse the model's assignments and columns:
 
 ```go
 users := orm.FromTable(Users)
-err = users.InsertCols(ctx, Users.Name.Set("Ada"), Users.Email.Set("ada@example.com"))
+err = users.InsertCols(Users.Name.Set("Ada"), Users.Email.Set("ada@example.com"))
 n, err = users.WhereCond(Users.Email.Eq("ada@example.com")).
-	UpdateCols(ctx, Users.Name.Set("Ada L"), Users.Karma.SetExpr(orm.Plus(Users.Karma, 1)))
-emails, err := users.OrderByCol(Users.Email).PluckCol(ctx, Users.Email) // []string
+	UpdateCols(Users.Name.Set("Ada L"), Users.Karma.SetExpr(orm.Plus(Users.Karma, 1)))
+emails, err := users.OrderByCol(Users.Email).PluckCol(Users.Email) // []string
 ```
 
 `InsertCols` and `UpdateCols` write exactly what they are given, like
@@ -627,13 +627,13 @@ document form.
 Aggregates, counters and bulk writes round out `DB::table`:
 
 ```go
-total, err := orm.From("orders").Sum[int64](ctx, "amount") // the type is the caller's
-karma, err := orm.FromTable(Users).SumCol(ctx, Users.Karma)  // inferred: int
-avg, err := orm.From("users").Avg(ctx, "karma")                    // float64
-n, err := orm.From("posts").Where("id", orm.Eq, 7).Increment(ctx, "views", 1)
+total, err := orm.From("orders").Sum[int64]("amount") // the type is the caller's
+karma, err := orm.FromTable(Users).SumCol(Users.Karma)  // inferred: int
+avg, err := orm.From("users").Avg("karma")                    // float64
+n, err := orm.From("posts").Where("id", orm.Eq, 7).Increment("views", 1)
 
-err = orm.From("countries").InsertOrIgnore(ctx, map[string]any{"id": 1, "name": "Denmark"})
-err = orm.From("countries").Upsert(ctx,
+err = orm.From("countries").InsertOrIgnore(map[string]any{"id": 1, "name": "Denmark"})
+err = orm.From("countries").Upsert(
 	[]map[string]any{{"id": 1, "name": "Danmark"}, {"id": 4, "name": "Finland"}},
 	[]string{"id"}, // conflict columns
 	"name")         // columns to update; default: every other inserted column
@@ -663,9 +663,9 @@ users, err := UserFactory.Count(4).
 	State(func(u *User) { u.Karma = 7 }).
 	Sequence(func(u *User) { u.CountryID = 1 }, func(u *User) { u.CountryID = 2 }).
 	AfterCreating(func(ctx context.Context, u *User) error {
-		return UserPosts.Create(ctx, u, &Post{Title: "by " + u.Name})
+		return UserPosts.WithContext(ctx).Create(u, &Post{Title: "by " + u.Name})
 	}).
-	Create(ctx)
+	Create()
 draft := UserFactory.MakeOne() // unsaved
 ```
 
@@ -691,13 +691,13 @@ n, err := orm.StatementOn(ctx, "audit", "DELETE FROM audit_log WHERE at < ?", cu
 sqlText, args, err := Users.Where(Users.Name.Eq("x")).ToSQL()
 raw, err := Users.Where(Users.Name.Eq("O'Brien")).ToRawSQL() // args inlined
 
-plan, err := Users.Where(Users.Karma.Gt(10)).Explain(ctx) // []map[string]any
+plan, err := Users.Where(Users.Karma.Gt(10)).Explain() // []map[string]any
 
 stop := orm.Listen(func(e orm.QueryEvent) { log.Println(e.Duration, e.SQL) }) // DB::listen
 defer stop()
 
 orm.EnableQueryLog()                            // DB::enableQueryLog
-must(Users.Query().Count(ctx))
+must(Users.Query().Count())
 for _, e := range orm.QueryLog() {              // DB::getQueryLog
 	log.Println(e.Duration, e.SQL)
 }
@@ -712,7 +712,7 @@ every engine.
 ## Schema builder
 
 ```go
-err := schema.Create(ctx, "flights", func(t *schema.Blueprint) {
+err := schema.Create("flights", func(t *schema.Blueprint) {
 	t.ID()
 	t.ForeignID("airline_id").Constrained().CascadeOnDelete()
 	t.String("name", 100).Comment("flight name")
@@ -810,7 +810,7 @@ func init() {
 	schema.Register(schema.Migration{
 		Name: "2026_01_01_000000_create_flights_table",
 		Up: func(ctx context.Context, s *schema.Builder) error {
-			return s.Create(ctx, "flights", func(t *schema.Blueprint) { t.ID(); t.Timestamps() })
+			return s.WithContext(ctx).Create("flights", func(t *schema.Blueprint) { t.ID(); t.Timestamps() })
 		},
 		Down: func(ctx context.Context, s *schema.Builder) error { return s.DropIfExists(ctx, "flights") },
 	})
@@ -896,7 +896,7 @@ func init() {
 	schema.RegisterSeeder(schema.Seeder{
 		Name: "Users",
 		Run: func(ctx context.Context) error {
-			_, err := UserFactory.Count(50).Create(ctx)
+			_, err := UserFactory.Count(50).WithContext(ctx).Create()
 			return err
 		},
 	})

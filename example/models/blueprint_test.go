@@ -325,13 +325,13 @@ func assertTimePrecision(t *testing.T, ctx context.Context, conn string) {
 	}))
 	want := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
 	stamp := Stamp{At: want}
-	ok(stampTable.Query().On(conn).Create(ctx, &stamp))
-	got := must(stampTable.Query().On(conn).Value(ctx, stampAt))
+	ok(stampTable.Query().On(conn).Create(&stamp))
+	got := must(stampTable.Query().On(conn).Value(stampAt))
 	eq(t, conn+" microseconds survive", got.UTC().Equal(want), true)
-	eq(t, conn+" microseconds filter", must(stampTable.Query().On(conn).Where(stampAt.Eq(want)).Count(ctx)), int64(1))
+	eq(t, conn+" microseconds filter", must(stampTable.Query().On(conn).Where(stampAt.Eq(want)).Count()), int64(1))
 	later := want.Add(time.Hour + 654321*time.Microsecond)
-	must(stampTable.Query().On(conn).Where(stampAt.Eq(want)).Update(ctx, stampAt.Set(later)))
-	eq(t, conn+" microseconds update", must(stampTable.Query().On(conn).Value(ctx, stampAt)).UTC().Equal(later), true)
+	must(stampTable.Query().On(conn).Where(stampAt.Eq(want)).Update(stampAt.Set(later)))
+	eq(t, conn+" microseconds update", must(stampTable.Query().On(conn).Value(stampAt)).UTC().Equal(later), true)
 	ok(s.Drop(ctx, "stamps"))
 	err := s.Create(ctx, "stamps", func(b *schema.Blueprint) { b.UUIDPrimary(); b.Timestamp("at", 7) })
 	eq(t, conn+" precision past microseconds refused", err != nil && strings.Contains(err.Error(), "0 to 6"), true)
@@ -351,7 +351,7 @@ func assertIdentifierLimits(t *testing.T, ctx context.Context, conn string, limi
 	defer func() { tCheck(t, schema.On(conn).DropIfExists(ctx, "long_names")) }()
 	if limit == 0 {
 		ok(err)
-		eq(t, conn+" long names kept", must(orm.From("long_names").On(conn).Where(long, orm.Eq, "x").Count(ctx)), int64(0))
+		eq(t, conn+" long names kept", must(orm.From("long_names").On(conn).Where(long, orm.Eq, "x").Count()), int64(0))
 		return
 	}
 	_, refused := errors.AsType[*schema.UnsupportedError](err)
@@ -368,8 +368,8 @@ func assertIdentifierLimits(t *testing.T, ctx context.Context, conn string, limi
 		t.String(exact)
 		t.Index(exact).Name("long_names_short")
 	}))
-	eq(t, conn+" a name at the limit works", must(orm.From("long_names").On(conn).Where(exact, orm.Eq, "x").Count(ctx)), int64(0))
-	_, err = orm.From("long_names").On(conn).Where(long, orm.Eq, "x").Count(ctx)
+	eq(t, conn+" a name at the limit works", must(orm.From("long_names").On(conn).Where(exact, orm.Eq, "x").Count()), int64(0))
+	_, err = orm.From("long_names").On(conn).Where(long, orm.Eq, "x").Count()
 	eq(t, conn+" long names refused in queries", err != nil && strings.Contains(err.Error(), "keeps names of at most"), true)
 }
 
@@ -397,10 +397,10 @@ func assertIndexForms(t *testing.T, ctx context.Context, conn string) {
 	})
 	if !refusedOr("partial index", err) {
 		accounts := orm.From("accounts").On(conn)
-		ok(accounts.Insert(ctx, map[string]any{"id": "0198c0de-0000-7000-8000-0000000000c1", "email": "x@y.z", "deleted_at": time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}))
-		ok(accounts.Insert(ctx, map[string]any{"id": "0198c0de-0000-7000-8000-0000000000c2", "email": "x@y.z"}))
-		eq(t, engine+" partial unique ignores deleted rows", must(accounts.Count(ctx)), int64(2))
-		eq(t, engine+" partial unique holds for live rows", accounts.Insert(ctx, map[string]any{"id": "0198c0de-0000-7000-8000-0000000000c3", "email": "x@y.z"}) != nil, true)
+		ok(accounts.Insert(map[string]any{"id": "0198c0de-0000-7000-8000-0000000000c1", "email": "x@y.z", "deleted_at": time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}))
+		ok(accounts.Insert(map[string]any{"id": "0198c0de-0000-7000-8000-0000000000c2", "email": "x@y.z"}))
+		eq(t, engine+" partial unique ignores deleted rows", must(accounts.Count()), int64(2))
+		eq(t, engine+" partial unique holds for live rows", accounts.Insert(map[string]any{"id": "0198c0de-0000-7000-8000-0000000000c3", "email": "x@y.z"}) != nil, true)
 		ok(s.Drop(ctx, "accounts"))
 	}
 	ok(s.DropIfExists(ctx, "accounts"))

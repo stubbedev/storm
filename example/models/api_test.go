@@ -15,8 +15,8 @@ import (
 )
 
 func TestScalarExpressions(t *testing.T) {
-	ctx := setup(t)
-	get := func(q UserQuery) []string { return names(must(q.OrderBy(Users.ID.Asc()).Get(ctx))) }
+	setup(t)
+	get := func(q UserQuery) []string { return names(must(q.OrderBy(Users.ID.Asc()).Get())) }
 	fortyTwo := orm.Val[User](42)
 
 	eq(t, "neCol", get(Users.Where(Users.Karma.NeCol(fortyTwo))), []string{"Bob", "Carol", "Dave"})
@@ -25,7 +25,7 @@ func TestScalarExpressions(t *testing.T) {
 	eq(t, "ltCol", get(Users.Where(Users.Karma.LtCol(fortyTwo))), []string{"Bob", "Dave"})
 	eq(t, "lteCol", get(Users.Where(Users.Karma.LteCol(fortyTwo))), []string{"Alice", "Bob", "Dave"})
 	eq(t, "cmp", get(Users.Where(Users.Karma.Cmp(orm.Gt, fortyTwo))), []string{"Carol"})
-	_, err := Users.Where(Users.Karma.Cmp("<=>", fortyTwo)).Get(ctx)
+	_, err := Users.Where(Users.Karma.Cmp("<=>", fortyTwo)).Get()
 	eq(t, "unknown operator refused", err != nil && strings.Contains(err.Error(), "unknown comparison operator"), true)
 
 	eq(t, "notLike", get(Users.Where(Users.Name.NotLike("%ar%"))), []string{"Alice", "Bob", "Dave"})
@@ -35,64 +35,64 @@ func TestScalarExpressions(t *testing.T) {
 	eq(t, "notExists", get(Users.Where(orm.NotExists[User](Posts.Where(Posts.UserID.EqCol(Users.ID))))), []string{"Dave"})
 	eq(t, "allOf", get(Users.Where(orm.AllOf(orm.Like, "%e%", Users.Name, Users.Email))), []string{"Alice", "Dave"})
 	eq(t, "allOf negates every operator", get(Users.Where(orm.AllOf(orm.Gte, 17, Users.Karma))), []string{"Alice", "Bob", "Carol"})
-	_, err = Users.Where(orm.AnyOf[User]("~", "x", Users.Name)).Get(ctx)
+	_, err = Users.Where(orm.AnyOf[User]("~", "x", Users.Name)).Get()
 	eq(t, "anyOf unknown operator refused", err != nil && strings.Contains(err.Error(), "unknown comparison operator"), true)
 	eq(t, "allOf ilike", get(Users.Where(orm.AllOf(orm.ILike, "%A%", Users.Name, Users.Email))), []string{"Alice", "Carol", "Dave"})
 
-	byLower := must(Users.Query().OrderBy(orm.Lower(Users.Name).Desc()).Get(ctx))
+	byLower := must(Users.Query().OrderBy(orm.Lower(Users.Name).Desc()).Get())
 	eq(t, "expression desc", names(byLower), []string{"Dave", "Carol", "Bob", "Alice"})
-	eq(t, "expression asc", names(must(Users.Query().OrderBy(orm.Lower(Users.Name).Asc()).Get(ctx))), []string{"Alice", "Bob", "Carol", "Dave"})
-	eq(t, "rawOrder", must(Users.Query().OrderBy(orm.RawOrder[User]("karma DESC")).First(ctx)).Name, "Carol")
+	eq(t, "expression asc", names(must(Users.Query().OrderBy(orm.Lower(Users.Name).Asc()).Get())), []string{"Alice", "Bob", "Carol", "Dave"})
+	eq(t, "rawOrder", must(Users.Query().OrderBy(orm.RawOrder[User]("karma DESC")).First()).Name, "Carol")
 
-	eq(t, "countDistinct", must(Posts.Query().Value(ctx, orm.CountDistinct(Posts.UserID))), int64(5))
-	eq(t, "min", must(Users.Query().Min(ctx, Users.Karma)), 3)
-	_, err = Users.Where(Users.Karma.Gt(1000)).Max(ctx, Users.Karma)
+	eq(t, "countDistinct", must(Posts.Query().Value(orm.CountDistinct(Posts.UserID))), int64(5))
+	eq(t, "min", must(Users.Query().Min(Users.Karma)), 3)
+	_, err = Users.Where(Users.Karma.Gt(1000)).Max(Users.Karma)
 	eq(t, "max of nothing is not found", errors.Is(err, orm.ErrNotFound), true)
 	eq(t, "duckdb write conflicts are retried", orm.IsDeadlock(errors.New("TransactionContext Error: Catalog write-write conflict on create with \"users\"")), true)
 	eq(t, "mongo transient errors are retried", orm.IsDeadlock(mongo.CommandError{Code: 112, Labels: []string{"TransientTransactionError"}}), true)
-	eq(t, "sum of nothing is zero", must(Users.Where(Users.Karma.Gt(1000)).Sum(ctx, Users.Karma)), 0)
-	eq(t, "typed findMany", names(must(Users.FindMany(ctx, 1, 2))), []string{"Alice", "Bob"})
-	eq(t, "typed whereKeyNot", must(Users.WhereKeyNot(1, 2).Count(ctx)), int64(2))
-	eq(t, "typed find on a query chain", must(Users.Where(Users.Active.Eq(true)).Find(ctx, 2)).Name, "Bob")
-	_, err = Users.Query().Limit(0).Get(ctx)
+	eq(t, "sum of nothing is zero", must(Users.Where(Users.Karma.Gt(1000)).Sum(Users.Karma)), 0)
+	eq(t, "typed findMany", names(must(Users.FindMany(1, 2))), []string{"Alice", "Bob"})
+	eq(t, "typed whereKeyNot", must(Users.WhereKeyNot(1, 2).Count()), int64(2))
+	eq(t, "typed find on a query chain", must(Users.Where(Users.Active.Eq(true)).Find(2)).Name, "Bob")
+	_, err = Users.Query().Limit(0).Get()
 	eq(t, "a zero limit is refused, not unlimited", err != nil && strings.Contains(err.Error(), "Limit(0)"), true)
-	_, err = orm.From("users").Offset(-1).Get(ctx)
+	_, err = orm.From("users").Offset(-1).Get()
 	eq(t, "a negative offset is refused", err != nil && strings.Contains(err.Error(), "Offset(-1)"), true)
-	_, err = Users.Query().Limit(-3).Update(ctx, Users.Karma.Set(1))
+	_, err = Users.Query().Limit(-3).Update(Users.Karma.Set(1))
 	eq(t, "a bad limit refuses a mutation too", err != nil && strings.Contains(err.Error(), "Limit(-3)"), true)
-	_, err = orm.From("users").Where("karma", orm.Gt, 1000).Min[int64](ctx, "karma")
+	_, err = orm.From("users").Where("karma", orm.Gt, 1000).Min[int64]("karma")
 	eq(t, "row min of nothing is not found", errors.Is(err, orm.ErrNotFound), true)
-	eq(t, "lower", must(Users.Where(Users.ID.Eq(1)).Value(ctx, orm.Lower(Users.Name))), "alice")
-	eq(t, "coalesce", must(Users.Where(Users.ID.Eq(4)).Value(ctx, orm.Coalesce(Users.Name, "nobody"))), "Dave")
+	eq(t, "lower", must(Users.Where(Users.ID.Eq(1)).Value(orm.Lower(Users.Name))), "alice")
+	eq(t, "coalesce", must(Users.Where(Users.ID.Eq(4)).Value(orm.Coalesce(Users.Name, "nobody"))), "Dave")
 	eq(t, "minus", get(Users.Where(orm.Minus(Users.Karma, 2).Eq(1))), []string{"Dave"})
-	eq(t, "day", must(Posts.Where(orm.Day(Posts.CreatedAt).Eq(10)).Pluck(ctx, Posts.Title)), []string{"Generics in Go 1.27"})
-	eq(t, "time", must(Posts.Where(orm.Time(Posts.CreatedAt).Eq("08:00:00")).Count(ctx)), int64(7))
-	eq(t, "now", must(Posts.Where(Posts.CreatedAt.LtCol(orm.Now[Post]())).Count(ctx)), int64(7))
+	eq(t, "day", must(Posts.Where(orm.Day(Posts.CreatedAt).Eq(10)).Pluck(Posts.Title)), []string{"Generics in Go 1.27"})
+	eq(t, "time", must(Posts.Where(orm.Time(Posts.CreatedAt).Eq("08:00:00")).Count()), int64(7))
+	eq(t, "now", must(Posts.Where(Posts.CreatedAt.LtCol(orm.Now[Post]())).Count()), int64(7))
 }
 
 func TestQueryShaping(t *testing.T) {
 	ctx := setup(t)
-	get := func(q UserQuery) []string { return names(must(q.Get(ctx))) }
+	get := func(q UserQuery) []string { return names(must(q.Get())) }
 	byID := Users.Query().OrderBy(Users.ID.Asc())
 
 	eq(t, "orWhereNot", get(byID.Where(Users.Name.Eq("Alice")).OrWhereNot(Users.Active.Eq(true))), []string{"Alice", "Carol"})
 	eq(t, "whereKeyNot", get(byID.WhereKeyNot(1, 2)), []string{"Carol", "Dave"})
 	eq(t, "take and skip", get(byID.Skip(1).Take(2)), []string{"Bob", "Carol"})
 	eq(t, "forPage", get(byID.ForPage(2, 2)), []string{"Carol", "Dave"})
-	eq(t, "oldest", must(Users.Query().Oldest().First(ctx)).Name, "Alice")
-	eq(t, "oldest by column", must(Users.Query().Oldest(Users.Karma).First(ctx)).Name, "Dave")
-	eq(t, "all", len(must(Users.All(ctx))), 4)
+	eq(t, "oldest", must(Users.Query().Oldest().First()).Name, "Alice")
+	eq(t, "oldest by column", must(Users.Query().Oldest(Users.Karma).First()).Name, "Dave")
+	eq(t, "all", len(must(Users.All())), 4)
 
-	narrow := must(byID.Select(Users.ID).AddSelect(Users.Name).First(ctx))
+	narrow := must(byID.Select(Users.ID).AddSelect(Users.Name).First())
 	eq(t, "addSelect to a selection", fmt.Sprintf("%v %v", narrow.Name, narrow.Email == ""), "Alice true")
-	widened := must(byID.AddSelect(Users.Karma).First(ctx))
+	widened := must(byID.AddSelect(Users.Karma).First())
 	eq(t, "addSelect keeps every column", fmt.Sprintf("%v %v", widened.Email, widened.Karma), "alice@example.com 42")
 
-	eq(t, "rightJoin", must(Posts.Query().RightJoin(Users, Users.ID.EqCol(Posts.UserID)).Count(ctx)), int64(7))
-	eq(t, "crossJoin", must(Countries.Query().CrossJoin(Roles).Count(ctx)), int64(6))
+	eq(t, "rightJoin", must(Posts.Query().RightJoin(Users, Users.ID.EqCol(Posts.UserID)).Count()), int64(7))
+	eq(t, "crossJoin", must(Countries.Query().CrossJoin(Roles).Count()), int64(6))
 	eq(t, "leftJoinSub", must(Users.Query().
 		LeftJoinSub(Posts.Where(Posts.Published.Eq(true)), "published", Posts.UserID.EqCol(Users.ID)).
-		Count(ctx)), int64(5))
+		Count()), int64(5))
 	eq(t, "orderByOf", get(Users.Query().
 		Join(Countries, Countries.ID.EqCol(Users.CountryID)).
 		OrderByOf(Countries.Name.Desc()).
@@ -102,11 +102,11 @@ func TestQueryShaping(t *testing.T) {
 		Having(orm.Count[Post]().Gt(2)).
 		OrHaving(orm.Sum(Posts.Views).Gt(250)).
 		OrderBy(Posts.UserID.Asc()).
-		Pluck(ctx, Posts.UserID)), []int64{1, 3})
+		Pluck(Posts.UserID)), []int64{1, 3})
 
 	ok(orm.Transaction(ctx, func(ctx context.Context) error {
 		eq(t, "inTransaction", orm.InTransaction(ctx), true)
-		eq(t, "sharedLock", len(must(Users.Where(Users.ID.Eq(1)).SharedLock().Get(ctx))), 1)
+		eq(t, "sharedLock", len(must(Users.Where(Users.ID.Eq(1)).SharedLock().WithContext(ctx).Get())), 1)
 		return nil
 	}))
 	eq(t, "not inTransaction", orm.InTransaction(ctx), false)
@@ -118,55 +118,55 @@ func TestQueryShaping(t *testing.T) {
 	stmt, args := rendered(Users.Where(Users.ID.Eq(1)).ToSQL())
 	eq(t, "toSQL", strings.Contains(stmt, "users") && len(args) == 1, true)
 
-	_, err := orm.From("no_such_table").Get(ctx)
+	_, err := orm.From("no_such_table").Get()
 	var qe *orm.QueryError
 	eq(t, "queryError", errors.As(err, &qe) && errors.Unwrap(qe) != nil && strings.Contains(qe.SQL, "no_such_table"), true)
 
-	first := must(Users.Query().CursorPaginate(ctx, 3, ""))
+	first := must(Users.Query().CursorPaginate(3, ""))
 	eq(t, "cursor by key", names(first.Items), []string{"Alice", "Bob", "Carol"})
-	eq(t, "cursor by key next", names(must(Users.Query().CursorPaginate(ctx, 3, first.NextCursor)).Items), []string{"Dave"})
+	eq(t, "cursor by key next", names(must(Users.Query().CursorPaginate(3, first.NextCursor)).Items), []string{"Dave"})
 }
 
 func TestRelationOptions(t *testing.T) {
 	ctx := setup(t)
-	alice := must(Users.Find(ctx, 1))
-	get := func(q UserQuery) []string { return names(must(q.OrderBy(Users.ID.Asc()).Get(ctx))) }
+	alice := must(Users.Find(1))
+	get := func(q UserQuery) []string { return names(must(q.OrderBy(Users.ID.Asc()).Get())) }
 
 	stats := must(Users.Query().
 		WithAvg(UserPosts, Posts.Views, Users.AvgPostViews).
 		OrderBy(Users.ID.Asc()).
-		Get(ctx))
+		Get())
 	eq(t, "withAvg", fmt.Sprintf("%.1f %.1f", stats[0].AvgPostViews, stats[1].AvgPostViews), "213.3 150.0")
-	minViews := must(Users.Query().WithMin(UserPosts, Posts.Views, Users.PostViews).OrderBy(Users.ID.Asc()).Get(ctx))
+	minViews := must(Users.Query().WithMin(UserPosts, Posts.Views, Users.PostViews).OrderBy(Users.ID.Asc()).Get())
 	eq(t, "withMin", minViews[0].PostViews, int64(12))
-	maxViews := must(Users.Query().WithMax(UserPosts, Posts.Views, Users.PostViews).OrderBy(Users.ID.Asc()).Get(ctx))
+	maxViews := must(Users.Query().WithMax(UserPosts, Posts.Views, Users.PostViews).OrderBy(Users.ID.Asc()).Get())
 	eq(t, "withMax", maxViews[0].PostViews, int64(540))
 
 	eq(t, "orWhereDoesntHave", get(Users.Where(Users.Name.Eq("Alice")).OrWhereDoesntHave(UserPosts)), []string{"Alice", "Dave"})
 
 	published := UserPosts.Scoped(Published)
-	eq(t, "scoped hasMany", must(published.Of(&alice).Count(ctx)), int64(2))
-	counted := must(Users.Query().WithCount(published, Users.PostsCount).OrderBy(Users.ID.Asc()).First(ctx))
+	eq(t, "scoped hasMany", must(published.Of(&alice).Count()), int64(2))
+	counted := must(Users.Query().WithCount(published, Users.PostsCount).OrderBy(Users.ID.Asc()).First())
 	eq(t, "scoped hasMany eager", counted.PostsCount, int64(2))
 
 	draft := Post{Title: "through relation", Published: true}
-	ok(UserPosts.WithAttributes(Posts.Published.Set(false), Posts.Views.Set(7)).Create(ctx, &alice, &draft))
+	ok(UserPosts.WithAttributes(Posts.Published.Set(false), Posts.Views.Set(7)).Create(&alice, &draft))
 	eq(t, "withAttributes", fmt.Sprintf("%v %v %v", draft.UserID, draft.Published, draft.Views), "1 false 7")
 
-	withParents := must(Users.Where(Users.ID.Eq(2)).Get(ctx))
+	withParents := must(Users.Where(Users.ID.Eq(2)).Get())
 	ok(orm.Load(ctx, withParents, UserPosts.Chaperone(func(p *Post, u *User) { p.Author = u })))
 	eq(t, "chaperone", withParents[0].Posts[0].Author.Name, "Bob")
 
-	post := must(Posts.Find(ctx, 4))
-	eq(t, "belongsTo of", must(PostAuthor.Of(&post).First(ctx)).Name, "Bob")
+	post := must(Posts.Find(4))
+	eq(t, "belongsTo of", must(PostAuthor.Of(&post).First()).Name, "Bob")
 	eq(t, "belongsTo whereHas", must(Posts.Query().WhereHas(PostAuthor, func(q UserQuery) UserQuery {
 		return q.Where(Users.Name.Eq("Alice"))
-	}).Count(ctx)), int64(4))
+	}).Count()), int64(4))
 
-	eq(t, "wherePivot", must(UserRoles.WherePivot(RoleUsers.GrantedBy.Eq("system")).Of(&alice).Pluck(ctx, Roles.Name)), []string{"admin"})
+	eq(t, "wherePivot", must(UserRoles.WherePivot(RoleUsers.GrantedBy.Eq("system")).Of(&alice).Pluck(Roles.Name)), []string{"admin"})
 	eq(t, "scoped belongsToMany", must(UserRoles.Scoped(func(q RoleQuery) RoleQuery {
 		return q.Where(Roles.Name.Eq("editor"))
-	}).Of(&alice).Pluck(ctx, Roles.Name)), []string{"editor"})
+	}).Of(&alice).Pluck(Roles.Name)), []string{"editor"})
 
 	firstPost := map[int64]string{}
 	countryPost := orm.HasOneThrough(Countries.ID, Users.CountryID, Users.ID, Posts.UserID,
@@ -175,22 +175,22 @@ func TestRelationOptions(t *testing.T) {
 				firstPost[c.ID] = p.Title
 			}
 		})
-	countries := must(Countries.Query().OrderBy(Countries.ID.Asc()).Get(ctx))
+	countries := must(Countries.Query().OrderBy(Countries.ID.Asc()).Get())
 	ok(orm.Load(ctx, countries, countryPost))
 	eq(t, "hasOneThrough", firstPost[2], "Carol's post")
 	eq(t, "hasOneThrough loads every parent", len(firstPost), 2)
 
 	author := orm.BelongsTo(Posts.UserID, Users.ID, func(*Post, *User) {})
 	author.Touches()
-	before := must(Users.Find(ctx, 2)).UpdatedAt
+	before := must(Users.Find(2)).UpdatedAt
 	post.Title = "touched"
-	ok(Posts.Save(ctx, &post))
-	eq(t, "touches", must(Users.Find(ctx, 2)).UpdatedAt.After(before), true)
-	touched := must(Users.Find(ctx, 2)).UpdatedAt
+	ok(Posts.Save(&post))
+	eq(t, "touches", must(Users.Find(2)).UpdatedAt.After(before), true)
+	touched := must(Users.Find(2)).UpdatedAt
 	post.Title = "quietly"
-	ok(Posts.Save(orm.WithoutTimestamps(ctx), &post))
-	eq(t, "no touch without timestamps", must(Users.Find(ctx, 2)).UpdatedAt.Equal(touched), true)
-	eq(t, "saved without timestamps", must(Posts.Find(ctx, post.ID)).Title, "quietly")
+	ok(Posts.WithContext(orm.WithoutTimestamps(ctx)).Save(&post))
+	eq(t, "no touch without timestamps", must(Users.Find(2)).UpdatedAt.Equal(touched), true)
+	eq(t, "saved without timestamps", must(Posts.Find(post.ID)).Title, "quietly")
 }
 
 type blockWrites struct{}
@@ -211,17 +211,17 @@ func TestQuietWritesAndFill(t *testing.T) {
 	})
 	blocked := context.WithValue(ctx, blockWrites{}, true)
 
-	dave := must(Users.Find(ctx, 4))
-	eq(t, "events block delete", Users.Delete(blocked, &dave) != nil, true)
-	ok(Users.DeleteQuietly(blocked, &dave))
-	eq(t, "deleteQuietly", must(Users.Query().OnlyTrashed().Count(ctx)), int64(2))
-	ok(Users.RestoreQuietly(blocked, &dave))
-	eq(t, "restoreQuietly", must(Users.Query().OnlyTrashed().Count(ctx)), int64(1))
-	ok(Users.ForceDeleteQuietly(blocked, &dave))
-	eq(t, "forceDeleteQuietly", must(Users.Query().WithTrashed().Count(ctx)), int64(4))
+	dave := must(Users.Find(4))
+	eq(t, "events block delete", Users.WithContext(blocked).Delete(&dave) != nil, true)
+	ok(Users.WithContext(blocked).DeleteQuietly(&dave))
+	eq(t, "deleteQuietly", must(Users.Query().OnlyTrashed().Count()), int64(2))
+	ok(Users.WithContext(blocked).RestoreQuietly(&dave))
+	eq(t, "restoreQuietly", must(Users.Query().OnlyTrashed().Count()), int64(1))
+	ok(Users.WithContext(blocked).ForceDeleteQuietly(&dave))
+	eq(t, "forceDeleteQuietly", must(Users.Query().WithTrashed().Count()), int64(4))
 
-	eq(t, "query forceDelete", must(Users.Query().WithTrashed().Where(Users.Name.Eq("Eve")).ForceDelete(ctx)), int64(1))
-	eq(t, "query forceDeleted", must(Users.Query().WithTrashed().Count(ctx)), int64(3))
+	eq(t, "query forceDelete", must(Users.Query().WithTrashed().Where(Users.Name.Eq("Eve")).ForceDelete()), int64(1))
+	eq(t, "query forceDeleted", must(Users.Query().WithTrashed().Count()), int64(3))
 
 	var u User
 	orm.Fill(&u, Users.Name.Set("Filled"), Users.Karma.Set(3))
@@ -229,13 +229,13 @@ func TestQuietWritesAndFill(t *testing.T) {
 }
 
 func TestFactoryOne(t *testing.T) {
-	ctx := setup(t)
+	setup(t)
 	users := orm.NewFactory(Users.Table, func(n int) User {
 		return User{Name: fmt.Sprintf("One %d", n), Email: fmt.Sprintf("one%d@example.com", n), Active: true}
 	})
 	eq(t, "makeOne", users.MakeOne().Name, "One 1")
-	created := must(users.CreateOne(ctx))
-	eq(t, "createOne", must(Users.Find(ctx, created.ID)).Email, "one2@example.com")
+	created := must(users.CreateOne())
+	eq(t, "createOne", must(Users.Find(created.ID)).Email, "one2@example.com")
 }
 
 func TestJSONCasts(t *testing.T) {
@@ -444,31 +444,31 @@ func TestObserverLifecycle(t *testing.T) {
 	}
 
 	u := User{Name: "Obs", Email: "obs@example.com", Active: true}
-	step("create", func() error { return Users.Create(watched, &u) }, "saving", "creating", "created", "saved")
+	step("create", func() error { return Users.WithContext(watched).Create(&u) }, "saving", "creating", "created", "saved")
 	u.Karma = 5
-	step("update", func() error { return Users.Save(watched, &u) }, "saving", "updating", "updated", "saved")
-	step("find", func() error { _, err := Users.Find(watched, u.ID); return err }, "retrieved")
-	step("soft delete", func() error { return Users.Delete(watched, &u) }, "deleting", "trashed", "deleted")
-	step("restore", func() error { return Users.Restore(watched, &u) }, "restoring", "saving", "updating", "updated", "saved", "restored")
-	step("replicate", func() error { _, err := Users.Replicate(watched, &u); return err }, "replicating")
-	step("force delete", func() error { return Users.ForceDelete(watched, &u) }, "forceDeleting", "deleting", "deleted", "forceDeleted")
+	step("update", func() error { return Users.WithContext(watched).Save(&u) }, "saving", "updating", "updated", "saved")
+	step("find", func() error { _, err := Users.WithContext(watched).Find(u.ID); return err }, "retrieved")
+	step("soft delete", func() error { return Users.WithContext(watched).Delete(&u) }, "deleting", "trashed", "deleted")
+	step("restore", func() error { return Users.WithContext(watched).Restore(&u) }, "restoring", "saving", "updating", "updated", "saved", "restored")
+	step("replicate", func() error { _, err := Users.WithContext(watched).Replicate(&u); return err }, "replicating")
+	step("force delete", func() error { return Users.WithContext(watched).ForceDelete(&u) }, "forceDeleting", "deleting", "deleted", "forceDeleted")
 
-	before := must(Users.Query().WithTrashed().Count(ctx))
+	before := must(Users.Query().WithTrashed().Count())
 	aborted := context.WithValue(watched, abortOn{}, "creating")
-	err := Users.Create(aborted, &User{Name: "Never", Email: "never@example.com"})
+	err := Users.WithContext(aborted).Create(&User{Name: "Never", Email: "never@example.com"})
 	eq(t, "creating aborts", err != nil && strings.Contains(err.Error(), "aborted on creating"), true)
-	eq(t, "nothing inserted", must(Users.Query().WithTrashed().Count(ctx)), before)
+	eq(t, "nothing inserted", must(Users.Query().WithTrashed().Count()), before)
 	eq(t, "an observer without methods panics", panics(func() { Users.Observe(struct{}{}) }), true)
 }
 
 func TestMaintainedTimePrecision(t *testing.T) {
-	ctx := setup(t)
-	post := must(Posts.Find(ctx, 1))
+	setup(t)
+	post := must(Posts.Find(1))
 	c := Comment{Body: "precise"}
-	ok(PostComments.Create(ctx, &post, &c))
+	ok(PostComments.Create(&post, &c))
 	eq(t, "microsecond timestamps", c.CreatedAt.Nanosecond()%1000 == 0 && c.CreatedAt.Equal(c.UpdatedAt), true)
-	eq(t, "they round-trip", must(Comments.Find(ctx, c.ID)).CreatedAt.Equal(c.CreatedAt), true)
+	eq(t, "they round-trip", must(Comments.Find(c.ID)).CreatedAt.Equal(c.CreatedAt), true)
 	fresh := Post{UserID: 1, Title: "whole seconds"}
-	ok(Posts.Create(ctx, &fresh))
+	ok(Posts.Create(&fresh))
 	eq(t, "default precision is whole seconds", fresh.CreatedAt.Nanosecond(), 0)
 }

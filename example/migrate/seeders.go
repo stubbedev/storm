@@ -11,7 +11,7 @@ func init() {
 	schema.RegisterSeeder(schema.Seeder{
 		Name: "Countries",
 		Run: func(ctx context.Context) error {
-			return orm.From("countries").Insert(ctx,
+			return orm.From("countries").WithContext(ctx).Insert(
 				map[string]any{"id": 1, "name": "Denmark"},
 				map[string]any{"id": 2, "name": "Norway"},
 			)

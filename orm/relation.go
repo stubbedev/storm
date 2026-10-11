@@ -133,6 +133,7 @@ func (q Query[M, MK]) HasCount[R any, RK comparable](rel Relation[M, R, RK], op 
 // ---------------------------------------------------------------------------
 
 type hasBase[M any, MK comparable, R any, RK comparable, J comparable] struct {
+	bound
 	related    *Table[R, RK]
 	local      Column[M, MK, J]
 	foreign    Column[R, RK, J]
@@ -158,7 +159,7 @@ func (h hasBase[M, MK, R, RK, J]) load(ctx context.Context, conn string, parents
 	if q.limit > 0 || q.offset > 0 {
 		q.perParent = h.foreign
 	}
-	children, err := q.Get(ctx)
+	children, err := q.WithContext(ctx).Get()
 	if err != nil {
 		return nil, err
 	}
@@ -184,15 +185,17 @@ func (h hasBase[M, MK, R, RK, J]) Of(parent *M) Query[R, RK] {
 }
 
 // Create sets the foreign key (and morph type) on child and inserts it.
-func (h hasBase[M, MK, R, RK, J]) Create(ctx context.Context, parent *M, child *R) error {
+func (h hasBase[M, MK, R, RK, J]) Create(parent *M, child *R) error {
+	ctx := h.context()
 	h.link(parent, child)
-	return h.related.Create(ctx, child)
+	return h.related.WithContext(ctx).Create(child)
 }
 
 // Save sets the foreign key on child and saves it.
-func (h hasBase[M, MK, R, RK, J]) Save(ctx context.Context, parent *M, child *R) error {
+func (h hasBase[M, MK, R, RK, J]) Save(parent *M, child *R) error {
+	ctx := h.context()
 	h.link(parent, child)
-	return h.related.Save(ctx, child)
+	return h.related.WithContext(ctx).Save(child)
 }
 
 func (h hasBase[M, MK, R, RK, J]) link(parent *M, child *R) {
@@ -247,6 +250,14 @@ func (r *HasManyRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string
 	return nil
 }
 
+// WithContext returns the relation running its writes (Create, Save,
+// SaveMany) with ctx: inside the transaction ctx carries.
+func (r *HasManyRel[M, MK, R, RK, J]) WithContext(ctx context.Context) *HasManyRel[M, MK, R, RK, J] {
+	c := *r
+	c.bound = boundTo(ctx)
+	return &c
+}
+
 // Scoped returns the relation with extra constraints (a "scoped relationship").
 func (r *HasManyRel[M, MK, R, RK, J]) Scoped(scopes ...func(Query[R, RK]) Query[R, RK]) *HasManyRel[M, MK, R, RK, J] {
 	c := *r
@@ -269,9 +280,10 @@ func (r *HasManyRel[M, MK, R, RK, J]) Chaperone(set func(child *R, parent *M)) *
 }
 
 // SaveMany saves each child through the relation.
-func (r *HasManyRel[M, MK, R, RK, J]) SaveMany(ctx context.Context, parent *M, children []R) error {
+func (r *HasManyRel[M, MK, R, RK, J]) SaveMany(parent *M, children []R) error {
+	ctx := r.context()
 	for i := range children {
-		if err := r.Save(ctx, parent, &children[i]); err != nil {
+		if err := r.WithContext(ctx).Save(parent, &children[i]); err != nil {
 			return err
 		}
 	}
@@ -297,6 +309,14 @@ func MorphOne[M any, MK comparable, R any, RK comparable, J comparable](local Co
 
 // OfMany picks one of many related rows by the max (or min) of col —
 // latestOfMany / oldestOfMany / ofMany('price', 'max').
+// WithContext returns the relation running its writes (Create, Save)
+// with ctx: inside the transaction ctx carries.
+func (r *HasOneRel[M, MK, R, RK, J]) WithContext(ctx context.Context) *HasOneRel[M, MK, R, RK, J] {
+	c := *r
+	c.bound = boundTo(ctx)
+	return &c
+}
+
 func (r *HasOneRel[M, MK, R, RK, J]) OfMany[V interface {
 	~int | ~int64 | ~float64 | ~string
 }](col Column[R, RK, V], useMax bool) *HasOneRel[M, MK, R, RK, J] {
@@ -365,7 +385,7 @@ func (r *BelongsToRel[M, MK, R, RK, J]) WithDefault(fn func(*M) *R) *BelongsToRe
 func (r *BelongsToRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, children []M, scope func(Query[R, RK]) Query[R, RK]) error {
 	byKey := map[J]*R{}
 	if keys := uniqueKeys(children, r.foreign, true); len(keys) > 0 {
-		owners, err := scope(relQuery(r.related, conn).Where(r.owner.In(keys...)).Scope(r.scopes...)).Get(ctx)
+		owners, err := scope(relQuery(r.related, conn).Where(r.owner.In(keys...)).Scope(r.scopes...)).WithContext(ctx).Get()
 		if err != nil {
 			return err
 		}
@@ -422,7 +442,7 @@ func (r *BelongsToRel[M, MK, R, RK, J]) Touches() {
 		if !timestamps(ctx) {
 			return nil
 		}
-		_, err := r.related.Query().Where(r.owner.Eq(r.foreign.Get(m))).Update(ctx)
+		_, err := r.related.Query().Where(r.owner.Eq(r.foreign.Get(m))).WithContext(ctx).Update()
 		return err
 	}
 	r.foreign.table.On(Saved, touch)
@@ -435,6 +455,7 @@ func (r *BelongsToRel[M, MK, R, RK, J]) Touches() {
 
 // BelongsToManyRel is a many-to-many relation through pivot model P.
 type BelongsToManyRel[M any, MK comparable, R any, RK comparable, P any, PK comparable, J, RJ comparable] struct {
+	bound
 	related      *Table[R, RK]
 	pivot        *Table[P, PK]
 	parentKey    Column[M, MK, J]
@@ -488,6 +509,14 @@ func MorphedByMany[M any, MK comparable, R any, RK comparable, P any, PK compara
 }
 
 // WithPivot hands each loaded related model its pivot row (withPivot / as).
+// WithContext returns the relation running its pivot writes (Attach,
+// Detach, Sync, Toggle, ...) with ctx: inside the transaction ctx carries.
+func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) WithContext(ctx context.Context) *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ] {
+	c := *r
+	c.bound = boundTo(ctx)
+	return &c
+}
+
 func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) WithPivot(set func(*R, P)) *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ] {
 	c := *r
 	c.setPivot = set
@@ -524,7 +553,7 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) eagerLoad(ctx context.Con
 	if len(keys) == 0 {
 		return nil
 	}
-	pivots, err := relQuery(r.pivot, conn).Where(r.pivotParent.In(keys...)).Where(r.pivotConds()...).Get(ctx)
+	pivots, err := relQuery(r.pivot, conn).Where(r.pivotParent.In(keys...)).Where(r.pivotConds()...).WithContext(ctx).Get()
 	if err != nil {
 		return err
 	}
@@ -543,7 +572,7 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) eagerLoad(ctx context.Con
 		if err := sharedRowsLimit(q, r.related.Name); err != nil {
 			return err
 		}
-		related, err := q.Get(ctx)
+		related, err := q.WithContext(ctx).Get()
 		if err != nil {
 			return err
 		}
@@ -596,7 +625,8 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) AttachedTo(related *R) Co
 
 // Attach inserts pivot rows for parent; parent key and morph type are filled
 // in, pivot timestamps maintained. Extra pivot columns come from the P values.
-func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) Attach(ctx context.Context, parent *M, pivots ...P) error {
+func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) Attach(parent *M, pivots ...P) error {
+	ctx := r.context()
 	ts := r.pivot.now()
 	for i := range pivots {
 		*r.pivotParent.Ptr(&pivots[i]) = r.parentKey.Get(parent)
@@ -609,20 +639,22 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) Attach(ctx context.Contex
 			}
 		}
 	}
-	return r.pivot.Query().Insert(ctx, pivots...)
+	return r.pivot.Query().WithContext(ctx).Insert(pivots...)
 }
 
 // AttachIDs attaches related keys without extra pivot data.
-func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) AttachIDs(ctx context.Context, parent *M, ids ...RJ) error {
+func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) AttachIDs(parent *M, ids ...RJ) error {
+	ctx := r.context()
 	pivots := make([]P, len(ids))
 	for i, id := range ids {
 		*r.pivotRelated.Ptr(&pivots[i]) = id
 	}
-	return r.Attach(ctx, parent, pivots...)
+	return r.WithContext(ctx).Attach(parent, pivots...)
 }
 
 // Detach removes pivot rows for ids, or all of parent's when none are given.
-func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) Detach(ctx context.Context, parent *M, ids ...RJ) (int64, error) {
+func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) Detach(parent *M, ids ...RJ) (int64, error) {
+	ctx := r.context()
 	q := r.pivotQuery("", r.parentKey.Get(parent))
 	if len(ids) > 0 {
 		q = q.Where(r.pivotRelated.In(ids...))
@@ -634,18 +666,20 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) Detach(ctx context.Contex
 type SyncResult[RJ comparable] struct{ Attached, Detached []RJ }
 
 // Sync makes ids exactly the attached set.
-func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) Sync(ctx context.Context, parent *M, ids ...RJ) (SyncResult[RJ], error) {
+func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) Sync(parent *M, ids ...RJ) (SyncResult[RJ], error) {
+	ctx := r.context()
 	return r.sync(ctx, parent, ids, true)
 }
 
 // SyncWithoutDetaching attaches missing ids and leaves others alone.
-func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) SyncWithoutDetaching(ctx context.Context, parent *M, ids ...RJ) (SyncResult[RJ], error) {
+func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) SyncWithoutDetaching(parent *M, ids ...RJ) (SyncResult[RJ], error) {
+	ctx := r.context()
 	return r.sync(ctx, parent, ids, false)
 }
 
 func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) sync(ctx context.Context, parent *M, ids []RJ, detach bool) (SyncResult[RJ], error) {
 	var res SyncResult[RJ]
-	current, err := r.pivotQuery("", r.parentKey.Get(parent)).Pluck(ctx, r.pivotRelated)
+	current, err := r.pivotQuery("", r.parentKey.Get(parent)).WithContext(ctx).Pluck(r.pivotRelated)
 	if err != nil {
 		return res, err
 	}
@@ -662,20 +696,21 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) sync(ctx context.Context,
 		}
 	}
 	if len(res.Detached) > 0 {
-		if _, err := r.Detach(ctx, parent, res.Detached...); err != nil {
+		if _, err := r.WithContext(ctx).Detach(parent, res.Detached...); err != nil {
 			return res, err
 		}
 	}
 	if len(res.Attached) > 0 {
-		err = r.AttachIDs(ctx, parent, res.Attached...)
+		err = r.WithContext(ctx).AttachIDs(parent, res.Attached...)
 	}
 	return res, err
 }
 
 // Toggle detaches attached ids and attaches the rest.
-func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) Toggle(ctx context.Context, parent *M, ids ...RJ) (SyncResult[RJ], error) {
+func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) Toggle(parent *M, ids ...RJ) (SyncResult[RJ], error) {
+	ctx := r.context()
 	var res SyncResult[RJ]
-	current, err := r.pivotQuery("", r.parentKey.Get(parent)).Pluck(ctx, r.pivotRelated)
+	current, err := r.pivotQuery("", r.parentKey.Get(parent)).WithContext(ctx).Pluck(r.pivotRelated)
 	if err != nil {
 		return res, err
 	}
@@ -692,19 +727,20 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) Toggle(ctx context.Contex
 		}
 	}
 	if len(res.Detached) > 0 {
-		if _, err := r.Detach(ctx, parent, res.Detached...); err != nil {
+		if _, err := r.WithContext(ctx).Detach(parent, res.Detached...); err != nil {
 			return res, err
 		}
 	}
 	if len(res.Attached) > 0 {
-		err = r.AttachIDs(ctx, parent, res.Attached...)
+		err = r.WithContext(ctx).AttachIDs(parent, res.Attached...)
 	}
 	return res, err
 }
 
 // UpdateExistingPivot updates the pivot row linking parent and id.
-func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) UpdateExistingPivot(ctx context.Context, parent *M, id RJ, sets ...Assignment[P]) (int64, error) {
-	return r.pivotQuery("", r.parentKey.Get(parent)).Where(r.pivotRelated.Eq(id)).Update(ctx, sets...)
+func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) UpdateExistingPivot(parent *M, id RJ, sets ...Assignment[P]) (int64, error) {
+	ctx := r.context()
+	return r.pivotQuery("", r.parentKey.Get(parent)).Where(r.pivotRelated.Eq(id)).WithContext(ctx).Update(sets...)
 }
 
 // ---------------------------------------------------------------------------
@@ -725,7 +761,7 @@ func (h throughBase[M, MK, T, TK, R, RK, J, TJ]) load(ctx context.Context, conn 
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	throughs, err := relQuery(h.through, conn).Where(h.firstKey.In(keys...)).Get(ctx)
+	throughs, err := relQuery(h.through, conn).Where(h.firstKey.In(keys...)).WithContext(ctx).Get()
 	if err != nil || len(throughs) == 0 {
 		return nil, err
 	}
@@ -742,7 +778,7 @@ func (h throughBase[M, MK, T, TK, R, RK, J, TJ]) load(ctx context.Context, conn 
 	if err := sharedRowsLimit(q, h.related.Name); err != nil {
 		return nil, err
 	}
-	related, err := q.Get(ctx)
+	related, err := q.WithContext(ctx).Get()
 	if err != nil {
 		return nil, err
 	}
@@ -877,7 +913,7 @@ func Target[R any, RK comparable, J comparable](key Column[R, RK, J]) MorphTarge
 func (t morphTarget[R, RK, J]) alias() string { return t.key.table.morphAlias() }
 
 func (t morphTarget[R, RK, J]) load(ctx context.Context, conn string, keys []J) (map[J]any, error) {
-	rows, err := relQuery(t.key.table, conn).Where(t.key.In(keys...)).Get(ctx)
+	rows, err := relQuery(t.key.table, conn).Where(t.key.In(keys...)).WithContext(ctx).Get()
 	if err != nil {
 		return nil, err
 	}

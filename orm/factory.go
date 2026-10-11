@@ -12,10 +12,11 @@ import (
 //		return User{Name: fmt.Sprintf("User %d", n), Email: fmt.Sprintf("user%d@example.com", n)}
 //	})
 //
-//	admins, err := UserFactory.Count(3).State(func(u *User) { u.Karma = 100 }).Create(ctx)
+//	admins, err := UserFactory.Count(3).State(func(u *User) { u.Karma = 100 }).WithContext(ctx).Create()
 //
 // Factories are immutable; every method returns a modified copy.
 type Factory[M any, K comparable] struct {
+	bound
 	table    *Table[M, K]
 	def      func(n int) M
 	seq      *atomic.Int64
@@ -29,6 +30,13 @@ type Factory[M any, K comparable] struct {
 // that increases across every model the factory makes.
 func NewFactory[M any, K comparable](t *Table[M, K], definition func(n int) M) Factory[M, K] {
 	return Factory[M, K]{table: t, def: definition, seq: new(atomic.Int64), count: 1}
+}
+
+// WithContext returns the factory creating its models with ctx: inside
+// the transaction ctx carries.
+func (f Factory[M, K]) WithContext(ctx context.Context) Factory[M, K] {
+	f.bound = boundTo(ctx)
+	return f
 }
 
 // Count sets how many models Make and Create produce.
@@ -73,10 +81,11 @@ func (f Factory[M, K]) Make() []M {
 func (f Factory[M, K]) MakeOne() M { return f.Count(1).Make()[0] }
 
 // Create builds and inserts models, firing model events.
-func (f Factory[M, K]) Create(ctx context.Context) ([]M, error) {
+func (f Factory[M, K]) Create() ([]M, error) {
+	ctx := f.context()
 	models := f.Make()
 	for i := range models {
-		if err := f.table.Create(ctx, &models[i]); err != nil {
+		if err := f.table.WithContext(ctx).Create(&models[i]); err != nil {
 			return models[:i], err
 		}
 		for _, fn := range f.after {
@@ -89,8 +98,9 @@ func (f Factory[M, K]) Create(ctx context.Context) ([]M, error) {
 }
 
 // CreateOne builds and inserts a single model.
-func (f Factory[M, K]) CreateOne(ctx context.Context) (M, error) {
-	ms, err := f.Count(1).Create(ctx)
+func (f Factory[M, K]) CreateOne() (M, error) {
+	ctx := f.context()
+	ms, err := f.Count(1).WithContext(ctx).Create()
 	if len(ms) == 0 {
 		var zero M
 		return zero, err

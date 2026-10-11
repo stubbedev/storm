@@ -16,6 +16,7 @@ import (
 // new Query, so partially built queries can be shared. SQL is rendered only
 // when the query runs, in the dialect of the connection it runs on.
 type Query[M any, K comparable] struct {
+	bound
 	table    *Table[M, K]
 	onConn   string // On(): explicit connection name
 	alias    string // table alias, for self-referencing subqueries
@@ -104,6 +105,33 @@ func (q Query[M, K]) keyIn(op string, ids []K) Query[M, K] {
 		return q
 	}
 	return q.Where(q.table.keyColumn().in(op, ids))
+}
+
+// bound is the context a builder runs its queries with: the one
+// WithContext gave it, or the background context (no transaction, no
+// deadline) without one.
+type bound struct{ ctx context.Context }
+
+func (b bound) context() context.Context {
+	if b.ctx == nil {
+		return context.Background()
+	}
+	return b.ctx
+}
+
+func boundTo(ctx context.Context) bound {
+	if ctx == nil {
+		panic("orm: WithContext(nil); pass context.Background() for no transaction or deadline")
+	}
+	return bound{ctx}
+}
+
+// WithContext runs the query with ctx: inside the transaction ctx carries,
+// under its deadline and cancellation, and with its options (Sticky,
+// WithoutEvents, WithoutTimestamps, WithConn).
+func (q Query[M, K]) WithContext(ctx context.Context) Query[M, K] {
+	q.bound = boundTo(ctx)
+	return q
 }
 
 // When applies fn only if cond is true (conditional clauses).

@@ -35,7 +35,7 @@ type AuditLogSchema struct {
 }
 
 // AuditLog is the entry point for the audit_log table (AuditEntry):
-// AuditLog.Query(), AuditLog.Find(ctx, id), AuditLog.Where(AuditLog.ID...) ...
+// AuditLog.Query(), AuditLog.Find(id), AuditLog.Where(AuditLog.ID...) ...
 var AuditLog = AuditLogSchema{
 	Table:  auditLogTable,
 	ID:     orm.NewColumn(auditLogTable, "id", func(m *AuditEntry) *string { return &m.ID }),
@@ -92,7 +92,7 @@ type CommentsSchema struct {
 }
 
 // Comments is the entry point for the comments table (Comment):
-// Comments.Query(), Comments.Find(ctx, id), Comments.Where(Comments.ID...) ...
+// Comments.Query(), Comments.Find(id), Comments.Where(Comments.ID...) ...
 var Comments = CommentsSchema{
 	Table:           commentsTable,
 	ID:              orm.NewColumn(commentsTable, "id", func(m *Comment) *int64 { return &m.ID }),
@@ -134,7 +134,7 @@ type CountriesSchema struct {
 }
 
 // Countries is the entry point for the countries table (Country):
-// Countries.Query(), Countries.Find(ctx, id), Countries.Where(Countries.ID...) ...
+// Countries.Query(), Countries.Find(id), Countries.Where(Countries.ID...) ...
 var Countries = CountriesSchema{
 	Table: countriesTable,
 	ID:    orm.NewColumn(countriesTable, "id", func(m *Country) *int64 { return &m.ID }),
@@ -180,7 +180,7 @@ type ImagesSchema struct {
 }
 
 // Images is the entry point for the images table (Image):
-// Images.Query(), Images.Find(ctx, id), Images.Where(Images.ID...) ...
+// Images.Query(), Images.Find(id), Images.Where(Images.ID...) ...
 var Images = ImagesSchema{
 	Table:         imagesTable,
 	ID:            orm.NewColumn(imagesTable, "id", func(m *Image) *int64 { return &m.ID }),
@@ -242,7 +242,7 @@ type PostsSchema struct {
 }
 
 // Posts is the entry point for the posts table (Post):
-// Posts.Query(), Posts.Find(ctx, id), Posts.Where(Posts.ID...) ...
+// Posts.Query(), Posts.Find(id), Posts.Where(Posts.ID...) ...
 var Posts = PostsSchema{
 	Table:     postsTable,
 	ID:        orm.NewColumn(postsTable, "id", func(m *Post) *int64 { return &m.ID }),
@@ -285,7 +285,7 @@ type RolesSchema struct {
 }
 
 // Roles is the entry point for the roles table (Role):
-// Roles.Query(), Roles.Find(ctx, id), Roles.Where(Roles.ID...) ...
+// Roles.Query(), Roles.Find(id), Roles.Where(Roles.ID...) ...
 var Roles = RolesSchema{
 	Table: rolesTable,
 	ID:    orm.NewColumn(rolesTable, "id", func(m *Role) *int64 { return &m.ID }),
@@ -335,7 +335,7 @@ type RoleUsersSchema struct {
 }
 
 // RoleUsers is the entry point for the role_user table (RoleUser):
-// RoleUsers.Query(), RoleUsers.Find(ctx, id), RoleUsers.Where(RoleUsers.UserID...) ...
+// RoleUsers.Query(), RoleUsers.Find(id), RoleUsers.Where(RoleUsers.UserID...) ...
 var RoleUsers = RoleUsersSchema{
 	Table:     roleUsersTable,
 	UserID:    orm.NewColumn(roleUsersTable, "user_id", func(m *RoleUser) *int64 { return &m.UserID }),
@@ -376,7 +376,7 @@ type TagsSchema struct {
 }
 
 // Tags is the entry point for the tags table (Tag):
-// Tags.Query(), Tags.Find(ctx, id), Tags.Where(Tags.ID...) ...
+// Tags.Query(), Tags.Find(id), Tags.Where(Tags.ID...) ...
 var Tags = TagsSchema{
 	Table: tagsTable,
 	ID:    orm.NewColumn(tagsTable, "id", func(m *Tag) *int64 { return &m.ID }),
@@ -416,7 +416,7 @@ type TaggablesSchema struct {
 }
 
 // Taggables is the entry point for the taggables table (Taggable):
-// Taggables.Query(), Taggables.Find(ctx, id), Taggables.Where(Taggables.TagID...) ...
+// Taggables.Query(), Taggables.Find(id), Taggables.Where(Taggables.TagID...) ...
 var Taggables = TaggablesSchema{
 	Table:        taggablesTable,
 	TagID:        orm.NewColumn(taggablesTable, "tag_id", func(m *Taggable) *int64 { return &m.TagID }),
@@ -511,7 +511,7 @@ type UsersSchema struct {
 }
 
 // Users is the entry point for the users table (User):
-// Users.Query(), Users.Find(ctx, id), Users.Where(Users.ID...) ...
+// Users.Query(), Users.Find(id), Users.Where(Users.ID...) ...
 var Users = UsersSchema{
 	Table:           usersTable,
 	ID:              orm.NewColumn(usersTable, "id", func(m *User) *int64 { return &m.ID }),
@@ -562,7 +562,7 @@ type VideosSchema struct {
 }
 
 // Videos is the entry point for the videos table (Video):
-// Videos.Query(), Videos.Find(ctx, id), Videos.Where(Videos.ID...) ...
+// Videos.Query(), Videos.Find(id), Videos.Where(Videos.ID...) ...
 var Videos = VideosSchema{
 	Table: videosTable,
 	ID:    orm.NewColumn(videosTable, "id", func(m *Video) *int64 { return &m.ID }),

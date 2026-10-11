@@ -32,7 +32,7 @@
 //
 // For each model ormgen emits a schema value named after the table in
 // CamelCase (Users) embedding *orm.Table[User] — so Users.Query(),
-// Users.Find(ctx, id), Users.Create(ctx, &u) work — with one
+// Users.Find(id), Users.Create(&u) work — with one
 // orm.Column[User, V] per tagged field.
 package main
 
@@ -410,7 +410,7 @@ type {{.Schema}}Schema struct {
 }
 
 // {{.Schema}} is the entry point for the {{.Table}} table ({{.Struct}}):
-// {{.Schema}}.Query(), {{.Schema}}.Find(ctx, id), {{.Schema}}.Where({{.Schema}}.{{(index .Fields 0).Name}}...) ...
+// {{.Schema}}.Query(), {{.Schema}}.Find(id), {{.Schema}}.Where({{.Schema}}.{{(index .Fields 0).Name}}...) ...
 var {{.Schema}} = {{.Schema}}Schema{
 	Table: {{.Var}},
 {{- range .Fields}}

@@ -189,7 +189,7 @@ var Notes = func() NoteSchema {
 func assertDocLogic(t *testing.T, ctx context.Context, conn string) {
 	t.Helper()
 	rows := orm.From("notes").On(conn)
-	ok(rows.Insert(ctx,
+	ok(rows.Insert(
 		map[string]any{"id": "00000000-0000-4000-8000-000000000001", "title": "x", "views": 1},
 		map[string]any{"id": "00000000-0000-4000-8000-000000000002", "views": 2},
 		map[string]any{"id": "00000000-0000-4000-8000-000000000003", "title": "y", "views": 3},
@@ -212,26 +212,26 @@ func assertDocLogic(t *testing.T, ctx context.Context, conn string) {
 		"empty in matches nothing":   {Notes.Title.In(), 0},
 		"empty not in matches every": {Notes.Title.NotIn(), 4},
 	} {
-		eq(t, conn+" "+what, must(notes.Where(c.cond).Count(ctx)), c.want)
+		eq(t, conn+" "+what, must(notes.Where(c.cond).Count()), c.want)
 	}
-	eq(t, conn+" row and then or", must(rows.Where("views", orm.Gt, 1).Where("title", orm.Eq, "x").OrWhere("views", orm.Eq, 1).Count(ctx)), int64(2))
-	eq(t, conn+" row compare with nil matches nothing", must(rows.Where("title", orm.Eq, nil).Count(ctx)), int64(0))
-	eq(t, conn+" row not in skips missing", must(rows.WhereNotIn("title", "y").Count(ctx)), int64(2))
-	eq(t, conn+" row null", must(rows.WhereNull("title").Count(ctx)), int64(1))
-	eq(t, conn+" qualified where", must(rows.Where("notes.views", orm.Eq, 1).Count(ctx)), int64(1))
-	eq(t, conn+" qualified order and pluck", fmt.Sprint(must(rows.OrderBy("notes.views").Limit(1).Pluck(ctx, "notes.title"))), "[x]")
+	eq(t, conn+" row and then or", must(rows.Where("views", orm.Gt, 1).Where("title", orm.Eq, "x").OrWhere("views", orm.Eq, 1).Count()), int64(2))
+	eq(t, conn+" row compare with nil matches nothing", must(rows.Where("title", orm.Eq, nil).Count()), int64(0))
+	eq(t, conn+" row not in skips missing", must(rows.WhereNotIn("title", "y").Count()), int64(2))
+	eq(t, conn+" row null", must(rows.WhereNull("title").Count()), int64(1))
+	eq(t, conn+" qualified where", must(rows.Where("notes.views", orm.Eq, 1).Count()), int64(1))
+	eq(t, conn+" qualified order and pluck", fmt.Sprint(must(rows.OrderBy("notes.views").Limit(1).Pluck("notes.title"))), "[x]")
 	at := time.Date(2026, 3, 1, 12, 0, 0, 0, time.FixedZone("UTC+2", 2*3600))
-	eq(t, conn+" set an offset time", must(notes.Where(Notes.Views.Eq(1)).Update(ctx, Notes.Seen.Set(&at))), int64(1))
+	eq(t, conn+" set an offset time", must(notes.Where(Notes.Views.Eq(1)).Update(Notes.Seen.Set(&at))), int64(1))
 	utc := at.UTC()
-	eq(t, conn+" offset time equals its UTC form", must(notes.Where(Notes.Seen.Eq(&utc)).Count(ctx)), int64(1))
-	eq(t, conn+" offset time reads back as the same instant", must(notes.Where(Notes.Views.Eq(1)).First(ctx)).Seen.Equal(at), true)
+	eq(t, conn+" offset time equals its UTC form", must(notes.Where(Notes.Seen.Eq(&utc)).Count()), int64(1))
+	eq(t, conn+" offset time reads back as the same instant", must(notes.Where(Notes.Views.Eq(1)).First()).Seen.Equal(at), true)
 	const big = int64(1)<<53 + 1
-	eq(t, conn+" set a big integer", must(notes.Where(Notes.Views.Eq(2)).Update(ctx, Notes.Views.Set(big))), int64(1))
-	eq(t, conn+" big integers read back exactly", must(notes.Where(Notes.Views.Gt(big-1)).Pluck(ctx, Notes.Views)), []int64{big})
-	eq(t, conn+" big integers in row maps", fmt.Sprint(must(rows.Where("views", orm.Gt, big-1).Pluck(ctx, "views"))), fmt.Sprint([]int64{big}))
-	_, err := notes.Limit(0).Get(ctx)
+	eq(t, conn+" set a big integer", must(notes.Where(Notes.Views.Eq(2)).Update(Notes.Views.Set(big))), int64(1))
+	eq(t, conn+" big integers read back exactly", must(notes.Where(Notes.Views.Gt(big-1)).Pluck(Notes.Views)), []int64{big})
+	eq(t, conn+" big integers in row maps", fmt.Sprint(must(rows.Where("views", orm.Gt, big-1).Pluck("views"))), fmt.Sprint([]int64{big}))
+	_, err := notes.Limit(0).Get()
 	eq(t, conn+" a zero limit is refused", err != nil && strings.Contains(err.Error(), "Limit(0)"), true)
-	eq(t, conn+" logic cleanup", must(rows.Delete(ctx)), int64(4))
+	eq(t, conn+" logic cleanup", must(rows.Delete()), int64(4))
 }
 
 // assertDocKeys checks a document store keeps keys unique, as a primary
@@ -240,37 +240,37 @@ func assertDocKeys(t *testing.T, ctx context.Context, conn string, upsertByOther
 	t.Helper()
 	notes := Notes.Query().On(conn).WithoutGlobalScopes()
 	first := Note{ID: "00000000-0000-4000-8000-0000000000a1", Title: "first", Views: 1}
-	ok(notes.Create(ctx, &first))
+	ok(notes.Create(&first))
 	again := Note{ID: first.ID, Title: "second", Views: 2}
-	err := notes.Create(ctx, &again)
+	err := notes.Create(&again)
 	eq(t, conn+" a taken key is a unique violation", orm.IsUniqueViolation(err), true)
-	eq(t, conn+" a taken key keeps the first", must(notes.Find(ctx, first.ID)).Title, "first")
+	eq(t, conn+" a taken key keeps the first", must(notes.Find(first.ID)).Title, "first")
 	batch := []Note{{ID: "00000000-0000-4000-8000-0000000000b1", Title: "batch"}, {ID: first.ID, Title: "clash"}, {ID: "00000000-0000-4000-8000-0000000000b3", Title: "batch"}}
-	eq(t, conn+" a batch with a taken key fails", orm.IsUniqueViolation(notes.Insert(ctx, batch...)), true)
-	eq(t, conn+" a failed batch stores nothing", must(notes.Where(Notes.Title.Eq("batch")).Count(ctx)), int64(0))
-	found := must(notes.CreateOrFirst(ctx, orm.Attrs(Notes.ID.Set(first.ID)), Notes.Title.Set("third")))
+	eq(t, conn+" a batch with a taken key fails", orm.IsUniqueViolation(notes.Insert(batch...)), true)
+	eq(t, conn+" a failed batch stores nothing", must(notes.Where(Notes.Title.Eq("batch")).Count()), int64(0))
+	found := must(notes.CreateOrFirst(orm.Attrs(Notes.ID.Set(first.ID)), Notes.Title.Set("third")))
 	eq(t, conn+" createOrFirst finds the taken key", found.Title, "first")
 
 	fresh := Note{ID: "00000000-0000-4000-8000-0000000000a2", Title: "fresh", Views: 5}
 	changed := Note{ID: first.ID, Title: "upserted", Views: 99}
-	ok(notes.Upsert(ctx, []Note{changed, fresh}, []orm.AnyColumn[Note]{Notes.ID}, Notes.Title))
-	kept := must(notes.Find(ctx, first.ID))
+	ok(notes.Upsert([]Note{changed, fresh}, []orm.AnyColumn[Note]{Notes.ID}, Notes.Title))
+	kept := must(notes.Find(first.ID))
 	eq(t, conn+" upsert sets only the update columns", fmt.Sprintf("%s %d", kept.Title, kept.Views), "upserted 1")
-	eq(t, conn+" upsert inserts the new key", must(notes.Find(ctx, fresh.ID)).Views, int64(5))
+	eq(t, conn+" upsert inserts the new key", must(notes.Find(fresh.ID)).Views, int64(5))
 
 	rows := orm.From("notes").On(conn)
-	err = rows.Upsert(ctx, []map[string]any{{"id": "00000000-0000-4000-8000-0000000000a3", "title": "fresh", "views": 7}}, []string{"title"}, "views")
+	err = rows.Upsert([]map[string]any{{"id": "00000000-0000-4000-8000-0000000000a3", "title": "fresh", "views": 7}}, []string{"title"}, "views")
 	if upsertByOtherColumns {
 		ok(err)
-		eq(t, conn+" upsert by another column keeps the key", must(notes.Find(ctx, fresh.ID)).Views, int64(7))
-		eq(t, conn+" upsert by another column inserts nothing", must(notes.Count(ctx)), int64(2))
+		eq(t, conn+" upsert by another column keeps the key", must(notes.Find(fresh.ID)).Views, int64(7))
+		eq(t, conn+" upsert by another column inserts nothing", must(notes.Count()), int64(2))
 	} else {
 		eq(t, conn+" upsert by another column refused", orm.IsNotTranslatable(err), true)
 	}
-	row := must(rows.Find(ctx, first.ID))
+	row := must(rows.Find(first.ID))
 	_, hasID := row["_id"]
 	eq(t, conn+" rows carry no store id", hasID, false)
-	eq(t, conn+" keys cleanup", must(rows.Delete(ctx)), int64(2))
+	eq(t, conn+" keys cleanup", must(rows.Delete()), int64(2))
 }
 
 // assertDocModelQueries runs the model builder's implicit conditions (soft
@@ -280,28 +280,28 @@ func assertDocModelQueries(t *testing.T, ctx context.Context, conn string) {
 	t.Helper()
 	notes := Notes.Query().On(conn)
 	for _, n := range []Note{{Title: "a", Views: 1}, {Title: "b", Views: 2}, {Title: "c", Views: 3}, {Title: "draft", Views: 4}} {
-		ok(notes.Create(ctx, &n))
+		ok(notes.Create(&n))
 	}
-	eq(t, conn+" global scope", must(notes.Count(ctx)), int64(3))
-	eq(t, conn+" without global scope", must(notes.WithoutGlobalScope("published").Count(ctx)), int64(4))
-	eq(t, conn+" scoped exists", must(notes.Where(Notes.Views.Eq(4)).Exists(ctx)), false)
-	eq(t, conn+" soft delete", must(notes.Where(Notes.Title.Eq("a")).Delete(ctx)), int64(1))
-	eq(t, conn+" soft deleted hidden", must(notes.OrderBy(Notes.Views.Asc()).Pluck(ctx, Notes.Title)), []string{"b", "c"})
-	eq(t, conn+" with trashed", must(notes.WithTrashed().Count(ctx)), int64(3))
-	eq(t, conn+" only trashed", must(notes.OnlyTrashed().Pluck(ctx, Notes.Title)), []string{"a"})
-	eq(t, conn+" pluck map", must(notes.OrderBy(Notes.Views.Asc()).PluckMap(ctx, Notes.Title, Notes.Views)), map[string]int64{"b": 2, "c": 3})
-	eq(t, conn+" value", must(notes.Where(Notes.Title.Eq("c")).Value(ctx, Notes.Views)), int64(3))
-	_, err := notes.Pluck(ctx, orm.Upper(Notes.Title))
+	eq(t, conn+" global scope", must(notes.Count()), int64(3))
+	eq(t, conn+" without global scope", must(notes.WithoutGlobalScope("published").Count()), int64(4))
+	eq(t, conn+" scoped exists", must(notes.Where(Notes.Views.Eq(4)).Exists()), false)
+	eq(t, conn+" soft delete", must(notes.Where(Notes.Title.Eq("a")).Delete()), int64(1))
+	eq(t, conn+" soft deleted hidden", must(notes.OrderBy(Notes.Views.Asc()).Pluck(Notes.Title)), []string{"b", "c"})
+	eq(t, conn+" with trashed", must(notes.WithTrashed().Count()), int64(3))
+	eq(t, conn+" only trashed", must(notes.OnlyTrashed().Pluck(Notes.Title)), []string{"a"})
+	eq(t, conn+" pluck map", must(notes.OrderBy(Notes.Views.Asc()).PluckMap(Notes.Title, Notes.Views)), map[string]int64{"b": 2, "c": 3})
+	eq(t, conn+" value", must(notes.Where(Notes.Title.Eq("c")).Value(Notes.Views)), int64(3))
+	_, err := notes.Pluck(orm.Upper(Notes.Title))
 	eq(t, conn+" pluck of an expression refused", orm.IsNotTranslatable(err), true)
-	eq(t, conn+" restore", must(notes.OnlyTrashed().Restore(ctx)), int64(1))
-	eq(t, conn+" restored", must(notes.Count(ctx)), int64(3))
+	eq(t, conn+" restore", must(notes.OnlyTrashed().Restore()), int64(1))
+	eq(t, conn+" restored", must(notes.Count()), int64(3))
 
-	ids := must(notes.Pluck(ctx, Notes.ID))
-	eq(t, conn+" where key", must(notes.WhereKey(ids[0], ids[1]).Count(ctx)), int64(2))
-	eq(t, conn+" where no keys", must(notes.WhereKey().Count(ctx)), int64(0))
-	eq(t, conn+" where key not none", must(notes.WhereKeyNot().Count(ctx)), int64(3))
+	ids := must(notes.Pluck(Notes.ID))
+	eq(t, conn+" where key", must(notes.WhereKey(ids[0], ids[1]).Count()), int64(2))
+	eq(t, conn+" where no keys", must(notes.WhereKey().Count()), int64(0))
+	eq(t, conn+" where key not none", must(notes.WhereKeyNot().Count()), int64(3))
 	var walked []string
-	ok(notes.ChunkByID(ctx, 2, func(ns []Note) error {
+	ok(notes.ChunkByID(2, func(ns []Note) error {
 		for _, n := range ns {
 			walked = append(walked, n.ID)
 		}
@@ -310,17 +310,17 @@ func assertDocModelQueries(t *testing.T, ctx context.Context, conn string) {
 	sort.Strings(ids)
 	eq(t, conn+" chunkByID walks keys in order", walked, ids)
 	var lazy int
-	for _, err := range notes.Lazy(ctx, 2) {
+	for _, err := range notes.Lazy(2) {
 		ok(err)
 		lazy++
 	}
 	eq(t, conn+" lazy", lazy, 3)
-	eq(t, conn+" limited update", must(notes.OrderBy(Notes.Views.Asc()).Offset(2).Limit(1).Update(ctx, Notes.Title.Set("top"))), int64(1))
-	eq(t, conn+" limited update hit the top", must(notes.OrderBy(Notes.Views.Asc()).Pluck(ctx, Notes.Title)), []string{"a", "b", "top"})
-	eq(t, conn+" offset delete", must(notes.OrderBy(Notes.Views.Asc()).Offset(1).Limit(1).ForceDelete(ctx)), int64(1))
-	eq(t, conn+" offset delete hit the second", must(notes.OrderBy(Notes.Views.Asc()).Pluck(ctx, Notes.Title)), []string{"a", "top"})
-	eq(t, conn+" unconditional update", must(notes.WithoutGlobalScopes().Update(ctx, Notes.Views.Set(0))), int64(3))
-	eq(t, conn+" force delete", must(notes.WithoutGlobalScopes().WithTrashed().ForceDelete(ctx)), int64(3))
+	eq(t, conn+" limited update", must(notes.OrderBy(Notes.Views.Asc()).Offset(2).Limit(1).Update(Notes.Title.Set("top"))), int64(1))
+	eq(t, conn+" limited update hit the top", must(notes.OrderBy(Notes.Views.Asc()).Pluck(Notes.Title)), []string{"a", "b", "top"})
+	eq(t, conn+" offset delete", must(notes.OrderBy(Notes.Views.Asc()).Offset(1).Limit(1).ForceDelete()), int64(1))
+	eq(t, conn+" offset delete hit the second", must(notes.OrderBy(Notes.Views.Asc()).Pluck(Notes.Title)), []string{"a", "top"})
+	eq(t, conn+" unconditional update", must(notes.WithoutGlobalScopes().Update(Notes.Views.Set(0))), int64(3))
+	eq(t, conn+" force delete", must(notes.WithoutGlobalScopes().WithTrashed().ForceDelete()), int64(3))
 }
 
 // createWidgetTable creates widgets keyed by key, which adds the id column:
@@ -361,14 +361,14 @@ func assertBigNumbers(t *testing.T, ctx context.Context, conn string, unsigned b
 	defer func() { tCheck(t, schema.On(conn).DropIfExists(ctx, "big_numbers")) }()
 	const big = int64(1)<<53 + 1
 	rows := orm.From("big_numbers").On(conn)
-	ok(rows.Insert(ctx, map[string]any{"id": 1, "n": big}, map[string]any{"id": 2, "n": int64(2)}))
-	eq(t, conn+" big max", must(rows.Max[int64](ctx, "n")), big)
-	eq(t, conn+" big sum", must(rows.Sum[int64](ctx, "n")), big+2)
-	_, err := rows.Sum[int8](ctx, "n")
+	ok(rows.Insert(map[string]any{"id": 1, "n": big}, map[string]any{"id": 2, "n": int64(2)}))
+	eq(t, conn+" big max", must(rows.Max[int64]("n")), big)
+	eq(t, conn+" big sum", must(rows.Sum[int64]("n")), big+2)
+	_, err := rows.Sum[int8]("n")
 	eq(t, conn+" overflow is an error", err != nil && strings.Contains(err.Error(), "overflows"), true)
 	if unsigned {
-		must(rows.Where("id", orm.Eq, 1).Update(ctx, map[string]any{"u": uint64(math.MaxUint64 - 1)}))
-		eq(t, conn+" big unsigned", must(rows.Max[uint64](ctx, "u")), uint64(math.MaxUint64-1))
+		must(rows.Where("id", orm.Eq, 1).Update(map[string]any{"u": uint64(math.MaxUint64 - 1)}))
+		eq(t, conn+" big unsigned", must(rows.Max[uint64]("u")), uint64(math.MaxUint64-1))
 	}
 }
 
@@ -383,26 +383,26 @@ func assertTransactionModes(t *testing.T, ctx context.Context, conn string, tran
 	rows := orm.From("tx_rows").On(conn)
 	eq(t, conn+" supports transactions", must(orm.SupportsTransactions(ctx, conn)), transactional)
 	err := orm.TransactionOn(ctx, conn, func(ctx context.Context) error {
-		ok(rows.Insert(ctx, map[string]any{"id": 1}))
+		ok(rows.WithContext(ctx).Insert(map[string]any{"id": 1}))
 		return errors.New("roll back")
 	})
 	if !transactional {
 		eq(t, conn+" transaction refused", orm.IsNotTranslatable(err), true)
-		eq(t, conn+" refused transaction never ran", must(rows.Count(ctx)), int64(0))
+		eq(t, conn+" refused transaction never ran", must(rows.Count()), int64(0))
 		return
 	}
-	eq(t, conn+" rolled back", err != nil && must(rows.Count(ctx)) == 0, true)
+	eq(t, conn+" rolled back", err != nil && must(rows.Count()) == 0, true)
 	ok(orm.TransactionOn(ctx, conn, func(ctx context.Context) error {
-		ok(rows.Insert(ctx, map[string]any{"id": 1}))
-		return orm.TransactionOn(ctx, conn, func(ctx context.Context) error { return rows.Insert(ctx, map[string]any{"id": 2}) })
+		ok(rows.WithContext(ctx).Insert(map[string]any{"id": 1}))
+		return orm.TransactionOn(ctx, conn, func(ctx context.Context) error { return rows.WithContext(ctx).Insert(map[string]any{"id": 2}) })
 	}))
-	eq(t, conn+" nested commit", must(rows.Count(ctx)), int64(2))
+	eq(t, conn+" nested commit", must(rows.Count()), int64(2))
 	err = orm.TransactionOn(ctx, conn, func(ctx context.Context) error {
-		ok(rows.Insert(ctx, map[string]any{"id": 3}))
+		ok(rows.WithContext(ctx).Insert(map[string]any{"id": 3}))
 		_ = orm.TransactionOn(ctx, conn, func(context.Context) error { return errors.New("inner fails") })
 		return nil
 	})
-	eq(t, conn+" failed nested transaction rolls back the whole", errors.Is(err, orm.ErrNestedFailed) && must(rows.Count(ctx)) == 2, true)
+	eq(t, conn+" failed nested transaction rolls back the whole", errors.Is(err, orm.ErrNestedFailed) && must(rows.Count()) == 2, true)
 }
 
 // scratchWidgets creates a fresh widgets table holding names (ids 1.., karma
@@ -420,7 +420,7 @@ func scratchWidgets(t *testing.T, ctx context.Context, conn string, names ...str
 	t.Cleanup(func() { tCheck(t, schema.On(conn).DropIfExists(context.Background(), "widgets")) })
 	rows := orm.From("widgets").On(conn)
 	for i, name := range names {
-		ok(rows.Insert(ctx, map[string]any{"id": i + 1, "name": name, "kind": "plain", "karma": i + 1}))
+		ok(rows.Insert(map[string]any{"id": i + 1, "name": name, "kind": "plain", "karma": i + 1}))
 	}
 	return rows
 }
@@ -431,7 +431,7 @@ func assertLikes(t *testing.T, ctx context.Context, conn string) {
 	t.Helper()
 	scratchWidgets(t, ctx, conn, "100%", "1000", "a_b", "axb", "Alpha", "alpha", "line\nbreak", "star*")
 	widgets := Widgets.Query().On(conn)
-	count := func(c orm.Cond[Widget]) int64 { return must(widgets.Where(c).Count(ctx)) }
+	count := func(c orm.Cond[Widget]) int64 { return must(widgets.Where(c).Count()) }
 	eq(t, conn+" contains escapes %", count(Widgets.Name.Contains("100%")), int64(1))
 	eq(t, conn+" like wildcards", count(Widgets.Name.Like("a_b")), int64(2))
 	eq(t, conn+" like escapes", count(Widgets.Name.Like(`a\_b`)), int64(1))
@@ -441,8 +441,8 @@ func assertLikes(t *testing.T, ctx context.Context, conn string) {
 	eq(t, conn+" like crosses newlines", count(Widgets.Name.Contains("break")), int64(1))
 	eq(t, conn+" not like", count(Widgets.Name.NotLike("%a%")), int64(2))
 	eq(t, conn+" glob metacharacters are text", count(Widgets.Name.EndsWith("*")), int64(1))
-	eq(t, conn+" row like", must(orm.From("widgets").On(conn).Where("name", orm.Like, "1%").Count(ctx)), int64(2))
-	eq(t, conn+" row ilike", must(orm.From("widgets").On(conn).Where("name", orm.ILike, "ALPHA").Count(ctx)), int64(2))
+	eq(t, conn+" row like", must(orm.From("widgets").On(conn).Where("name", orm.Like, "1%").Count()), int64(2))
+	eq(t, conn+" row ilike", must(orm.From("widgets").On(conn).Where("name", orm.ILike, "ALPHA").Count()), int64(2))
 }
 
 // assertInjectionSafety feeds hostile names and values through every
@@ -454,18 +454,18 @@ func assertInjectionSafety(t *testing.T, ctx context.Context, conn string) {
 	rows := scratchWidgets(t, ctx, conn, "a", "b")
 	hostile := []string{`' OR '1'='1`, `x\' OR 1=1 -- `, `"; DROP TABLE widgets; --`, "` OR 1=1 -- ", `a') OR ('1'='1`}
 	for _, h := range hostile {
-		eq(t, conn+" hostile value bound: "+h, must(rows.Where("name", orm.Eq, h).Count(ctx)), int64(0))
-		eq(t, conn+" hostile typed value bound: "+h, must(Widgets.Query().On(conn).Where(Widgets.Name.Eq(h)).Count(ctx)), int64(0))
-		eq(t, conn+" hostile pattern bound: "+h, must(Widgets.Query().On(conn).Where(Widgets.Name.Contains(h)).Count(ctx)), int64(0))
-		matched, err := Widgets.Query().On(conn).Where(Widgets.Name.JSON[string](h).Eq("x")).Get(ctx)
+		eq(t, conn+" hostile value bound: "+h, must(rows.Where("name", orm.Eq, h).Count()), int64(0))
+		eq(t, conn+" hostile typed value bound: "+h, must(Widgets.Query().On(conn).Where(Widgets.Name.Eq(h)).Count()), int64(0))
+		eq(t, conn+" hostile pattern bound: "+h, must(Widgets.Query().On(conn).Where(Widgets.Name.Contains(h)).Count()), int64(0))
+		matched, err := Widgets.Query().On(conn).Where(Widgets.Name.JSON[string](h).Eq("x")).Get()
 		eq(t, conn+" hostile JSON path bound: "+h, err != nil || len(matched) == 0, true)
-		n, err := rows.Where(h, orm.Eq, "a").Count(ctx)
+		n, err := rows.Where(h, orm.Eq, "a").Count()
 		eq(t, conn+" hostile column quoted: "+h, err != nil || n == 0, true)
-		ordered, err := rows.OrderBy(h).Get(ctx)
+		ordered, err := rows.OrderBy(h).Get()
 		eq(t, conn+" hostile order quoted: "+h, err != nil || len(ordered) == 2, true)
-		_, err = orm.From(h).On(conn).Count(ctx)
+		_, err = orm.From(h).On(conn).Count()
 		eq(t, conn+" hostile table quoted: "+h, err != nil, true)
-		selected, err := rows.Select(h).Get(ctx)
+		selected, err := rows.Select(h).Get()
 		eq(t, conn+" hostile select quoted: "+h, err != nil || len(selected) == 2, true)
 		raw := must(Widgets.Query().On(conn).Where(Widgets.Name.Eq(h)).ToRawSQL())
 		inlined := must(orm.SelectOn(ctx, conn, raw))
@@ -477,7 +477,7 @@ func assertInjectionSafety(t *testing.T, ctx context.Context, conn string) {
 		_, refused := errors.AsType[*schema.UnsupportedError](err)
 		eq(t, conn+" hostile collation refused: "+h, refused, true)
 	}
-	eq(t, conn+" widgets survive", must(rows.Count(ctx)), int64(2))
+	eq(t, conn+" widgets survive", must(rows.Count()), int64(2))
 }
 
 // assertLimitedMutations checks Limit, Offset and OrderBy narrow updates
@@ -485,67 +485,67 @@ func assertInjectionSafety(t *testing.T, ctx context.Context, conn string) {
 func assertLimitedMutations(t *testing.T, ctx context.Context, conn string) {
 	t.Helper()
 	rows := scratchWidgets(t, ctx, conn, "a", "b", "c", "d", "e")
-	eq(t, conn+" offset without limit", len(must(rows.OrderBy("name").Offset(3).Get(ctx))), 2)
-	eq(t, conn+" qualified pluck", fmt.Sprint(must(rows.OrderBy("widgets.name").Pluck(ctx, "widgets.name"))), "[a b c d e]")
+	eq(t, conn+" offset without limit", len(must(rows.OrderBy("name").Offset(3).Get())), 2)
+	eq(t, conn+" qualified pluck", fmt.Sprint(must(rows.OrderBy("widgets.name").Pluck("widgets.name"))), "[a b c d e]")
 	widgetQuery := Widgets.Query().On(conn)
 	taken := orm.Attrs(Widgets.ID.Set(int64(1)))
-	eq(t, conn+" createOrFirst returns the taken key", must(widgetQuery.CreateOrFirst(ctx, taken, Widgets.Name.Set("dup"))).Name, "a")
+	eq(t, conn+" createOrFirst returns the taken key", must(widgetQuery.CreateOrFirst(taken, Widgets.Name.Set("dup"))).Name, "a")
 	if must(orm.SupportsTransactions(ctx, conn)) {
 		ok(orm.TransactionOn(ctx, conn, func(ctx context.Context) error {
-			found, err := widgetQuery.CreateOrFirst(ctx, taken, Widgets.Name.Set("dup"))
+			found, err := widgetQuery.WithContext(ctx).CreateOrFirst(taken, Widgets.Name.Set("dup"))
 			eq(t, conn+" createOrFirst in a transaction", found.Name, "a")
 			return err
 		}))
 	}
-	eq(t, conn+" createOrFirst inserted nothing", must(rows.Count(ctx)), int64(5))
+	eq(t, conn+" createOrFirst inserted nothing", must(rows.Count()), int64(5))
 	byName := func() string {
-		return fmt.Sprint(must(rows.OrderBy("name").Pluck(ctx, "kind")))
+		return fmt.Sprint(must(rows.OrderBy("name").Pluck("kind")))
 	}
 	widgets := Widgets.Query().On(conn)
-	eq(t, conn+" limited update", must(widgets.OrderBy(Widgets.Karma.Desc()).Limit(2).Update(ctx, Widgets.Kind.Set("top"))), int64(2))
+	eq(t, conn+" limited update", must(widgets.OrderBy(Widgets.Karma.Desc()).Limit(2).Update(Widgets.Kind.Set("top"))), int64(2))
 	eq(t, conn+" limited update hit the top two", byName(), "[plain plain plain top top]")
-	eq(t, conn+" offset update", must(widgets.OrderBy(Widgets.Karma.Asc()).Limit(1).Offset(1).Update(ctx, Widgets.Kind.Set("second"))), int64(1))
+	eq(t, conn+" offset update", must(widgets.OrderBy(Widgets.Karma.Asc()).Limit(1).Offset(1).Update(Widgets.Kind.Set("second"))), int64(1))
 	eq(t, conn+" offset update hit the second", byName(), "[plain second plain top top]")
-	eq(t, conn+" row limited update", must(rows.OrderBy("karma").Limit(1).Update(ctx, map[string]any{"kind": "first"})), int64(1))
+	eq(t, conn+" row limited update", must(rows.OrderBy("karma").Limit(1).Update(map[string]any{"kind": "first"})), int64(1))
 	eq(t, conn+" row limited update hit the first", byName(), "[first second plain top top]")
-	eq(t, conn+" an update that changes nothing still matched", must(rows.Where("id", orm.Eq, 3).Update(ctx, map[string]any{"kind": "plain"})), int64(1))
-	eq(t, conn+" limited delete", must(widgets.OrderBy(Widgets.Karma.Desc()).Limit(1).Delete(ctx)), int64(1))
-	eq(t, conn+" row limited delete", must(rows.OrderBy("karma").Limit(2).Delete(ctx)), int64(2))
-	eq(t, conn+" limited deletes left the middle", fmt.Sprint(must(rows.OrderBy("name").Pluck(ctx, "name"))), "[c d]")
-	eq(t, conn+" unconditional update", must(rows.Update(ctx, map[string]any{"kind": "all"})), int64(2))
-	eq(t, conn+" unconditional delete", must(widgets.Delete(ctx)), int64(2))
+	eq(t, conn+" an update that changes nothing still matched", must(rows.Where("id", orm.Eq, 3).Update(map[string]any{"kind": "plain"})), int64(1))
+	eq(t, conn+" limited delete", must(widgets.OrderBy(Widgets.Karma.Desc()).Limit(1).Delete()), int64(1))
+	eq(t, conn+" row limited delete", must(rows.OrderBy("karma").Limit(2).Delete()), int64(2))
+	eq(t, conn+" limited deletes left the middle", fmt.Sprint(must(rows.OrderBy("name").Pluck("name"))), "[c d]")
+	eq(t, conn+" unconditional update", must(rows.Update(map[string]any{"kind": "all"})), int64(2))
+	eq(t, conn+" unconditional delete", must(widgets.Delete()), int64(2))
 }
 
 func assertWidgets(t *testing.T, ctx context.Context, conn string) {
 	t.Helper()
-	ws := must(Widgets.Query().On(conn).Where(Widgets.Kind.Eq("gear")).OrderBy(Widgets.Karma.Desc()).Get(ctx))
+	ws := must(Widgets.Query().On(conn).Where(Widgets.Kind.Eq("gear")).OrderBy(Widgets.Karma.Desc()).Get())
 	eq(t, "where + order", len(ws), 2)
 	eq(t, "order desc", ws[0].Name, "gamma")
-	n := must(Widgets.Query().On(conn).Count(ctx))
+	n := must(Widgets.Query().On(conn).Count())
 	eq(t, "count", n, int64(3))
-	first := must(Widgets.Query().On(conn).Where(Widgets.Name.StartsWith("alp")).First(ctx))
+	first := must(Widgets.Query().On(conn).Where(Widgets.Name.StartsWith("alp")).First())
 	eq(t, "like", first.Name, "alpha")
 
 	w := first
 	w.Karma = 42
-	ok(Widgets.Query().On(conn).Save(ctx, &w))
-	eq(t, "save reloads", must(Widgets.Query().On(conn).Find(ctx, w.ID)).Karma, int64(42))
+	ok(Widgets.Query().On(conn).Save(&w))
+	eq(t, "save reloads", must(Widgets.Query().On(conn).Find(w.ID)).Karma, int64(42))
 
-	rows := must(orm.From("widgets").On(conn).Where("kind", "=", "gear").OrderBy("name").Get(ctx))
+	rows := must(orm.From("widgets").On(conn).Where("kind", "=", "gear").OrderBy("name").Get())
 	eq(t, "table query", fmt.Sprint(rows[0]["name"]), "alpha")
 
-	n = must(Widgets.Query().On(conn).Where(Widgets.ID.Eq(w.ID)).Delete(ctx))
+	n = must(Widgets.Query().On(conn).Where(Widgets.ID.Eq(w.ID)).Delete())
 	eq(t, "delete", n, int64(1))
-	eq(t, "gone", must(Widgets.Query().On(conn).Count(ctx)), int64(2))
+	eq(t, "gone", must(Widgets.Query().On(conn).Count()), int64(2))
 
 	beta := orm.FromTable(Widgets).On(conn).WhereCond(Widgets.Name.Eq("beta"))
-	eq(t, "table update", must(beta.UpdateCols(ctx, Widgets.Karma.SetExpr(orm.Plus(Widgets.Karma, 1)))), int64(1))
-	eq(t, "table update applied", must(beta.PluckCol(ctx, Widgets.Karma)), []int64{16})
-	eq(t, "table delete", must(beta.Delete(ctx)), int64(1))
-	eq(t, "table deleted", must(orm.From("widgets").On(conn).Count(ctx)), int64(1))
-	gamma := must(orm.FromTable(Widgets).On(conn).PluckCol(ctx, Widgets.ID))[0]
-	ok(orm.From("widgets").On(conn).Upsert(ctx, []map[string]any{{"id": gamma, "name": "gamma2", "kind": "gear", "karma": 1}}, []string{"id"}, "name"))
-	eq(t, "table upsert", must(orm.FromTable(Widgets).On(conn).PluckCol(ctx, Widgets.Name)), []string{"gamma2"})
+	eq(t, "table update", must(beta.UpdateCols(Widgets.Karma.SetExpr(orm.Plus(Widgets.Karma, 1)))), int64(1))
+	eq(t, "table update applied", must(beta.PluckCol(Widgets.Karma)), []int64{16})
+	eq(t, "table delete", must(beta.Delete()), int64(1))
+	eq(t, "table deleted", must(orm.From("widgets").On(conn).Count()), int64(1))
+	gamma := must(orm.FromTable(Widgets).On(conn).PluckCol(Widgets.ID))[0]
+	ok(orm.From("widgets").On(conn).Upsert([]map[string]any{{"id": gamma, "name": "gamma2", "kind": "gear", "karma": 1}}, []string{"id"}, "name"))
+	eq(t, "table upsert", must(orm.FromTable(Widgets).On(conn).PluckCol(Widgets.Name)), []string{"gamma2"})
 }
 
 func TestDuckDB(t *testing.T) {
@@ -566,7 +566,7 @@ func TestDuckDB(t *testing.T) {
 	createWidgetTable(ctx, t, "duck", func(t *schema.Blueprint) { t.ID() })
 	for i := range seedWidgets(t) {
 		w := seedWidgets(t)[i]
-		ok(Widgets.Query().On("duck").Create(ctx, &w))
+		ok(Widgets.Query().On("duck").Create(&w))
 	}
 	assertWidgets(t, ctx, "duck")
 	assertEvents(t, ctx, "duck")
@@ -583,11 +583,11 @@ func TestDuckDB(t *testing.T) {
 	// Flat files: DuckDB reads CSV straight from the builder.
 	csv := t.TempDir() + "/flat.csv"
 	ok(os.WriteFile(csv, []byte("id,name,kind,karma\n1,alpha,gear,5\n2,beta,spring,15\n3,gamma,gear,25\n"), 0o644))
-	rows := must(orm.FromRaw("read_csv(?)", csv).On("duck").Where("kind", "=", "gear").Count(ctx))
-	_, err = orm.FromRaw("read_csv(?)", csv).On("duck").Delete(ctx)
+	rows := must(orm.FromRaw("read_csv(?)", csv).On("duck").Where("kind", "=", "gear").Count())
+	_, err = orm.FromRaw("read_csv(?)", csv).On("duck").Delete()
 	eq(t, "raw table sources are read-only", err != nil && strings.Contains(err.Error(), "read-only"), true)
-	_, err = orm.From("x'); DROP TABLE widgets; --").On("duck").Count(ctx)
-	eq(t, "from quotes its name", err != nil && must(Widgets.Query().On("duck").Count(ctx)) > 0, true)
+	_, err = orm.From("x'); DROP TABLE widgets; --").On("duck").Count()
+	eq(t, "from quotes its name", err != nil && must(Widgets.Query().On("duck").Count()) > 0, true)
 	eq(t, "csv query", rows, int64(2))
 
 	// Vectors: FLOAT[3] columns and array_distance ordering.
@@ -601,11 +601,11 @@ func TestDuckDB(t *testing.T) {
 		{Title: "near", Vec: orm.NewVector[orm.D3](1, 0, 0)},
 		{Title: "far", Vec: orm.NewVector[orm.D3](10, 10, 10)},
 	} {
-		ok(Docs.Query().On("duck").Create(ctx, &d))
+		ok(Docs.Query().On("duck").Create(&d))
 	}
 	found := must(Docs.Query().On("duck").
 		OrderBy(orm.Nearest(Docs.Vec, orm.NewVector[orm.D3](1, 0, 0), orm.L2)).
-		Limit(1).Get(ctx))
+		Limit(1).Get())
 	eq(t, "nearest", found[0].Title, "near")
 
 	refusesExampleSchema(ctx, t, "duck", "duckdb", "create_users_table")
@@ -642,47 +642,47 @@ func TestClickHouse(t *testing.T) {
 	createWidgetTable(ctx, t, "ch", func(t *schema.Blueprint) { t.BigInteger("id").Primary() })
 	for i, w := range seedWidgets(t) {
 		w.ID = int64(i + 1) // ClickHouse does not generate integer keys
-		ok(Widgets.Query().On("ch").Create(ctx, &w))
+		ok(Widgets.Query().On("ch").Create(&w))
 	}
 	chWidgets := orm.From("widgets").On("ch")
-	eq(t, "union", len(must(chWidgets.Where("kind", orm.Eq, "gear").Union(chWidgets.Where("kind", orm.Eq, "gear")).Get(ctx))), 2)
-	ws := must(Widgets.Query().On("ch").Where(Widgets.Kind.Eq("gear")).OrderBy(Widgets.Karma.Desc()).Get(ctx))
+	eq(t, "union", len(must(chWidgets.Where("kind", orm.Eq, "gear").Union(chWidgets.Where("kind", orm.Eq, "gear")).Get())), 2)
+	ws := must(Widgets.Query().On("ch").Where(Widgets.Kind.Eq("gear")).OrderBy(Widgets.Karma.Desc()).Get())
 	eq(t, "where + order", len(ws), 2)
 	eq(t, "order desc", ws[0].Name, "gamma")
-	eq(t, "count", must(Widgets.Query().On("ch").Count(ctx)), int64(3))
-	eq(t, "update count", must(Widgets.Query().On("ch").Where(Widgets.ID.Eq(ws[0].ID)).Update(ctx, Widgets.Karma.Set(99))), int64(1))
-	eq(t, "updated", must(Widgets.Query().On("ch").Find(ctx, ws[0].ID)).Karma, int64(99))
-	eq(t, "delete count", must(Widgets.Query().On("ch").Where(Widgets.ID.Eq(ws[0].ID)).Delete(ctx)), int64(1))
-	eq(t, "gone", must(Widgets.Query().On("ch").Count(ctx)), int64(2))
+	eq(t, "count", must(Widgets.Query().On("ch").Count()), int64(3))
+	eq(t, "update count", must(Widgets.Query().On("ch").Where(Widgets.ID.Eq(ws[0].ID)).Update(Widgets.Karma.Set(99))), int64(1))
+	eq(t, "updated", must(Widgets.Query().On("ch").Find(ws[0].ID)).Karma, int64(99))
+	eq(t, "delete count", must(Widgets.Query().On("ch").Where(Widgets.ID.Eq(ws[0].ID)).Delete()), int64(1))
+	eq(t, "gone", must(Widgets.Query().On("ch").Count()), int64(2))
 
 	beta := orm.FromTable(Widgets).On("ch").WhereCond(Widgets.Name.Eq("beta"))
-	eq(t, "table update count", must(beta.UpdateCols(ctx, Widgets.Karma.SetExpr(orm.Plus(Widgets.Karma, 1)))), int64(1))
-	eq(t, "table update", must(beta.PluckCol(ctx, Widgets.Karma)), []int64{16})
-	eq(t, "table increment", must(beta.Increment(ctx, "karma", 4)), int64(1))
-	eq(t, "table incremented", must(beta.PluckCol(ctx, Widgets.Karma)), []int64{20})
-	eq(t, "table delete count", must(beta.Delete(ctx)), int64(1))
-	eq(t, "table delete", must(orm.From("widgets").On("ch").Count(ctx)), int64(1))
+	eq(t, "table update count", must(beta.UpdateCols(Widgets.Karma.SetExpr(orm.Plus(Widgets.Karma, 1)))), int64(1))
+	eq(t, "table update", must(beta.PluckCol(Widgets.Karma)), []int64{16})
+	eq(t, "table increment", must(beta.Increment("karma", 4)), int64(1))
+	eq(t, "table incremented", must(beta.PluckCol(Widgets.Karma)), []int64{20})
+	eq(t, "table delete count", must(beta.Delete()), int64(1))
+	eq(t, "table delete", must(orm.From("widgets").On("ch").Count()), int64(1))
 
 	widgets := orm.FromTable(Widgets).On("ch")
-	ok(widgets.InsertOrIgnore(ctx,
+	ok(widgets.InsertOrIgnore(
 		map[string]any{"id": 1, "name": "clash", "kind": "gear", "karma": 0},
 		map[string]any{"id": 10, "name": "ten", "kind": "gear", "karma": 0},
 		map[string]any{"id": 10, "name": "ten again", "kind": "gear", "karma": 0}))
-	eq(t, "insertOrIgnore", must(widgets.OrderByCol(Widgets.ID).PluckCol(ctx, Widgets.Name)), []string{"alpha", "ten"})
-	ok(widgets.Upsert(ctx, []map[string]any{
+	eq(t, "insertOrIgnore", must(widgets.OrderByCol(Widgets.ID).PluckCol(Widgets.Name)), []string{"alpha", "ten"})
+	ok(widgets.Upsert([]map[string]any{
 		{"id": 10, "name": "ten upserted", "kind": "spring", "karma": 5},
 		{"id": 11, "name": "eleven", "kind": "gear", "karma": 0},
 	}, []string{"id"}, "name"))
-	eq(t, "upsert", must(widgets.OrderByCol(Widgets.ID).PluckCol(ctx, Widgets.Name)), []string{"alpha", "ten upserted", "eleven"})
-	eq(t, "upsert leaves other columns", must(widgets.WhereCond(Widgets.ID.Eq(10)).PluckCol(ctx, Widgets.Kind)), []string{"gear"})
-	ws = must(Widgets.Query().On("ch").Where(Widgets.ID.Eq(11)).Get(ctx))
+	eq(t, "upsert", must(widgets.OrderByCol(Widgets.ID).PluckCol(Widgets.Name)), []string{"alpha", "ten upserted", "eleven"})
+	eq(t, "upsert leaves other columns", must(widgets.WhereCond(Widgets.ID.Eq(10)).PluckCol(Widgets.Kind)), []string{"gear"})
+	ws = must(Widgets.Query().On("ch").Where(Widgets.ID.Eq(11)).Get())
 	ws[0].Karma = 7
-	ok(Widgets.Query().On("ch").Upsert(ctx, ws, []orm.AnyColumn[Widget]{Widgets.ID}, Widgets.Karma))
-	eq(t, "model upsert", must(Widgets.Query().On("ch").Find(ctx, int64(11))).Karma, int64(7))
+	ok(Widgets.Query().On("ch").Upsert(ws, []orm.AnyColumn[Widget]{Widgets.ID}, Widgets.Karma))
+	eq(t, "model upsert", must(Widgets.Query().On("ch").Find(int64(11))).Karma, int64(7))
 
-	_, err = Widgets.Query().On("ch").InsertGetID(ctx, Widget{Name: "keyless"})
+	_, err = Widgets.Query().On("ch").InsertGetID(Widget{Name: "keyless"})
 	eq(t, "insertGetID needs generated keys", err != nil && strings.Contains(err.Error(), "does not generate integer keys"), true)
-	err = Widgets.Query().On("ch").Create(ctx, &Widget{Name: "keyless"})
+	err = Widgets.Query().On("ch").Create(&Widget{Name: "keyless"})
 	eq(t, "create needs a key", err != nil && strings.Contains(err.Error(), "does not generate integer keys"), true)
 	assertEvents(t, ctx, "ch")
 	assertJSON(t, ctx, "ch")
@@ -713,111 +713,111 @@ func TestMongo(t *testing.T) {
 		{Title: "far", Views: 2, Vec: orm.NewVector[orm.D3](10, 10, 10)},
 		{Title: "middle", Views: 3, Vec: orm.NewVector[orm.D3](5, 5, 5)},
 	} {
-		ok(Docs.Query().On("mongo").Create(ctx, &d))
+		ok(Docs.Query().On("mongo").Create(&d))
 	}
 
-	eq(t, "count", must(Docs.Query().On("mongo").Count(ctx)), int64(3))
-	docs := must(Docs.Query().On("mongo").Where(Docs.Views.Gt(1)).OrderBy(Docs.Views.Asc()).Get(ctx))
+	eq(t, "count", must(Docs.Query().On("mongo").Count()), int64(3))
+	docs := must(Docs.Query().On("mongo").Where(Docs.Views.Gt(1)).OrderBy(Docs.Views.Asc()).Get())
 	eq(t, "where + order", len(docs), 2)
 	eq(t, "order", docs[0].Title, "far")
 	eq(t, "vectors hydrate", docs[0].Vec.String(), "[10,10,10]")
 
-	one := must(Docs.Query().On("mongo").Where(Docs.Title.Eq("near")).First(ctx))
+	one := must(Docs.Query().On("mongo").Where(Docs.Title.Eq("near")).First())
 	eq(t, "first", one.Views, int64(1))
-	eq(t, "exists", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("nope")).DoesntExist(ctx)), true)
-	eq(t, "find", must(Docs.Query().On("mongo").Find(ctx, one.ID)).Title, "near")
-	eq(t, "in", must(Docs.Query().On("mongo").Where(Docs.Views.In(1, 2)).Count(ctx)), int64(2))
-	eq(t, "between", must(Docs.Query().On("mongo").Where(Docs.Views.Between(2, 3)).Count(ctx)), int64(2))
+	eq(t, "exists", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("nope")).DoesntExist()), true)
+	eq(t, "find", must(Docs.Query().On("mongo").Find(one.ID)).Title, "near")
+	eq(t, "in", must(Docs.Query().On("mongo").Where(Docs.Views.In(1, 2)).Count()), int64(2))
+	eq(t, "between", must(Docs.Query().On("mongo").Where(Docs.Views.Between(2, 3)).Count()), int64(2))
 	eq(t, "or", must(Docs.Query().On("mongo").Where(
-		orm.Or(Docs.Title.Eq("near"), Docs.Title.Eq("far"))).Count(ctx)), int64(2))
-	eq(t, "not", must(Docs.Query().On("mongo").WhereNot(Docs.Title.Eq("near")).Count(ctx)), int64(2))
+		orm.Or(Docs.Title.Eq("near"), Docs.Title.Eq("far"))).Count()), int64(2))
+	eq(t, "not", must(Docs.Query().On("mongo").WhereNot(Docs.Title.Eq("near")).Count()), int64(2))
 
 	one.Views = 10
-	ok(Docs.Query().On("mongo").Save(ctx, &one))
-	eq(t, "save", must(Docs.Query().On("mongo").Find(ctx, one.ID)).Views, int64(10))
-	n := must(Docs.Query().On("mongo").Where(Docs.Views.Eq(3)).Update(ctx, Docs.Title.Set("renamed")))
+	ok(Docs.Query().On("mongo").Save(&one))
+	eq(t, "save", must(Docs.Query().On("mongo").Find(one.ID)).Views, int64(10))
+	n := must(Docs.Query().On("mongo").Where(Docs.Views.Eq(3)).Update(Docs.Title.Set("renamed")))
 	eq(t, "update", n, int64(1))
-	eq(t, "update applied", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("renamed")).Count(ctx)), int64(1))
+	eq(t, "update applied", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("renamed")).Count()), int64(1))
 
 	// orm.From works on document stores too.
-	rows := must(orm.From("documents").On("mongo").Where("views", ">=", 2).OrderBy("views").Get(ctx))
+	rows := must(orm.From("documents").On("mongo").Where("views", ">=", 2).OrderBy("views").Get())
 	eq(t, "table query", len(rows), 3)
 	eq(t, "table query values", fmt.Sprint(rows[0]["views"]), "2")
-	eq(t, "table count", must(orm.From("documents").On("mongo").Where("title", "=", "renamed").Count(ctx)), int64(1))
+	eq(t, "table count", must(orm.From("documents").On("mongo").Where("title", "=", "renamed").Count()), int64(1))
 	eq(t, "table orWhere", must(orm.From("documents").On("mongo").
-		Where("views", ">=", 10).OrWhere("title", "=", "renamed").Count(ctx)), int64(2))
+		Where("views", ">=", 10).OrWhere("title", "=", "renamed").Count()), int64(2))
 	eq(t, "typed table where", must(orm.From("documents").On("mongo").
-		WhereCond(Docs.Views.Gt(1)).Count(ctx)), int64(3))
-	_, err = orm.From("documents").On("mongo").WhereCond(orm.Raw[Doc]("views > 1")).Count(ctx)
+		WhereCond(Docs.Views.Gt(1)).Count()), int64(3))
+	_, err = orm.From("documents").On("mongo").WhereCond(orm.Raw[Doc]("views > 1")).Count()
 	eq(t, "typed raw refused", orm.IsNotTranslatable(err), true)
-	eq(t, "table exists", must(orm.From("documents").On("mongo").WhereCond(Docs.Views.Gt(1)).Exists(ctx)), true)
-	eq(t, "table doesn't exist", must(orm.From("documents").On("mongo").WhereCond(Docs.Views.Gt(100)).Exists(ctx)), false)
-	_, err = orm.From("documents").On("mongo").InsertGetID(ctx, map[string]any{"title": "x"})
+	eq(t, "table exists", must(orm.From("documents").On("mongo").WhereCond(Docs.Views.Gt(1)).Exists()), true)
+	eq(t, "table doesn't exist", must(orm.From("documents").On("mongo").WhereCond(Docs.Views.Gt(100)).Exists()), false)
+	_, err = orm.From("documents").On("mongo").InsertGetID(map[string]any{"title": "x"})
 	eq(t, "table insertGetID refused", orm.IsNotTranslatable(err), true)
-	eq(t, "model pluck", must(Docs.Query().On("mongo").Where(Docs.Views.Between(2, 3)).OrderBy(Docs.Views.Asc()).Pluck(ctx, Docs.Title)), []string{"far", "renamed"})
-	_, err = Docs.Query().On("mongo").Explain(ctx)
+	eq(t, "model pluck", must(Docs.Query().On("mongo").Where(Docs.Views.Between(2, 3)).OrderBy(Docs.Views.Asc()).Pluck(Docs.Title)), []string{"far", "renamed"})
+	_, err = Docs.Query().On("mongo").Explain()
 	eq(t, "SQL-only method refused", orm.IsNotTranslatable(err), true)
-	ok(orm.From("documents").On("mongo").InsertCols(ctx, Docs.ID.Set("typed-row"), Docs.Title.Set("typed"), Docs.Views.Set(4)))
+	ok(orm.From("documents").On("mongo").InsertCols(Docs.ID.Set("typed-row"), Docs.Title.Set("typed"), Docs.Views.Set(4)))
 	typedRow := orm.From("documents").On("mongo").WhereCond(Docs.ID.Eq("typed-row"))
-	eq(t, "typed table update", must(typedRow.UpdateCols(ctx, Docs.Views.Set(6))), int64(1))
-	eq(t, "typed table pluck", must(typedRow.PluckCol(ctx, Docs.Views)), []int64{6})
-	_, err = typedRow.UpdateCols(ctx, Docs.Views.SetExpr(orm.Plus(Docs.Views, 1)))
+	eq(t, "typed table update", must(typedRow.UpdateCols(Docs.Views.Set(6))), int64(1))
+	eq(t, "typed table pluck", must(typedRow.PluckCol(Docs.Views)), []int64{6})
+	_, err = typedRow.UpdateCols(Docs.Views.SetExpr(orm.Plus(Docs.Views, 1)))
 	eq(t, "typed table expr refused", orm.IsNotTranslatable(err), true)
-	eq(t, "increment", must(typedRow.Increment(ctx, "views", 3)), int64(1))
-	eq(t, "decrement", must(typedRow.Decrement(ctx, "views", 2)), int64(1))
-	eq(t, "model increment", must(Docs.Query().On("mongo").Where(Docs.ID.Eq("typed-row")).Increment(ctx, Docs.Views, 10)), int64(1))
-	eq(t, "increments applied", must(typedRow.PluckCol(ctx, Docs.Views)), []int64{17})
-	_, err = typedRow.UpdateCols(ctx, Docs.Views.SetExpr(orm.Plus(Docs.Views, 1)))
+	eq(t, "increment", must(typedRow.Increment("views", 3)), int64(1))
+	eq(t, "decrement", must(typedRow.Decrement("views", 2)), int64(1))
+	eq(t, "model increment", must(Docs.Query().On("mongo").Where(Docs.ID.Eq("typed-row")).Increment(Docs.Views, 10)), int64(1))
+	eq(t, "increments applied", must(typedRow.PluckCol(Docs.Views)), []int64{17})
+	_, err = typedRow.UpdateCols(Docs.Views.SetExpr(orm.Plus(Docs.Views, 1)))
 	eq(t, "other expressions refused", orm.IsNotTranslatable(err), true)
 	assertDocAggregates(t, ctx, "mongo")
-	_, err = orm.From("documents").On("mongo").WhereCond(Users.Name.Eq("x")).Count(ctx)
+	_, err = orm.From("documents").On("mongo").WhereCond(Users.Name.Eq("x")).Count()
 	eq(t, "foreign column refused", orm.IsNotTranslatable(err), true)
-	ok(orm.From("documents").On("mongo").InsertOrIgnore(ctx,
+	ok(orm.From("documents").On("mongo").InsertOrIgnore(
 		map[string]any{"id": "typed-row", "title": "dropped", "views": 5},
 		map[string]any{"id": "fresh-row", "title": "fresh", "views": 1}))
-	eq(t, "row insertOrIgnore kept", must(typedRow.PluckCol(ctx, Docs.Title)), []string{"typed"})
+	eq(t, "row insertOrIgnore kept", must(typedRow.PluckCol(Docs.Title)), []string{"typed"})
 	freshRow := orm.From("documents").On("mongo").WhereCond(Docs.ID.Eq("fresh-row"))
-	eq(t, "row insertOrIgnore inserted", must(freshRow.PluckCol(ctx, Docs.Title)), []string{"fresh"})
-	ok(orm.From("documents").On("mongo").Upsert(ctx, []map[string]any{{"id": "fresh-row", "title": "upserted", "views": 1}}, []string{"id"}))
-	eq(t, "row upsert", must(freshRow.PluckCol(ctx, Docs.Title)), []string{"upserted"})
-	eq(t, "row cleanup", must(freshRow.Delete(ctx)), int64(1))
-	_, err = typedRow.SelectCols(Docs.Title.As("t")).Get(ctx)
+	eq(t, "row insertOrIgnore inserted", must(freshRow.PluckCol(Docs.Title)), []string{"fresh"})
+	ok(orm.From("documents").On("mongo").Upsert([]map[string]any{{"id": "fresh-row", "title": "upserted", "views": 1}}, []string{"id"}))
+	eq(t, "row upsert", must(freshRow.PluckCol(Docs.Title)), []string{"upserted"})
+	eq(t, "row cleanup", must(freshRow.Delete()), int64(1))
+	_, err = typedRow.SelectCols(Docs.Title.As("t")).Get()
 	eq(t, "alias refused", orm.IsNotTranslatable(err), true)
-	eq(t, "typed table delete", must(typedRow.Delete(ctx)), int64(1))
-	eq(t, "restore", must(Users.Query().On("mongo").Restore(ctx)), int64(0))
+	eq(t, "typed table delete", must(typedRow.Delete()), int64(1))
+	eq(t, "restore", must(Users.Query().On("mongo").Restore()), int64(0))
 
-	eq(t, "delete", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("renamed")).Delete(ctx)), int64(1))
-	eq(t, "deleted", must(Docs.Query().On("mongo").Count(ctx)), int64(2))
+	eq(t, "delete", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("renamed")).Delete()), int64(1))
+	eq(t, "deleted", must(Docs.Query().On("mongo").Count()), int64(2))
 
 	// Joins and raw conditions refuse with a precise error.
-	_, err = Users.Query().Join(Posts, Posts.UserID.EqCol(Users.ID)).On("mongo").Get(ctx)
+	_, err = Users.Query().Join(Posts, Posts.UserID.EqCol(Users.ID)).On("mongo").Get()
 	eq(t, "join refused", orm.IsNotTranslatable(err), true)
-	_, err = Docs.Query().On("mongo").Where(orm.Raw[Doc]("views > 1")).Get(ctx)
+	_, err = Docs.Query().On("mongo").Where(orm.Raw[Doc]("views > 1")).Get()
 	eq(t, "raw refused", orm.IsNotTranslatable(err), true)
 
 	// Upsert replaces documents matched on the key columns.
-	kept := must(Docs.Query().On("mongo").Where(Docs.Title.Eq("near")).First(ctx))
+	kept := must(Docs.Query().On("mongo").Where(Docs.Title.Eq("near")).First())
 	kept.Views = 77
 	fresh := Doc{Title: "brand new", Views: 1, Vec: orm.NewVector3(2, 0, 0)}
-	ok(Docs.Query().On("mongo").Upsert(ctx, []Doc{kept, fresh}, []orm.AnyColumn[Doc]{Docs.ID}))
-	eq(t, "upsert count", must(Docs.Query().On("mongo").Count(ctx)), int64(3))
-	eq(t, "upsert replaced", must(Docs.Query().On("mongo").Find(ctx, kept.ID)).Views, int64(77))
-	eq(t, "upsert inserted", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("brand new")).Count(ctx)), int64(1))
+	ok(Docs.Query().On("mongo").Upsert([]Doc{kept, fresh}, []orm.AnyColumn[Doc]{Docs.ID}))
+	eq(t, "upsert count", must(Docs.Query().On("mongo").Count()), int64(3))
+	eq(t, "upsert replaced", must(Docs.Query().On("mongo").Find(kept.ID)).Views, int64(77))
+	eq(t, "upsert inserted", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("brand new")).Count()), int64(1))
 
 	// InsertOrIgnore skips documents whose key is already taken.
-	dup := must(Docs.Query().On("mongo").Where(Docs.Title.Eq("near")).First(ctx))
+	dup := must(Docs.Query().On("mongo").Where(Docs.Title.Eq("near")).First())
 	dup.Views = 999 // must not land: the key exists
 	another := Doc{Title: "ignored newcomer", Views: 5, Vec: orm.NewVector3(0, 2, 0)}
-	ok(Docs.Query().On("mongo").InsertOrIgnore(ctx, dup, another))
-	eq(t, "orIgnore count", must(Docs.Query().On("mongo").Count(ctx)), int64(4))
-	eq(t, "orIgnore skipped existing", must(Docs.Query().On("mongo").Find(ctx, dup.ID)).Views, int64(77))
-	eq(t, "orIgnore inserted missing", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("ignored newcomer")).Count(ctx)), int64(1))
+	ok(Docs.Query().On("mongo").InsertOrIgnore(dup, another))
+	eq(t, "orIgnore count", must(Docs.Query().On("mongo").Count()), int64(4))
+	eq(t, "orIgnore skipped existing", must(Docs.Query().On("mongo").Find(dup.ID)).Views, int64(77))
+	eq(t, "orIgnore inserted missing", must(Docs.Query().On("mongo").Where(Docs.Title.Eq("ignored newcomer")).Count()), int64(1))
 	assertDocPagination(t, ctx, "mongo", 4)
 
-	eq(t, "like", must(Docs.Query().On("mongo").Where(Docs.Title.Contains("ea")).Count(ctx)), int64(1))
-	eq(t, "like escapes regex syntax", must(Docs.Query().On("mongo").Where(Docs.Title.Contains("(n")).Count(ctx)), int64(0))
-	eq(t, "like with wildcards", must(orm.From("documents").On("mongo").Where("title", orm.Like, "n_ar").Count(ctx)), int64(1))
-	eq(t, "like escapes wildcards", must(orm.From("documents").On("mongo").Where("title", orm.Like, `n\_ar`).Count(ctx)), int64(0))
+	eq(t, "like", must(Docs.Query().On("mongo").Where(Docs.Title.Contains("ea")).Count()), int64(1))
+	eq(t, "like escapes regex syntax", must(Docs.Query().On("mongo").Where(Docs.Title.Contains("(n")).Count()), int64(0))
+	eq(t, "like with wildcards", must(orm.From("documents").On("mongo").Where("title", orm.Like, "n_ar").Count()), int64(1))
+	eq(t, "like escapes wildcards", must(orm.From("documents").On("mongo").Where("title", orm.Like, `n\_ar`).Count()), int64(0))
 
 	assertValuerErrors(t, ctx, "mongo")
 	_, err = orm.SelectOn(ctx, "mongo", "SELECT 1")
@@ -827,10 +827,10 @@ func TestMongo(t *testing.T) {
 	_, refusal := errors.AsType[*schema.UnsupportedError](schema.On("mongo").CreateView(ctx, "v", "SELECT 1"))
 	eq(t, "views refused", refusal, true)
 	mongoDocs := orm.From("documents").On("mongo")
-	eq(t, "row find", must(mongoDocs.Find(ctx, one.ID))["title"], any("near"))
-	eq(t, "row sole", must(mongoDocs.Where("title", orm.Eq, "near").Sole(ctx))["id"], any(one.ID))
-	eq(t, "row value", must(mongoDocs.Where("title", orm.Eq, "near").Value(ctx, "views")) != nil, true)
-	eq(t, "row latest", len(must(mongoDocs.Latest("views").Get(ctx))) > 0, true)
+	eq(t, "row find", must(mongoDocs.Find(one.ID))["title"], any("near"))
+	eq(t, "row sole", must(mongoDocs.Where("title", orm.Eq, "near").Sole())["id"], any(one.ID))
+	eq(t, "row value", must(mongoDocs.Where("title", orm.Eq, "near").Value("views")) != nil, true)
+	eq(t, "row latest", len(must(mongoDocs.Latest("views").Get())) > 0, true)
 	for what, q := range map[string]orm.RowQuery{
 		"union":        mongoDocs.Union(mongoDocs),
 		"lock":         mongoDocs.LockForUpdate(),
@@ -839,22 +839,22 @@ func TestMongo(t *testing.T) {
 		"whereColumn":  mongoDocs.WhereColumn("views", orm.Gt, "title"),
 		"orWhereRaw":   mongoDocs.Where("views", orm.Gt, 1).OrWhereRaw("1 = 1"),
 	} {
-		_, err := q.Get(ctx)
+		_, err := q.Get()
 		eq(t, "row "+what+" refused", orm.IsNotTranslatable(err), true)
 	}
-	_, err = mongoDocs.Explain(ctx)
+	_, err = mongoDocs.Explain()
 	eq(t, "row explain refused", orm.IsNotTranslatable(err), true)
-	eq(t, "not equal", must(orm.From("documents").On("mongo").Where("title", "!=", "near").Count(ctx)), int64(3))
-	eq(t, "ilike", must(orm.From("documents").On("mongo").Where("title", orm.ILike, "NEAR").Count(ctx)), int64(1))
-	eq(t, "not ilike", must(orm.From("documents").On("mongo").Where("title", orm.NotILike, "%E%").Count(ctx)), int64(1))
-	eq(t, "unsigned decrement", must(orm.From("documents").On("mongo").Where("title", orm.Eq, "near").Decrement(ctx, "views", uint8(1))), int64(1))
+	eq(t, "not equal", must(orm.From("documents").On("mongo").Where("title", "!=", "near").Count()), int64(3))
+	eq(t, "ilike", must(orm.From("documents").On("mongo").Where("title", orm.ILike, "NEAR").Count()), int64(1))
+	eq(t, "not ilike", must(orm.From("documents").On("mongo").Where("title", orm.NotILike, "%E%").Count()), int64(1))
+	eq(t, "unsigned decrement", must(orm.From("documents").On("mongo").Where("title", orm.Eq, "near").Decrement("views", uint8(1))), int64(1))
 
 	assertDocMigrations(t, ctx, "mongo")
 	assertDocLogic(t, ctx, "mongo")
 	assertDocKeys(t, ctx, "mongo", true)
 	blobs := orm.From("blobs").On("mongo")
-	ok(blobs.Insert(ctx, map[string]any{"id": "b1", "blob": []byte{0, 255, 'a'}, "meta": map[string]any{"a": map[string]any{"b": 1}}, "tags": []any{"x", "y"}}))
-	blob := must(blobs.Find(ctx, "b1"))
+	ok(blobs.Insert(map[string]any{"id": "b1", "blob": []byte{0, 255, 'a'}, "meta": map[string]any{"a": map[string]any{"b": 1}}, "tags": []any{"x", "y"}}))
+	blob := must(blobs.Find("b1"))
 	eq(t, "binary round-trips", fmt.Sprintf("%x", blob["blob"]), "00ff61")
 	meta, isMap := blob["meta"].(map[string]any)
 	_, nestedMap := meta["a"].(map[string]any)
@@ -863,47 +863,47 @@ func TestMongo(t *testing.T) {
 	ok(schema.On("mongo").Drop(ctx, "blobs"))
 	stamped := orm.From("stamped").On("mongo")
 	at := time.Date(2026, 3, 1, 12, 0, 0, 0, time.FixedZone("UTC+2", 2*3600))
-	ok(stamped.Insert(ctx, map[string]any{"id": at.UTC(), "n": 1}))
-	ok(stamped.InsertOrIgnore(ctx, map[string]any{"id": at, "n": 2}))
-	eq(t, "insertOrIgnore matches a time key as an instant", must(stamped.Count(ctx)), int64(1))
+	ok(stamped.Insert(map[string]any{"id": at.UTC(), "n": 1}))
+	ok(stamped.InsertOrIgnore(map[string]any{"id": at, "n": 2}))
+	eq(t, "insertOrIgnore matches a time key as an instant", must(stamped.Count()), int64(1))
 	ok(schema.On("mongo").Drop(ctx, "stamped"))
 	hostileDocs := orm.From("documents").On("mongo")
-	total := must(hostileDocs.Count(ctx))
-	_, err = hostileDocs.Where("$where", orm.Eq, "sleep(100) || true").Count(ctx)
+	total := must(hostileDocs.Count())
+	_, err = hostileDocs.Where("$where", orm.Eq, "sleep(100) || true").Count()
 	eq(t, "mongo operator as a column refused", err != nil && strings.Contains(err.Error(), "operator"), true)
-	_, err = hostileDocs.Where("meta.$ne", orm.Eq, 1).Count(ctx)
+	_, err = hostileDocs.Where("meta.$ne", orm.Eq, 1).Count()
 	eq(t, "mongo operator inside a path refused", err != nil, true)
-	eq(t, "mongo operator as a value is data", must(hostileDocs.Where("title", orm.Eq, map[string]any{"$ne": ""}).Count(ctx)), int64(0))
-	_, err = hostileDocs.OrderBy("$natural").Get(ctx)
+	eq(t, "mongo operator as a value is data", must(hostileDocs.Where("title", orm.Eq, map[string]any{"$ne": ""}).Count()), int64(0))
+	_, err = hostileDocs.OrderBy("$natural").Get()
 	eq(t, "mongo operator as an order refused", err != nil, true)
-	err = hostileDocs.Insert(ctx, map[string]any{"id": "hostile", "$set": map[string]any{"title": "x"}})
+	err = hostileDocs.Insert(map[string]any{"id": "hostile", "$set": map[string]any{"title": "x"}})
 	eq(t, "mongo operator as a field refused", err != nil, true)
-	eq(t, "mongo documents untouched", must(hostileDocs.Count(ctx)), total)
+	eq(t, "mongo documents untouched", must(hostileDocs.Count()), total)
 	fine := time.Date(2026, 3, 1, 12, 0, 0, 123456789, time.UTC)
-	_, err = Notes.Query().On("mongo").Update(ctx, Notes.Seen.Set(&fine))
+	_, err = Notes.Query().On("mongo").Update(Notes.Seen.Set(&fine))
 	eq(t, "sub-millisecond times refused", err != nil && strings.Contains(err.Error(), "finer than the millisecond"), true)
 	assertDocModelQueries(t, ctx, "mongo")
 
 	txDocs := orm.From("tx_docs").On("mongo")
-	ok(txDocs.Insert(ctx, map[string]any{"id": "seed"}))
+	ok(txDocs.Insert(map[string]any{"id": "seed"}))
 	committed := false
 	ok(orm.TransactionOn(ctx, "mongo", func(ctx context.Context) error {
-		eq(t, "inTransaction on mongo", must(txDocs.Count(ctx)), int64(1))
+		eq(t, "inTransaction on mongo", must(txDocs.WithContext(ctx).Count()), int64(1))
 		orm.AfterCommitOn(ctx, "mongo", func(context.Context) { committed = true })
-		return txDocs.Insert(ctx, map[string]any{"id": "kept"})
+		return txDocs.WithContext(ctx).Insert(map[string]any{"id": "kept"})
 	}))
-	eq(t, "mongo transaction commits", fmt.Sprint(must(txDocs.Count(ctx)), committed), "2 true")
+	eq(t, "mongo transaction commits", fmt.Sprint(must(txDocs.Count()), committed), "2 true")
 	err = orm.TransactionOn(ctx, "mongo", func(ctx context.Context) error {
-		ok(txDocs.Insert(ctx, map[string]any{"id": "dropped"}))
+		ok(txDocs.WithContext(ctx).Insert(map[string]any{"id": "dropped"}))
 		return errors.New("roll back")
 	})
-	eq(t, "mongo transaction rolls back", err != nil && must(txDocs.Count(ctx)) == 2, true)
+	eq(t, "mongo transaction rolls back", err != nil && must(txDocs.Count()) == 2, true)
 	err = orm.TransactionOn(ctx, "mongo", func(ctx context.Context) error {
-		ok(txDocs.Insert(ctx, map[string]any{"id": "outer"}))
+		ok(txDocs.WithContext(ctx).Insert(map[string]any{"id": "outer"}))
 		_ = orm.TransactionOn(ctx, "mongo", func(ctx context.Context) error { return errors.New("inner fails") })
 		return nil
 	})
-	eq(t, "failed nested transaction rolls back the whole", errors.Is(err, orm.ErrNestedFailed) && must(txDocs.Count(ctx)) == 2, true)
+	eq(t, "failed nested transaction rolls back the whole", errors.Is(err, orm.ErrNestedFailed) && must(txDocs.Count()) == 2, true)
 	eq(t, "mongo supports transactions", must(orm.SupportsTransactions(ctx, "mongo")), true)
 	ok(schema.On("mongo").Drop(ctx, "tx_docs"))
 }
@@ -913,31 +913,31 @@ func TestMongo(t *testing.T) {
 func assertDocAggregates(t *testing.T, ctx context.Context, conn string) {
 	t.Helper()
 	docs := Docs.Query().On(conn)
-	views := must(docs.Pluck(ctx, Docs.Views))
+	views := must(docs.Pluck(Docs.Views))
 	var sum, high int64
 	low := views[0]
 	for _, v := range views {
 		sum += v
 		high, low = max(high, v), min(low, v)
 	}
-	eq(t, conn+" sum", must(docs.Sum(ctx, Docs.Views)), sum)
-	eq(t, conn+" avg", must(docs.Avg(ctx, Docs.Views)), float64(sum)/float64(len(views)))
-	eq(t, conn+" min", must(docs.Min(ctx, Docs.Views)), low)
-	eq(t, conn+" max", must(docs.Max(ctx, Docs.Views)), high)
-	eq(t, conn+" min of strings", must(docs.Where(Docs.Title.In("far", "near")).Min(ctx, Docs.Title)), "far")
-	eq(t, conn+" filtered sum ignores order and limit", must(docs.Where(Docs.Views.Gt(high-1)).OrderBy(Docs.Views.Desc()).Limit(1).Offset(5).Sum(ctx, Docs.Views)), high)
-	eq(t, conn+" sum of nothing", must(docs.Where(Docs.Views.Gt(high)).Sum(ctx, Docs.Views)), int64(0))
-	_, err := docs.Where(Docs.Views.Gt(high)).Avg(ctx, Docs.Views)
+	eq(t, conn+" sum", must(docs.Sum(Docs.Views)), sum)
+	eq(t, conn+" avg", must(docs.Avg(Docs.Views)), float64(sum)/float64(len(views)))
+	eq(t, conn+" min", must(docs.Min(Docs.Views)), low)
+	eq(t, conn+" max", must(docs.Max(Docs.Views)), high)
+	eq(t, conn+" min of strings", must(docs.Where(Docs.Title.In("far", "near")).Min(Docs.Title)), "far")
+	eq(t, conn+" filtered sum ignores order and limit", must(docs.Where(Docs.Views.Gt(high-1)).OrderBy(Docs.Views.Desc()).Limit(1).Offset(5).Sum(Docs.Views)), high)
+	eq(t, conn+" sum of nothing", must(docs.Where(Docs.Views.Gt(high)).Sum(Docs.Views)), int64(0))
+	_, err := docs.Where(Docs.Views.Gt(high)).Avg(Docs.Views)
 	eq(t, conn+" avg of nothing is not found", errors.Is(err, orm.ErrNotFound), true)
-	_, err = docs.Sum(ctx, orm.Plus(Docs.Views, 1))
+	_, err = docs.Sum(orm.Plus(Docs.Views, 1))
 	eq(t, conn+" aggregate of an expression refused", orm.IsNotTranslatable(err), true)
 
 	rows := orm.From("documents").On(conn)
-	eq(t, conn+" row sum", must(rows.Sum[int64](ctx, "views")), sum)
-	eq(t, conn+" row max col", must(rows.MaxCol(ctx, Docs.Views)), high)
-	eq(t, conn+" row avg filtered", must(rows.Where("views", orm.Lte, low).Avg(ctx, "views")), float64(low))
-	eq(t, conn+" row min col", must(rows.MinCol(ctx, Docs.Title)), "far")
-	_, err = rows.GroupBy("title").Sum[int64](ctx, "views")
+	eq(t, conn+" row sum", must(rows.Sum[int64]("views")), sum)
+	eq(t, conn+" row max col", must(rows.MaxCol(Docs.Views)), high)
+	eq(t, conn+" row avg filtered", must(rows.Where("views", orm.Lte, low).Avg("views")), float64(low))
+	eq(t, conn+" row min col", must(rows.MinCol(Docs.Title)), "far")
+	_, err = rows.GroupBy("title").Sum[int64]("views")
 	eq(t, conn+" grouped aggregate refused", orm.IsNotTranslatable(err), true)
 }
 
@@ -951,13 +951,13 @@ func (failingValuer) Value() (sqldriver.Value, error) { return nil, errors.New("
 func assertValuerErrors(t *testing.T, ctx context.Context, conn string) {
 	t.Helper()
 	docs := orm.From("documents").On(conn)
-	before := must(docs.Count(ctx))
-	err := docs.Insert(ctx, map[string]any{"id": "0198c0de-0000-7000-8000-000000000001", "title": failingValuer{}})
+	before := must(docs.Count())
+	err := docs.Insert(map[string]any{"id": "0198c0de-0000-7000-8000-000000000001", "title": failingValuer{}})
 	eq(t, conn+" insert refuses a failing value", err != nil && strings.Contains(err.Error(), "no key"), true)
-	eq(t, conn+" nothing stored", must(docs.Count(ctx)), before)
-	_, err = docs.Where("title", orm.Eq, "near").Update(ctx, map[string]any{"title": failingValuer{}})
+	eq(t, conn+" nothing stored", must(docs.Count()), before)
+	_, err = docs.Where("title", orm.Eq, "near").Update(map[string]any{"title": failingValuer{}})
 	eq(t, conn+" update refuses a failing value", err != nil && strings.Contains(err.Error(), "no key"), true)
-	_, err = docs.Where("title", orm.Eq, failingValuer{}).Count(ctx)
+	_, err = docs.Where("title", orm.Eq, failingValuer{}).Count()
 	eq(t, conn+" filter refuses a failing value", err != nil && strings.Contains(err.Error(), "no key"), true)
 }
 
@@ -968,29 +968,29 @@ func assertDocPagination(t *testing.T, ctx context.Context, conn string, total i
 	docs := orm.From("documents").On(conn)
 	seen := map[string]bool{}
 	for page := 1; page <= int(total); page++ {
-		p := must(docs.Paginate(ctx, 1, page))
+		p := must(docs.Paginate(1, page))
 		eq(t, "page meta", fmt.Sprint(p.Total, p.LastPage, p.From, p.To, p.HasMore),
 			fmt.Sprint(total, total, page, page, int64(page) < total))
 		seen[fmt.Sprint(p.Items[0]["id"])] = true
 	}
 	eq(t, "pages cover every document once", len(seen), int(total))
-	model := must(Docs.Query().On(conn).Paginate(ctx, 2, 1))
+	model := must(Docs.Query().On(conn).Paginate(2, 1))
 	eq(t, "model page", fmt.Sprint(len(model.Items), model.Total, model.LastPage), fmt.Sprint(2, total, (total+1)/2))
 	var chunked int
-	ok(docs.Chunk(ctx, 3, func(rows []map[string]any) error { chunked += len(rows); return nil }))
+	ok(docs.Chunk(3, func(rows []map[string]any) error { chunked += len(rows); return nil }))
 	eq(t, "chunk covers every document", chunked, int(total))
 	var byID int
-	ok(docs.ChunkByID(ctx, 2, func(rows []map[string]any) error { byID += len(rows); return nil }))
+	ok(docs.ChunkByID(2, func(rows []map[string]any) error { byID += len(rows); return nil }))
 	eq(t, "chunkByID covers every document", byID, int(total))
 	var streamed int
-	for _, err := range docs.Cursor(ctx) {
+	for _, err := range docs.Cursor() {
 		ok(err)
 		streamed++
 	}
 	eq(t, "cursor covers every document", streamed, int(total))
 	seen = map[string]bool{}
 	for cursor := ""; ; {
-		page := must(docs.CursorPaginate(ctx, 2, cursor))
+		page := must(docs.CursorPaginate(2, cursor))
 		for _, d := range page.Items {
 			seen[fmt.Sprint(d["id"])] = true
 		}
@@ -1020,76 +1020,76 @@ func TestQdrant(t *testing.T) {
 		{Title: "far", Views: 2, Vec: orm.NewVector[orm.D3](0, 1, 0)},
 		{Title: "middle", Views: 3, Vec: orm.NewVector[orm.D3](0.7, 0.7, 0)},
 	} {
-		ok(Docs.Query().On("qdrant").Create(ctx, &d))
+		ok(Docs.Query().On("qdrant").Create(&d))
 	}
 
-	eq(t, "count", must(Docs.Query().On("qdrant").Count(ctx)), int64(3))
-	eq(t, "filter", must(Docs.Query().On("qdrant").Where(Docs.Views.Gte(2)).Count(ctx)), int64(2))
-	eq(t, "in", must(Docs.Query().On("qdrant").Where(Docs.Views.In(1, 3)).Count(ctx)), int64(2))
-	eq(t, "range", must(Docs.Query().On("qdrant").Where(Docs.Views.Between(2, 3)).Count(ctx)), int64(2))
-	eq(t, "not", must(Docs.Query().On("qdrant").WhereNot(Docs.Title.Eq("near")).Count(ctx)), int64(2))
+	eq(t, "count", must(Docs.Query().On("qdrant").Count()), int64(3))
+	eq(t, "filter", must(Docs.Query().On("qdrant").Where(Docs.Views.Gte(2)).Count()), int64(2))
+	eq(t, "in", must(Docs.Query().On("qdrant").Where(Docs.Views.In(1, 3)).Count()), int64(2))
+	eq(t, "range", must(Docs.Query().On("qdrant").Where(Docs.Views.Between(2, 3)).Count()), int64(2))
+	eq(t, "not", must(Docs.Query().On("qdrant").WhereNot(Docs.Title.Eq("near")).Count()), int64(2))
 	eq(t, "or", must(Docs.Query().On("qdrant").Where(
-		orm.Or(Docs.Title.Eq("near"), Docs.Title.Eq("far"))).Count(ctx)), int64(2))
+		orm.Or(Docs.Title.Eq("near"), Docs.Title.Eq("far"))).Count()), int64(2))
 
 	// Nearest-neighbour search: same builder, vector order.
 	found := must(Docs.Query().On("qdrant").
 		OrderBy(orm.Nearest(Docs.Vec, orm.NewVector[orm.D3](1, 0, 0), orm.Cosine)).
-		Limit(2).Get(ctx))
+		Limit(2).Get())
 	eq(t, "knn count", len(found), 2)
 	eq(t, "nearest first", found[0].Title, "near")
 
-	n := must(Docs.Query().On("qdrant").Where(Docs.Views.Eq(3)).Update(ctx, Docs.Title.Set("renamed")))
+	n := must(Docs.Query().On("qdrant").Where(Docs.Views.Eq(3)).Update(Docs.Title.Set("renamed")))
 	eq(t, "update", n, int64(1))
-	eq(t, "updated", must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("renamed")).Count(ctx)), int64(1))
+	eq(t, "updated", must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("renamed")).Count()), int64(1))
 
-	rows := must(orm.From("documents").On("qdrant").Where("views", "=", 2).Get(ctx))
+	rows := must(orm.From("documents").On("qdrant").Where("views", "=", 2).Get())
 	eq(t, "table query", len(rows), 1)
-	_, err = orm.From("documents").On("qdrant").Where("views", "=", 2).Increment(ctx, "views", 1)
+	_, err = orm.From("documents").On("qdrant").Where("views", "=", 2).Increment("views", 1)
 	eq(t, "increment refused", orm.IsNotTranslatable(err), true)
 
 	// Upsert overwrites the matching point; the PUT is idempotent.
-	kept := must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("near")).First(ctx))
+	kept := must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("near")).First())
 	kept.Views = 77
 	fresh := Doc{Title: "brand new", Views: 9, Vec: orm.NewVector3(2, 0, 0)}
-	ok(Docs.Query().On("qdrant").Upsert(ctx, []Doc{kept, fresh}, []orm.AnyColumn[Doc]{Docs.ID}))
-	eq(t, "upsert count", must(Docs.Query().On("qdrant").Count(ctx)), int64(4))
-	eq(t, "upsert replaced", must(Docs.Query().On("qdrant").Find(ctx, kept.ID)).Views, int64(77))
+	ok(Docs.Query().On("qdrant").Upsert([]Doc{kept, fresh}, []orm.AnyColumn[Doc]{Docs.ID}))
+	eq(t, "upsert count", must(Docs.Query().On("qdrant").Count()), int64(4))
+	eq(t, "upsert replaced", must(Docs.Query().On("qdrant").Find(kept.ID)).Views, int64(77))
 
 	// InsertOrIgnore skips points whose key is already taken.
 	dup := kept
 	dup.Views = 999 // must not land: the key exists
 	another := Doc{Title: "ignored newcomer", Views: 5, Vec: orm.NewVector3(0, 2, 0)}
-	ok(Docs.Query().On("qdrant").InsertOrIgnore(ctx, dup, another))
-	eq(t, "orIgnore count", must(Docs.Query().On("qdrant").Count(ctx)), int64(5))
+	ok(Docs.Query().On("qdrant").InsertOrIgnore(dup, another))
+	eq(t, "orIgnore count", must(Docs.Query().On("qdrant").Count()), int64(5))
 	assertDocPagination(t, ctx, "qdrant", 5)
 
 	assertValuerErrors(t, ctx, "qdrant")
-	must(orm.From("documents").On("qdrant").Where("title", orm.Eq, "brand new").Update(ctx, map[string]any{"title": nil}))
-	cleared := must(orm.From("documents").On("qdrant").WhereNull("title").Count(ctx))
+	must(orm.From("documents").On("qdrant").Where("title", orm.Eq, "brand new").Update(map[string]any{"title": nil}))
+	cleared := must(orm.From("documents").On("qdrant").WhereNull("title").Count())
 	eq(t, "nil clears a payload field", cleared, int64(1))
 
-	_, err = orm.From("missing_collection").On("qdrant").Get(ctx)
+	_, err = orm.From("missing_collection").On("qdrant").Get()
 	eq(t, "http errors name the request", err != nil && strings.Contains(err.Error(), "/collections/missing_collection/points/scroll: 404"), true)
 	ok(store.DropCollection(ctx, "keyed"))
 	ok(store.EnsureCollection(ctx, "keyed", 3, orm.L2))
 	keyed := orm.From("keyed").On("qdrant").WithKey("code")
-	ok(keyed.Insert(ctx, map[string]any{"code": 7, "name": "seven", "vec": orm.NewVector3(1, 2, 3)}))
-	point := must(keyed.Where("code", orm.Eq, 7).First(ctx))
+	ok(keyed.Insert(map[string]any{"code": 7, "name": "seven", "vec": orm.NewVector3(1, 2, 3)}))
+	point := must(keyed.Where("code", orm.Eq, 7).First())
 	eq(t, "withKey names the point id column", fmt.Sprintf("%v %v", point["code"], point["name"]), "7 seven")
-	eq(t, "withKey finds by point id", must(keyed.Find(ctx, 7))["name"], any("seven"))
+	eq(t, "withKey finds by point id", must(keyed.Find(7))["name"], any("seven"))
 	ok(store.DropCollection(ctx, "keyed"))
 
-	before := must(Docs.Query().On("qdrant").Count(ctx))
+	before := must(Docs.Query().On("qdrant").Count())
 	extra := make([]Doc, 300)
 	ids := make([]string, len(extra))
 	for i := range extra {
 		extra[i] = Doc{ID: fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1), Title: "extra", Vec: orm.NewVector3(1, float64(i), 0)}
 		ids[i] = extra[i].ID
 	}
-	ok(Docs.Query().On("qdrant").Insert(ctx, extra...))
-	all := must(Docs.Query().On("qdrant").OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(1, 0, 0), orm.Cosine)).Get(ctx))
+	ok(Docs.Query().On("qdrant").Insert(extra...))
+	all := must(Docs.Query().On("qdrant").OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(1, 0, 0), orm.Cosine)).Get())
 	eq(t, "unlimited nearest returns every match", int64(len(all)), before+300)
-	eq(t, "extra cleanup", must(Docs.Query().On("qdrant").WhereKey(ids...).Delete(ctx)), int64(300))
+	eq(t, "extra cleanup", must(Docs.Query().On("qdrant").WhereKey(ids...).Delete()), int64(300))
 
 	ok(store.DropCollection(ctx, "many"))
 	rank := orm.DocIndex{Name: "many_rank", Fields: []orm.DocField{{Name: "rank", Kind: orm.KindInt}}}
@@ -1102,32 +1102,32 @@ func TestQdrant(t *testing.T) {
 			points[i]["rank"] = 300 - i
 		}
 	}
-	ok(many.Insert(ctx, points...))
-	ordered := must(many.OrderBy("rank").Get(ctx))
+	ok(many.Insert(points...))
+	ordered := must(many.OrderBy("rank").Get())
 	eq(t, "order by keeps points missing the field", len(ordered), 300)
 	eq(t, "points missing the field sort last", fmt.Sprint(ordered[0]["rank"], " ", ordered[199]["rank"], " ", ordered[200]["rank"]), "1 299 <nil>")
-	eq(t, "limited order by reaches points missing the field", len(must(many.OrderBy("rank").Offset(190).Limit(20).Get(ctx))), 20)
+	eq(t, "limited order by reaches points missing the field", len(must(many.OrderBy("rank").Offset(190).Limit(20).Get())), 20)
 	ok(store.DropCollection(ctx, "many"))
 
-	moved := must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("far")).First(ctx))
+	moved := must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("far")).First())
 	moved.Vec = orm.NewVector3(0, 0, 1)
-	ok(Docs.Query().On("qdrant").Save(ctx, &moved))
-	nearest := must(Docs.Query().On("qdrant").OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(0, 0, 1), orm.Cosine)).Limit(1).Get(ctx))
+	ok(Docs.Query().On("qdrant").Save(&moved))
+	nearest := must(Docs.Query().On("qdrant").OrderBy(orm.Nearest(Docs.Vec, orm.NewVector3(0, 0, 1), orm.Cosine)).Limit(1).Get())
 	eq(t, "saving a vector moves the point", nearest[0].ID, moved.ID)
 	assertDocMigrations(t, ctx, "qdrant")
 	ok(store.DropCollection(ctx, "notes"))
 	ok(store.CreateCollection(ctx, orm.Collection{Name: "notes", Indexes: []orm.DocIndex{{Name: "notes_views", Fields: []orm.DocField{{Name: "views", Kind: orm.KindInt}}}}}))
 	assertDocLogic(t, ctx, "qdrant")
 	assertDocKeys(t, ctx, "qdrant", false)
-	err = orm.From("documents").On("qdrant").Insert(ctx, map[string]any{"id": "00000000-0000-4000-8000-0000000000b1", "blob": []byte{1}})
+	err = orm.From("documents").On("qdrant").Insert(map[string]any{"id": "00000000-0000-4000-8000-0000000000b1", "blob": []byte{1}})
 	eq(t, "binary payloads refused", orm.IsNotTranslatable(err), true)
-	err = orm.From("documents").On("qdrant").Insert(ctx, map[string]any{"id": "01J9ZV8Q5XQ1Y2Z3A4B5C6D7E8", "title": "ulid"})
+	err = orm.From("documents").On("qdrant").Insert(map[string]any{"id": "01J9ZV8Q5XQ1Y2Z3A4B5C6D7E8", "title": "ulid"})
 	eq(t, "non-UUID point ids refused", err != nil && strings.Contains(err.Error(), "not a Qdrant point id"), true)
 	assertDocModelQueries(t, ctx, "qdrant")
 	ok(store.DropCollection(ctx, "notes"))
-	_, err = Docs.Query().On("qdrant").Sum(ctx, Docs.Views)
+	_, err = Docs.Query().On("qdrant").Sum(Docs.Views)
 	eq(t, "qdrant model aggregate refused", orm.IsNotTranslatable(err), true)
-	_, err = orm.From("documents").On("qdrant").Max[int64](ctx, "views")
+	_, err = orm.From("documents").On("qdrant").Max[int64]("views")
 	eq(t, "qdrant row aggregate refused", orm.IsNotTranslatable(err), true)
 	err = orm.TransactionOn(ctx, "qdrant", func(context.Context) error { return nil })
 	eq(t, "qdrant transactions refused", orm.IsNotTranslatable(err), true)
@@ -1135,10 +1135,10 @@ func TestQdrant(t *testing.T) {
 	ok(store.EnsureCollection(ctx, "documents", 3, orm.Cosine))
 	err = store.EnsureCollection(ctx, "documents", 4, orm.Cosine)
 	eq(t, "ensureCollection mismatch", err != nil && strings.Contains(err.Error(), "exists with 3-dimension Cosine"), true)
-	eq(t, "orIgnore skipped existing", must(Docs.Query().On("qdrant").Find(ctx, dup.ID)).Views, int64(77))
+	eq(t, "orIgnore skipped existing", must(Docs.Query().On("qdrant").Find(dup.ID)).Views, int64(77))
 
-	eq(t, "delete", must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("renamed")).Delete(ctx)), int64(1))
-	eq(t, "deleted", must(Docs.Query().On("qdrant").Count(ctx)), int64(4))
+	eq(t, "delete", must(Docs.Query().On("qdrant").Where(Docs.Title.Eq("renamed")).Delete()), int64(1))
+	eq(t, "deleted", must(Docs.Query().On("qdrant").Count()), int64(4))
 }
 
 func TestPgVector(t *testing.T) {
@@ -1159,20 +1159,20 @@ func TestPgVector(t *testing.T) {
 		t.Vector("vec", 3)
 		t.HnswIndex("vec", orm.Cosine)
 	}))
-	likeHnsw := must(orm.From("pg_indexes").Where("tablename", "=", "documents").Where("indexdef", "LIKE", "%hnsw%vector_cosine_ops%").Count(ctx))
+	likeHnsw := must(orm.From("pg_indexes").Where("tablename", "=", "documents").Where("indexdef", "LIKE", "%hnsw%vector_cosine_ops%").Count())
 	eq(t, "hnsw index", likeHnsw, int64(1))
 
 	for _, d := range []Doc{
 		{Title: "near", Vec: orm.NewVector[orm.D3](1, 0, 0)},
 		{Title: "far", Vec: orm.NewVector[orm.D3](10, 10, 10)},
 	} {
-		ok(Docs.Query().Create(ctx, &d))
+		ok(Docs.Query().Create(&d))
 	}
 	found := must(Docs.Query().
 		OrderBy(orm.Nearest(Docs.Vec, orm.NewVector[orm.D3](1, 0, 0), orm.L2)).
-		Limit(1).Get(ctx))
+		Limit(1).Get())
 	eq(t, "knn", found[0].Title, "near")
-	eq(t, "vectors round-trip", must(Docs.Query().Where(Docs.Title.Eq("far")).First(ctx)).Vec.String(), "[10,10,10]")
+	eq(t, "vectors round-trip", must(Docs.Query().Where(Docs.Title.Eq("far")).First()).Vec.String(), "[10,10,10]")
 }
 
 func tCheck(t *testing.T, err error) {
