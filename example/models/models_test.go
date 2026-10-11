@@ -252,6 +252,8 @@ func TestWhereClauses(t *testing.T) {
 	posts := func(q PostQuery) []string { return titles(must(q.OrderBy(Posts.ID.Asc()).Get())) }
 	eq(t, "whereYear", len(posts(Posts.Where(orm.Year(Posts.CreatedAt).Eq(2026)))), 6)
 	eq(t, "whereDate", posts(Posts.Where(orm.Date(Posts.CreatedAt).Eq("2026-01-10"))), []string{"Generics in Go 1.27"})
+	eq(t, "a time equals the stored time", posts(Posts.Where(Posts.CreatedAt.Eq(time.Date(2026, 1, 10, 8, 0, 0, 0, time.UTC)))), []string{"Generics in Go 1.27"})
+	eq(t, "a time orders against stored times", posts(Posts.Where(Posts.CreatedAt.Lt(time.Date(2026, 1, 10, 8, 0, 1, 0, time.UTC)), Posts.CreatedAt.Gt(time.Date(2026, 1, 10, 7, 59, 59, 0, time.UTC)))), []string{"Generics in Go 1.27"})
 	eq(t, "whereMonth", posts(Posts.Where(orm.Month(Posts.CreatedAt).Eq(3))), []string{"Iterators"})
 	eq(t, "json path", get(Users.Where(Users.Settings.JSON[string]("theme").Eq("dark"))), []string{"Alice"})
 	eq(t, "jsonContains", get(Users.Where(Users.Settings.JSON[string]("labels").JSONContains("admin"))), []string{"Alice"})

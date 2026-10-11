@@ -57,6 +57,11 @@ other `*sql.DB`, register it with `orm.AddConnection(name, db, orm.Postgres)`.
 > `time.Time` values are stored in the format SQLite's date functions
 > understand.
 
+SQLite has no time type and compares times as text, so storm binds every
+time on SQLite as UTC `YYYY-MM-DD HH:MM:SS[.fraction]`, the form SQLite's
+date functions (and Laravel) use: rows written by plain SQL, by Laravel or
+by storm compare and order correctly against each other.
+
 `orm.Open` also turns off SQLite's double-quoted string quirk (`_dqs=0` for
 `modernc.org/sqlite`), under which a misspelled `"column"` silently reads
 as the string `'column'`, and refuses a SQLite connection that still has it

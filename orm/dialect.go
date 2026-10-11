@@ -1,12 +1,14 @@
 package orm
 
 import (
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Dialect is everything that differs between database engines. Pick one per
@@ -152,6 +154,35 @@ func (sqliteDialect) JSONLength(b *SQL, e AnyExpr)           { fn(b, "json_array
 
 func (sqliteDialect) OnConflict(b *SQL, ignore bool, uniqueBy, update []string) {
 	onConflict(b, ignore, uniqueBy, update)
+}
+
+// sqliteTime is how SQLite stores a time: UTC text in the form its date
+// functions read and write, the fraction kept when there is one. SQLite
+// compares times as text, so every bound time takes this one form; the
+// driver's own form (with an offset, or Go's time.String) would compare
+// wrongly against rows written in SQLite's.
+const sqliteTime = "2006-01-02 15:04:05.999999999"
+
+// renderArg binds a time, or a value whose driver value is a time, as
+// sqliteTime text.
+func (sqliteDialect) renderArg(b *SQL, v any) bool {
+	if valuer, ok := v.(driver.Valuer); ok {
+		dv, err := valuer.Value()
+		if err != nil {
+			b.fail(fmt.Errorf("orm: reading the value of a %T argument: %w", v, err))
+			return true
+		}
+		if _, isTime := dv.(time.Time); !isTime {
+			return false
+		}
+		v = dv
+	}
+	t, ok := v.(time.Time)
+	if !ok {
+		return false
+	}
+	b.bind(t.UTC().Format(sqliteTime))
+	return true
 }
 
 func (sqliteDialect) DatePart(b *SQL, part string, e AnyExpr) {
