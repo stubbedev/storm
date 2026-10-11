@@ -819,8 +819,7 @@ func (t keysetTerm) write(b *SQL) {
 		b.Dialect.OrderNulls(b, t.e, t.desc, t.nulls)
 		return
 	}
-	t.e.build(b)
-	b.Write(map[bool]string{false: " ASC", true: " DESC"}[t.desc])
+	orderPlain(b, t.e, t.desc)
 }
 
 // reversed is t read backwards: the other direction, NULLs at the other end.

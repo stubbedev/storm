@@ -284,7 +284,8 @@ engine: MySQL and MariaDB average the column as a `DOUBLE`, since their
 A plain order puts NULLs where the engine does — first ascending on
 SQLite, MySQL and MariaDB, last on Postgres, DuckDB and ClickHouse — which
 is what their indexes are built for. `Users.CountryID.Asc().NullsLast()`
-sorts them last on every engine; on MongoDB, which sorts NULLs and missing
+sorts them last on every engine, as a plain order where that is the
+engine's own placement; on MongoDB, which sorts NULLs and missing
 fields first ascending, such an order runs as an aggregation that sorts on
 a computed "is null" field first. Offset pagination and chunking end the
 order with the primary key, so ties never skip or repeat rows, and cursor

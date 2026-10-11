@@ -19,6 +19,10 @@ func (duckdbDialect) noSavepoints() {}
 
 func (duckdbDialect) lateralJoins() bool { return true }
 
+func (duckdbDialect) OrderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls) {
+	orderNulls(b, e, desc, nulls)
+}
+
 // renderArg writes a uint64 above the int64 range as a UBIGINT literal:
 // database/sql cannot bind it, and the text comes from the number itself.
 func (duckdbDialect) renderArg(b *SQL, v any) bool {
@@ -167,6 +171,10 @@ func (clickhouseDialect) AutoKeys() bool { return false }
 func (clickhouseDialect) Lock(LockMode, LockWait) string { return "" }
 
 func (clickhouseDialect) Random() string { return "rand()" }
+
+func (clickhouseDialect) OrderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls) {
+	orderNulls(b, e, desc, nulls)
+}
 
 // Like on ClickHouse, whose LIKE is case-sensitive, ILIKE caseless, and
 // backslash the fixed escape.

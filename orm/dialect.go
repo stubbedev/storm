@@ -153,6 +153,10 @@ func (sqliteDialect) Avg(b *SQL, e AnyExpr)  { fn(b, AggregateAvg.String(), e) }
 func (sqliteDialect) Limit(b *SQL, l, o int) { limit(b, l, o, "-1") }
 
 func (sqliteDialect) OrderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls) {
+	if nullsSmallest(desc, nulls) {
+		orderPlain(b, e, desc)
+		return
+	}
 	orderNulls(b, e, desc, nulls)
 }
 func (sqliteDialect) JSONLength(b *SQL, e AnyExpr) { fn(b, "json_array_length", e) }
@@ -359,6 +363,10 @@ func (postgresDialect) Avg(b *SQL, e AnyExpr)    { fn(b, AggregateAvg.String(), 
 func (postgresDialect) Limit(b *SQL, l, o int)   { limit(b, l, o, "") }
 
 func (postgresDialect) OrderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls) {
+	if !nullsSmallest(desc, nulls) {
+		orderPlain(b, e, desc)
+		return
+	}
 	orderNulls(b, e, desc, nulls)
 }
 
@@ -503,6 +511,10 @@ func (mysqlDialect) identifierLimit() (int, bool) { return 64, true }
 // sorting on "e IS NULL" first puts the NULLs after every value, or
 // before it in descending order.
 func (mysqlDialect) OrderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls) {
+	if nullsSmallest(desc, nulls) {
+		orderPlain(b, e, desc)
+		return
+	}
 	e.build(b)
 	b.Write(map[bool]string{false: " IS NULL, ", true: " IS NULL DESC, "}[nulls == NullsFirst])
 	e.build(b)
@@ -695,6 +707,13 @@ func onConflict(b *SQL, ignore bool, uniqueBy, update []string) {
 
 // limit writes LIMIT/OFFSET; unbounded is the LIMIT required before a bare
 // OFFSET ("" if the dialect allows OFFSET alone).
+func nullsSmallest(desc bool, nulls Nulls) bool { return (nulls == NullsFirst) != desc }
+
+func orderPlain(b *SQL, e AnyExpr, desc bool) {
+	e.build(b)
+	b.Write(map[bool]string{false: " ASC", true: " DESC"}[desc])
+}
+
 func orderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls) {
 	e.build(b)
 	b.Write(map[bool]string{false: " ASC", true: " DESC"}[desc], map[bool]string{false: " NULLS LAST", true: " NULLS FIRST"}[nulls == NullsFirst])
