@@ -84,8 +84,14 @@ func TestSQLiteVectors(t *testing.T) {
 		t.JSON("tags")
 		t.JSON("meta")
 		t.DateTime("at")
-		t.Vector("vec", 3)
+		t.Vector("vec", 3).Nullable()
 	}))
+	ok(Events.Create(&Event{ID: 9, At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}))
+	eq(t, "sqlite stores an unset vector as NULL", must(Events.Query().Where(Events.Vec.IsNull()).Pluck(Events.ID)), []int64{9})
+	unset := must(Events.Find(9))
+	eq(t, "sqlite reads an unset vector back unset", unset.Vec.Floats() == nil, true)
+	ok(Events.Save(&unset))
+	eq(t, "sqlite destroys the unset row", must(Events.Destroy(9)), 1)
 	for i, v := range []orm.Vector[orm.D3]{orm.NewVector3(0, 5, 0), orm.NewVector3(1, 0, 0), orm.NewVector3(3, 4, 0)} {
 		ok(Events.Create(&Event{ID: int64(i + 1), At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Vec: v}))
 	}

@@ -33,19 +33,29 @@ func (j *JSON[V]) Scan(src any) error {
 		j.V = zero
 		return nil
 	case string:
-		return json.Unmarshal([]byte(s), &j.V)
+		return j.decode([]byte(s))
 	case []byte:
-		return json.Unmarshal(s, &j.V)
+		return j.decode(s)
 	}
 	b, err := json.Marshal(src)
 	if err != nil {
 		return fmt.Errorf("orm: cannot scan %T into JSON: %w", src, err)
 	}
-	return json.Unmarshal(b, &j.V)
+	return j.decode(b)
+}
+
+// decode replaces V with the decoded value rather than merging into it.
+func (j *JSON[V]) decode(b []byte) error {
+	var v V
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	j.V = v
+	return nil
 }
 
 func (j JSON[V]) MarshalJSON() ([]byte, error)  { return json.Marshal(j.V) }
-func (j *JSON[V]) UnmarshalJSON(b []byte) error { return json.Unmarshal(b, &j.V) }
+func (j *JSON[V]) UnmarshalJSON(b []byte) error { return j.decode(b) }
 
 var encryptionKey atomic.Pointer[[]byte]
 
@@ -148,11 +158,20 @@ func (e *Encrypted[V]) Scan(src any) error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(b, &e.V)
+	return e.UnmarshalJSON(b)
 }
 
-func (e Encrypted[V]) MarshalJSON() ([]byte, error)  { return json.Marshal(e.V) }
-func (e *Encrypted[V]) UnmarshalJSON(b []byte) error { return json.Unmarshal(b, &e.V) }
+func (e Encrypted[V]) MarshalJSON() ([]byte, error) { return json.Marshal(e.V) }
+
+// UnmarshalJSON replaces V with the decoded value rather than merging.
+func (e *Encrypted[V]) UnmarshalJSON(b []byte) error {
+	var v V
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	e.V = v
+	return nil
+}
 
 // Hashed is a bcrypt password hash — Eloquent's 'hashed' cast. It only
 // ever holds a hash: HashPassword makes one from a plain password, and

@@ -138,6 +138,11 @@ func (v *Vector[N]) set(comps []float64) error {
 	if want := dimOf[N](); len(comps) != want {
 		return fmt.Errorf("orm: a %d-dimension vector cannot hold %d components", want, len(comps))
 	}
+	for i, c := range comps {
+		if math.IsNaN(c) || math.IsInf(c, 0) {
+			return fmt.Errorf("orm: vector component %d is %v; components must be finite", i, c)
+		}
+	}
 	v.comps = comps
 	return nil
 }
@@ -157,8 +162,13 @@ func (v Vector[N]) String() string {
 }
 
 // Value stores the vector in the text form pgvector accepts; DuckDB casts
-// the same form to FLOAT[N].
-func (v Vector[N]) Value() (driver.Value, error) { return v.String(), nil }
+// the same form to FLOAT[N]. The zero Vector is NULL.
+func (v Vector[N]) Value() (driver.Value, error) {
+	if v.comps == nil {
+		return nil, nil
+	}
+	return v.String(), nil
+}
 
 // Scan reads the text form back (pgvector returns it in queries).
 func (v *Vector[N]) Scan(src any) error {
@@ -235,12 +245,19 @@ func toFloat(v any) (float64, error) {
 	return 0, fmt.Errorf("not a number: %T", v)
 }
 
+// parse reads the text form: exactly one bracketed, comma-separated list.
 func (v *Vector[N]) parse(s string) error {
-	if strings.TrimSpace(s) == "" {
+	t := strings.TrimSpace(s)
+	if t == "" {
 		*v = Vector[N]{}
 		return nil
 	}
-	fs := strings.Split(strings.Trim(s, "[] "), ",")
+	inner, opened := strings.CutPrefix(t, "[")
+	inner, closed := strings.CutSuffix(inner, "]")
+	if !opened || !closed || strings.ContainsAny(inner, "[]") {
+		return fmt.Errorf("orm: scanning vector %q: not one bracketed list of numbers", s)
+	}
+	fs := strings.Split(inner, ",")
 	comps := make([]float64, len(fs))
 	for i, f := range fs {
 		x, err := strconv.ParseFloat(strings.TrimSpace(f), 64)

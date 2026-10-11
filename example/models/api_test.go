@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -297,7 +298,14 @@ func TestScanners(t *testing.T) {
 	eq(t, "vector of non-numbers", v.Scan("[a,b,c]") != nil, true)
 	eq(t, "vector with a non-number element", v.Scan([]any{1, true, 3}) != nil, true)
 	eq(t, "vector from an unsupported type", v.Scan(42) != nil, true)
-	_, err := orm.VectorOf[orm.D3]([]float64{1, 2})
+	for _, bad := range []string{"]1,2,3[", "[[1,2,3]]", "1,2,3", "[1,2,3", "1,2,3]", "[1,2,3]]", "[NaN,1,2]", "[1,+Inf,2]"} {
+		eq(t, "vector refuses "+bad, v.Scan(bad) != nil, true)
+	}
+	eq(t, "vector refuses a NaN component", v.Scan([]float64{1, math.NaN(), 3}) != nil, true)
+	_, err := orm.VectorOf[orm.D3]([]float64{1, math.Inf(-1), 3})
+	eq(t, "vectorOf refuses an infinite component", err != nil, true)
+	eq(t, "the zero vector is NULL", must(orm.Vector[orm.D3]{}.Value()), nil)
+	_, err = orm.VectorOf[orm.D3]([]float64{1, 2})
 	eq(t, "vectorOf checks the dimension", err != nil, true)
 	eq(t, "newVector panics on the wrong dimension", panics(func() { orm.NewVector[orm.D4](1, 2, 3) }), true)
 	ok(json.Unmarshal([]byte("null"), &v))
@@ -306,6 +314,8 @@ func TestScanners(t *testing.T) {
 	var j orm.JSON[map[string]int]
 	ok(j.Scan(map[string]any{"a": 1}))
 	eq(t, "json from a decoded value", j.V["a"], 1)
+	ok(j.Scan([]byte(`{"b":2}`)))
+	eq(t, "json scan replaces rather than merges", j.V, map[string]int{"b": 2})
 	ok(j.Scan(nil))
 	eq(t, "json from null", j.V == nil, true)
 	eq(t, "json from an unencodable value", j.Scan(make(chan int)) != nil, true)
@@ -328,6 +338,10 @@ func TestScanners(t *testing.T) {
 	eq(t, "encrypted from non-base64", e.Scan("not base64!") != nil, true)
 	eq(t, "encrypted from too little", e.Scan("AAAA") != nil, true)
 	eq(t, "encrypted from an unsupported type", e.Scan(42) != nil, true)
+	sealedMap := must(orm.Encrypted[map[string]int]{V: map[string]int{"b": 2}}.Value()).(string)
+	stale := orm.Encrypted[map[string]int]{V: map[string]int{"a": 1}}
+	ok(stale.Scan(sealedMap))
+	eq(t, "encrypted scan replaces rather than merges", stale.V, map[string]int{"b": 2})
 
 	password := must(orm.HashPassword("hunter2"))
 	eq(t, "a new hash matches", password.Matches("hunter2"), true)

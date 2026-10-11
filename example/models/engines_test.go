@@ -595,9 +595,10 @@ func TestDuckDB(t *testing.T) {
 		t.UUID("id")
 		t.String("title")
 		t.BigInteger("views").Default(0)
-		t.Vector("vec", 3)
+		t.Vector("vec", 3).Nullable()
 	}))
 	assertUUIDKeys(t, "duck")
+	assertUnsetVector(t, "duck")
 	for _, d := range []Doc{
 		{Title: "near", Vec: orm.NewVector[orm.D3](1, 0, 0)},
 		{Title: "far", Vec: orm.NewVector[orm.D3](10, 10, 10)},
@@ -1166,10 +1167,11 @@ func TestPgVector(t *testing.T) {
 		t.UUID("id")
 		t.String("title")
 		t.BigInteger("views").Default(0)
-		t.Vector("vec", 3)
+		t.Vector("vec", 3).Nullable()
 		t.HnswIndex("vec", orm.Cosine)
 	}))
 	assertUUIDKeys(t, orm.DefaultConnection)
+	assertUnsetVector(t, orm.DefaultConnection)
 	likeHnsw := must(orm.From("pg_indexes").Where("tablename", "=", "documents").Where("indexdef", "LIKE", "%hnsw%vector_cosine_ops%").Count())
 	eq(t, "hnsw index", likeHnsw, int64(1))
 
@@ -1195,6 +1197,20 @@ func assertUUIDKeys(t *testing.T, conn string) {
 	back := must(Docs.Query().On(conn).Find(d.ID))
 	eq(t, conn+" the uuid key reads back as written", back.ID, d.ID)
 	eq(t, conn+" a row reads the uuid as text", must(orm.From("documents").On(conn).Where("id", orm.Eq, d.ID).Value("id")), any(d.ID))
+	back.Views = 1
+	ok(Docs.Query().On(conn).Save(&back))
+	ok(Docs.Query().On(conn).DeleteModel(&back))
+}
+
+// assertUnsetVector stores a document without a vector as NULL, reads it
+// back unset and saves it again.
+func assertUnsetVector(t *testing.T, conn string) {
+	t.Helper()
+	d := Doc{Title: "unset"}
+	ok(Docs.Query().On(conn).Create(&d))
+	back := must(Docs.Query().On(conn).Find(d.ID))
+	eq(t, conn+" an unset vector reads back unset", back.Vec.Floats() == nil, true)
+	eq(t, conn+" an unset vector is NULL", must(Docs.Query().On(conn).Where(Docs.Vec.IsNull()).Count()), int64(1))
 	back.Views = 1
 	ok(Docs.Query().On(conn).Save(&back))
 	ok(Docs.Query().On(conn).DeleteModel(&back))
