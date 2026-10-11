@@ -11,10 +11,10 @@ func init() {
 	schema.RegisterSeeder(schema.Seeder{
 		Name: "Countries",
 		Run: func(ctx context.Context) error {
-			return orm.From("countries").WithContext(ctx).Insert(
-				map[string]any{"id": 1, "name": "Denmark"},
-				map[string]any{"id": 2, "name": "Norway"},
-			)
+			return orm.From("countries").WithContext(ctx).Upsert([]map[string]any{
+				{"id": 1, "name": "Denmark"},
+				{"id": 2, "name": "Norway"},
+			}, []string{"id"})
 		},
 	})
 }

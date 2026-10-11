@@ -15,6 +15,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"log"
 	"os"
 
@@ -29,13 +30,31 @@ import (
 
 func main() {
 	driver := cmp.Or(os.Getenv("DB_DRIVER"), "sqlite")
-	if _, err := orm.Open(orm.DefaultConnection, driver, cmp.Or(os.Getenv("DB_DSN"), "file:example.db?_time_format=sqlite")); err != nil {
-		log.Fatal(err)
-	}
-	if _, err := orm.Open("audit", driver, cmp.Or(os.Getenv("DB_AUDIT_DSN"), "file:example_audit.db?_time_format=sqlite")); err != nil {
-		log.Fatal(err)
+	for _, c := range []struct{ name, env, sqlite string }{
+		{orm.DefaultConnection, "DB_DSN", "file:example.db?_time_format=sqlite"},
+		{"audit", "DB_AUDIT_DSN", "file:example_audit.db?_time_format=sqlite"},
+	} {
+		dsn, err := dataSource(driver, c.env, c.sqlite)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if _, err := orm.Open(c.name, driver, dsn); err != nil {
+			log.Fatal(err)
+		}
 	}
 	if err := schema.Run(context.Background(), schema.NewMigrator(), os.Args[1:], os.Stdout); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// dataSource reads a DSN from env; only SQLite has a default, since a
+// SQLite file name means nothing to another driver.
+func dataSource(driver, env, sqlite string) (string, error) {
+	switch {
+	case os.Getenv(env) != "":
+		return os.Getenv(env), nil
+	case driver == "sqlite":
+		return sqlite, nil
+	}
+	return "", fmt.Errorf("migrate: DB_DRIVER is %q, so %s must be set", driver, env)
 }
