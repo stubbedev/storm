@@ -91,7 +91,10 @@ func (q Query[M, K]) OrWhereNot(conds ...Cond[M]) Query[M, K] { return q.OrWhere
 // WhereOf adds conditions on a joined model: after
 // Join(Posts.Table, ...), WhereOf(Posts.Published.Eq(true)).
 func (q Query[M, K]) WhereOf[O any](conds ...Cond[O]) Query[M, K] {
-	return q.Where(Cond[M]{f: And(conds...).f})
+	for _, c := range conds {
+		q = q.Where(Cond[M]{f: c.f})
+	}
+	return q
 }
 
 // WhereKey filters by primary key.
