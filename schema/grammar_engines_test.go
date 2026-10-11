@@ -233,14 +233,23 @@ func TestPostgresGrammar(t *testing.T) {
 		`ALTER TABLE "users" ALTER COLUMN "id" TYPE bigint USING "id"::bigint`,
 		`ALTER TABLE "users" ALTER COLUMN "id" SET NOT NULL`,
 		`ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "users_role_check"`,
+		`ALTER TABLE "users" ALTER COLUMN "role" DROP DEFAULT`,
 		`ALTER TABLE "users" ALTER COLUMN "role" TYPE varchar(255) USING "role"::varchar(255)`,
 		`ALTER TABLE "users" ALTER COLUMN "role" SET NOT NULL`,
 		`ALTER TABLE "users" ALTER COLUMN "role" SET DEFAULT 'user'`,
 		`ALTER TABLE "users" ADD CONSTRAINT "users_role_check" CHECK ("role" IN ('user', 'admin', 'owner'))`,
+		`ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "users_status_check"`,
+		`ALTER TABLE "users" ALTER COLUMN "status" DROP DEFAULT`,
 		`ALTER TABLE "users" ALTER COLUMN "status" TYPE varchar(255) USING "status"::varchar(255)`,
 		`ALTER TABLE "users" ALTER COLUMN "status" SET NOT NULL`,
-		`ALTER TABLE "users" ALTER COLUMN "status" DROP DEFAULT`,
 	})
+
+	stmts = mustAlter(t, postgresG, "users", func(t *Blueprint) { t.RenameColumn("role", "kind") })
+	want(t, "a renamed column takes its enum check along", stmts[1],
+		`DO $storm$ BEGIN IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = '"users"'::regclass AND conname = 'users_role_check' AND contype = 'c') THEN `+
+			`ALTER TABLE "users" RENAME CONSTRAINT "users_role_check" TO "users_kind_check"; END IF; END $storm$`)
+	stmts = mustAlter(t, postgresG, "a$storm$b", func(t *Blueprint) { t.RenameColumn("role", "kind") })
+	want(t, "the dollar tag never occurs in the body", strings.HasPrefix(stmts[1], "DO $storm0$ ") && strings.Count(stmts[1], "$storm0$") == 2, true)
 
 	stmts = mustCreate(t, postgresG, "orders", func(t *Blueprint) {
 		t.ID().From(1000)

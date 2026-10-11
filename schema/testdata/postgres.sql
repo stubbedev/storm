@@ -5,13 +5,16 @@ CREATE INDEX "flights_airline_departs" ON "flights" USING btree ("airline_id", "
 COMMENT ON COLUMN "flights"."name" IS 'flight name'
 ALTER TABLE "flights" DROP CONSTRAINT "flights_airline_id_foreign"
 ALTER TABLE "flights" ADD COLUMN "gate" varchar(10) NULL
+ALTER TABLE "flights" DROP CONSTRAINT IF EXISTS "flights_name_check"
+ALTER TABLE "flights" ALTER COLUMN "name" DROP DEFAULT
 ALTER TABLE "flights" ALTER COLUMN "name" TYPE varchar(200) USING "name"::varchar(200)
 ALTER TABLE "flights" ALTER COLUMN "name" SET NOT NULL
-ALTER TABLE "flights" ALTER COLUMN "name" DROP DEFAULT
+ALTER TABLE "flights" DROP CONSTRAINT IF EXISTS "flights_airline_id_check"
+ALTER TABLE "flights" ALTER COLUMN "airline_id" DROP DEFAULT
 ALTER TABLE "flights" ALTER COLUMN "airline_id" TYPE bigint USING "airline_id"::bigint
 ALTER TABLE "flights" ALTER COLUMN "airline_id" DROP NOT NULL
-ALTER TABLE "flights" ALTER COLUMN "airline_id" DROP DEFAULT
 ALTER TABLE "flights" RENAME COLUMN "notes" TO "remarks"
+DO $storm$ BEGIN IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = '"flights"'::regclass AND conname = 'flights_notes_check' AND contype = 'c') THEN ALTER TABLE "flights" RENAME CONSTRAINT "flights_notes_check" TO "flights_remarks_check"; END IF; END $storm$
 ALTER TABLE "flights" DROP COLUMN "ref"
 ALTER INDEX "flights_code_unique" RENAME TO "flights_code_uq"
 ALTER TABLE "flights" ADD CONSTRAINT "flights_airline_id_foreign" FOREIGN KEY ("airline_id") REFERENCES "carriers" ("id") ON DELETE SET NULL

@@ -413,6 +413,18 @@ func isTime(t string) bool {
 
 func checkName(table, column string) string { return table + "_" + column + "_check" }
 
+// postgresIfCheck runs stmt only when table has the CHECK constraint
+// name. The dollar-quote tag is chosen so that it never occurs in the body.
+func (g grammar) postgresIfCheck(table, name, stmt string) string {
+	body := "IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = " + g.literal(g.quote(table)) + "::regclass AND conname = " + g.literal(name) +
+		" AND contype = 'c') THEN " + stmt + "; END IF;"
+	tag := "$storm$"
+	for i := 0; strings.Contains(body, tag); i++ {
+		tag = "$storm" + strconv.Itoa(i) + "$"
+	}
+	return "DO " + tag + " BEGIN " + body + " END " + tag
+}
+
 func (g grammar) enumCheck(table string, c *Column) string {
 	return "CONSTRAINT " + g.quote(checkName(table, c.Name)) + " CHECK (" + g.quote(c.Name) + " IN (" + g.literals(c.Allowed) + "))"
 }
@@ -872,8 +884,8 @@ func (g grammar) changeColumn(c *Column) ([]string, error) {
 	var stmts []string
 	switch g.engine {
 	case enginePostgres:
-		if c.Type == TypeEnum {
-			stmts = append(stmts, "ALTER TABLE "+t+" DROP CONSTRAINT IF EXISTS "+g.quote(checkName(table, c.Name)))
+		if !c.IsAutoIncrement {
+			stmts = append(stmts, "ALTER TABLE "+t+" DROP CONSTRAINT IF EXISTS "+g.quote(checkName(table, c.Name)), col+" DROP DEFAULT")
 		}
 		using := col + " TYPE " + typ
 		if c.CollationName != "" {
@@ -891,7 +903,7 @@ func (g grammar) changeColumn(c *Column) ([]string, error) {
 	case c.IsAutoIncrement:
 	case c.HasDefault:
 		stmts = append(stmts, col+" SET DEFAULT "+g.defaultValue(c))
-	default:
+	case g.engine == engineDuckDB:
 		stmts = append(stmts, col+" DROP DEFAULT")
 	}
 	if c.Type == TypeEnum && g.engine == enginePostgres {
@@ -917,7 +929,12 @@ func (g grammar) alterCommand(table string, cmd *command) ([]string, error) {
 		}
 		return stmts, nil
 	case cmdRenameColumn:
-		return one("ALTER TABLE " + t + " RENAME COLUMN " + g.quote(cmd.from) + " TO " + g.quote(cmd.to))
+		rename := "ALTER TABLE " + t + " RENAME COLUMN " + g.quote(cmd.from) + " TO " + g.quote(cmd.to)
+		if g.engine != enginePostgres {
+			return one(rename)
+		}
+		from := checkName(table, cmd.from)
+		return []string{rename, g.postgresIfCheck(table, from, "ALTER TABLE "+t+" RENAME CONSTRAINT "+g.quote(from)+" TO "+g.quote(checkName(table, cmd.to)))}, nil
 	case cmdRenameIndex:
 		switch g.engine {
 		case engineMySQL, engineMariaDB:

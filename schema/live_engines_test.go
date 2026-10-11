@@ -141,6 +141,24 @@ func TestLiveFixes(t *testing.T) {
 			return tryExec(ctx, conn, "INSERT INTO parents (id, role) VALUES (?, ?)", 77, "a")
 		}))
 
+		check(t, s.Create(ctx, "tickets", func(t *Blueprint) {
+			t.ID()
+			t.Enum("status", "open", "closed").Default("open")
+			t.String("n").Default("0")
+		}))
+		check(t, s.Table(ctx, "tickets", func(t *Blueprint) {
+			t.String("status").Change()
+			t.Integer("n").Default(0).Change()
+		}))
+		execOn(t, ctx, conn, "INSERT INTO tickets (status) VALUES (?)", "zzz")
+		want(t, "an enum changed to a string loses its check; a default survives a type change", column[int64](t, ctx, conn, "SELECT n FROM tickets WHERE status = ?", "zzz"), []int64{0})
+		check(t, s.Table(ctx, "tickets", func(t *Blueprint) { t.Enum("status", "open", "closed", "zzz").Change() }))
+		check(t, s.Table(ctx, "tickets", func(t *Blueprint) { t.RenameColumn("status", "state") }))
+		check(t, s.Table(ctx, "tickets", func(t *Blueprint) { t.Enum("state", "open", "closed", "zzz", "held").Change() }))
+		execOn(t, ctx, conn, "INSERT INTO tickets (state) VALUES (?)", "held")
+		failed(t, "the renamed column's check is replaced", tryExec(ctx, conn, "INSERT INTO tickets (state) VALUES (?)", "nope"), "tickets_state_check")
+		check(t, s.Table(ctx, "tickets", func(t *Blueprint) { t.RenameColumn("n", "m") }))
+
 		check(t, s.Rename(ctx, "parents", "elders"))
 		check(t, s.Table(ctx, "elders", func(t *Blueprint) { t.Enum("role", "a", "b", "c", "d").Change() }))
 		execOn(t, ctx, conn, "INSERT INTO elders (role) VALUES (?)", "d")
