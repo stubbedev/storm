@@ -389,9 +389,15 @@ builder with the engine's physics showing through: `Update` runs as
 made synchronous with `mutations_sync`, with affected rows counted before
 the mutation since the driver reports none — and there are no
 transactions or generated integer keys (use UUID or manual keys). With no
-unique constraints to lean on, `Upsert` and `InsertOrIgnore` read which
-keys exist first, insert the new rows and update the rest row by row; a
-concurrent writer can race that read. Tables default to
+unique constraints to lean on, `Upsert` and `InsertOrIgnore` (and
+`CreateOrFirst`, which builds on them) read which keys exist first, insert
+the new rows and update the rest in one mutation. Nothing can lock a key
+in ClickHouse, so this is exact for one writer at a time but not across
+writers: two concurrent calls with the same new key can both insert it,
+leaving two rows, and an upsert racing an insert can miss the row to
+update. Serialise writers of a table that relies on unique keys, or use a
+`ReplacingMergeTree` engine and read with `FINAL` to let ClickHouse
+collapse duplicates. Tables default to
 `ENGINE = MergeTree` sorted by the primary key; `OrderBy`, `Unsorted`,
 `PartitionBy`, `TTL` and `Setting` shape the storage, and
 `Engine("Memory")` and friends take no sorting key. Plain indexes become
@@ -496,6 +502,13 @@ docs, err := Docs.Query().
 	Limit(10).
 	Get()
 ```
+
+Qdrant's write is an overwrite (`PUT` replaces a point with the same id),
+so `Insert`, `Create` and `InsertOrIgnore` check which ids exist first and
+refuse or skip those. A concurrent writer between that check and the write
+can still overwrite a point with the same id: last write wins, as with any
+Qdrant upsert. Use generated UUID keys, or one writer per id, where that
+matters.
 
 On Qdrant a NULL test matches a field that is missing, null or an empty
 array — the filter Qdrant offers for all three. `ILIKE` and `!=` translate

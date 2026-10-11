@@ -688,6 +688,21 @@ func TestClickHouse(t *testing.T) {
 	}, []string{"id"}, "name"))
 	eq(t, "upsert", must(widgets.OrderByCol(Widgets.ID).PluckCol(Widgets.Name)), []string{"alpha", "ten upserted", "eleven"})
 	eq(t, "upsert leaves other columns", must(widgets.WhereCond(Widgets.ID.Eq(10)).PluckCol(Widgets.Kind)), []string{"gear"})
+	var mutations int
+	stop := orm.Listen(func(e orm.QueryEvent) {
+		if strings.HasPrefix(e.SQL, "ALTER TABLE") {
+			mutations++
+		}
+	})
+	ok(widgets.Upsert([]map[string]any{
+		{"id": 10, "name": "ten first", "kind": "gear", "karma": 1},
+		{"id": 11, "name": "eleven again", "kind": "gear", "karma": 2},
+		{"id": 10, "name": "ten last", "kind": "gear", "karma": 3},
+	}, []string{"id"}, "name", "karma"))
+	stop()
+	eq(t, "an upsert updates its clashing rows in one mutation", mutations, 1)
+	eq(t, "the later row for a key wins", must(widgets.OrderByCol(Widgets.ID).PluckCol(Widgets.Name)), []string{"alpha", "ten last", "eleven again"})
+	eq(t, "every updated column follows its row", must(widgets.OrderByCol(Widgets.ID).PluckCol(Widgets.Karma)), []int64{5, 3, 2})
 	ws = must(Widgets.Query().On("ch").Where(Widgets.ID.Eq(11)).Get())
 	ws[0].Karma = 7
 	ok(Widgets.Query().On("ch").Upsert(ws, []orm.AnyColumn[Widget]{Widgets.ID}, Widgets.Karma))

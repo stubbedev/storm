@@ -126,8 +126,11 @@ func insertSQL(ctx context.Context, name, table string, cols []string, rows [][]
 
 // emulateConflicts is insertOrIgnore and upsert for engines without unique
 // constraints: it reads which key combinations exist, inserts the rows
-// whose keys are new and, for an upsert, updates the rest one statement
-// per row. A concurrent writer can race the read and the writes.
+// whose keys are new and, for an upsert, updates the rest in one mutation,
+// each column set by a multiIf over the rows (a later row for the same key
+// winning, as one row after another would). Nothing locks the keys between
+// the read and the writes, so a concurrent writer can still insert the
+// same key: see the README on ClickHouse.
 func emulateConflicts(ctx context.Context, name, table string, cols []string, rows [][]colSet, c conflict, key string) error {
 	keys := c.keys(key)
 	pos := make([]int, len(keys))
@@ -156,21 +159,11 @@ func emulateConflicts(ctx context.Context, name, table string, cols []string, ro
 			return err
 		}
 	}
-	if c.kind != conflictUpdate {
+	if c.kind != conflictUpdate || len(clash) == 0 {
 		return nil
 	}
-	for _, row := range clash {
-		sets := make([]colSet, 0, len(c.update))
-		for _, u := range c.update {
-			if p := slices.Index(cols, u); p >= 0 {
-				sets = append(sets, row[p])
-			}
-		}
-		if len(sets) == 0 {
-			continue
-		}
-		where := func(b *SQL) {
-			b.Write(" WHERE ")
+	match := func(row []colSet) frag {
+		return func(b *SQL) {
 			for i, p := range pos {
 				if i > 0 {
 					b.Write(" AND ")
@@ -180,11 +173,41 @@ func emulateConflicts(ctx context.Context, name, table string, cols []string, ro
 				b.Arg(row[p].raw)
 			}
 		}
-		if _, err := execOn(ctx, name, func(b *SQL) { writeUpdate(b, table, sets, where) }); err != nil {
-			return err
+	}
+	var sets []colSet
+	for _, u := range c.update {
+		p := slices.Index(cols, u)
+		if p < 0 {
+			continue
+		}
+		sets = append(sets, colSet{col: u, expr: func(b *SQL) {
+			b.Write("multiIf(")
+			for _, row := range slices.Backward(clash) {
+				match(row)(b)
+				b.Write(", ")
+				row[p].renderValue(b)
+				b.Write(", ")
+			}
+			b.Ident(u)
+			b.Write(")")
+		}})
+	}
+	if len(sets) == 0 {
+		return nil
+	}
+	where := func(b *SQL) {
+		b.Write(" WHERE ")
+		for i, row := range clash {
+			if i > 0 {
+				b.Write(" OR ")
+			}
+			b.Write("(")
+			match(row)(b)
+			b.Write(")")
 		}
 	}
-	return nil
+	_, err = execOn(ctx, name, func(b *SQL) { writeUpdate(b, table, sets, where) })
+	return err
 }
 
 // takenKeys reads which of the rows' key combinations table already holds.
