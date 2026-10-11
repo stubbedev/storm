@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2"
 	_ "github.com/marcboeker/go-duckdb/v2"
@@ -130,6 +131,18 @@ func TestLiveFixes(t *testing.T) {
 	views, err := s.Views(ctx)
 	check(t, err)
 	want(t, "views that depend on each other all drop", len(views), 0)
+
+	precise := time.Date(2026, 1, 2, 3, 4, 5, 123_000_000, time.UTC)
+	check(t, s.Create(ctx, "moments", func(t *Blueprint) {
+		t.ID()
+		t.Timestamp("at", 3).Default(precise)
+	}))
+	execOn(t, ctx, conn, "INSERT INTO moments (id) VALUES (1)")
+	want(t, "a time default keeps its fractional seconds", strings.Contains(column[string](t, ctx, conn, "SELECT at FROM moments")[0], "05.123"), true)
+	if x.g.engine != engineSQLite {
+		err = s.Create(ctx, "coarse", func(t *Blueprint) { t.Timestamp("at", 2).Default(precise) })
+		failed(t, "a time default finer than the column is refused", err, "more than the 2 fractional second digits")
+	}
 
 	if x.g.mysqlFamily() {
 		pool, ok := x.db.(*sql.DB)

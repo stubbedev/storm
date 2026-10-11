@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -367,6 +368,35 @@ func TestBlueprintNames(t *testing.T) {
 	})
 	stmts = mustAlter(t, postgresG, "sites", func(t *Blueprint) { t.DropForeignIDFor(tenants) })
 	want(t, "DropForeignIDFor drops the column", stmts, []string{`ALTER TABLE "sites" DROP COLUMN "tenant_ulid"`})
+}
+
+func TestTimeDefaultPrecision(t *testing.T) {
+	half := time.Date(2026, 1, 2, 3, 4, 5, 500_000_000, time.UTC)
+	nanos := time.Date(2026, 1, 2, 3, 4, 5, 1, time.UTC)
+	for _, c := range []struct {
+		g      grammar
+		column func(*Blueprint) *Column
+		at     time.Time
+		ok     bool
+	}{
+		{postgresG, func(t *Blueprint) *Column { return t.Timestamp("at") }, half, false},
+		{postgresG, func(t *Blueprint) *Column { return t.Timestamp("at", 1) }, half, true},
+		{duckdbG, func(t *Blueprint) *Column { return t.Timestamp("at") }, half, true},
+		{duckdbG, func(t *Blueprint) *Column { return t.Timestamp("at") }, nanos, false},
+		{clickhouseG, func(t *Blueprint) *Column { return t.Timestamp("at") }, half, true},
+		{clickhouseG, func(t *Blueprint) *Column { return t.DateTime("at") }, half, false},
+	} {
+		_, err := create(c.g, "moments", func(t *Blueprint) {
+			if c.g.engine == engineClickHouse {
+				t.UUIDPrimary()
+			}
+			c.column(t).Default(c.at)
+		})
+		want(t, fmt.Sprintf("%s %v default accepted", c.g.engine, c.at.Nanosecond()), err == nil, c.ok)
+	}
+	stmts, err := create(postgresG, "moments", func(t *Blueprint) { t.Timestamp("at", 1).Default(half) })
+	check(t, err)
+	want(t, "the default literal keeps the fraction", strings.Contains(stmts[0], "DEFAULT '2026-01-02 03:04:05.5'"), true)
 }
 
 func TestRenamedOwned(t *testing.T) {

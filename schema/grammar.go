@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -156,6 +157,9 @@ func (g grammar) typeOf(c *Column) (string, error) {
 	if err := checkType(c); err != nil {
 		return "", err
 	}
+	if err := g.checkTimeDefault(c); err != nil {
+		return "", err
+	}
 	switch g.engine {
 	case engineDuckDB:
 		return g.duckdbType(c)
@@ -288,7 +292,7 @@ func (g grammar) literal(v any) string {
 		}
 		return map[bool]string{true: "1", false: "0"}[v]
 	case time.Time:
-		return "'" + v.UTC().Format("2006-01-02 15:04:05") + "'"
+		return "'" + v.UTC().Format("2006-01-02 15:04:05.999999999") + "'"
 	case nil:
 		return "NULL"
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
@@ -406,6 +410,35 @@ func checkType(c *Column) error {
 		return fmt.Errorf("schema: %s column %s.%s has precision %d; fractional seconds go from 0 to 6 digits", c.Type, c.bp.table, c.Name, c.Precision)
 	}
 	return nil
+}
+
+// checkTimeDefault refuses a time default with more fractional digits
+// than the column stores, which the engine would round or cut away.
+func (g grammar) checkTimeDefault(c *Column) error {
+	at, ok := c.DefaultValue.(time.Time)
+	if !ok || !isTime(c.Type) {
+		return nil
+	}
+	digits := g.fractionalDigits(c)
+	if at.Nanosecond()%int(math.Pow10(9-digits)) != 0 {
+		return fmt.Errorf("schema: the default %s of column %s.%s has more than the %d fractional second digits the column stores",
+			at.UTC().Format(time.RFC3339Nano), c.bp.table, c.Name, digits)
+	}
+	return nil
+}
+
+// fractionalDigits is how many fractional second digits the engine keeps
+// for time column c.
+func (g grammar) fractionalDigits(c *Column) int {
+	switch {
+	case g.engine == engineSQLite:
+		return 9
+	case g.engine == engineDuckDB:
+		return 6
+	case g.engine == engineClickHouse && (c.Type == TypeTimestamp || c.Type == TypeTimestampTz):
+		return cmp.Or(c.Precision, 3)
+	}
+	return c.Precision
 }
 
 func isTime(t string) bool {
