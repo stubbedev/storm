@@ -42,6 +42,7 @@ func init() {
 			t.JSONB("settings").Nullable()
 			t.Timestamps()
 			t.SoftDeletes()
+			t.Index("country_id", "id")
 		}),
 		create("2026_01_01_000002_create_posts_table", "posts", func(t *B) {
 			t.ID()
