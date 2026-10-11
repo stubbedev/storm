@@ -667,8 +667,12 @@ users, err := UserFactory.Count(4).
 		return UserPosts.WithContext(ctx).Create(u, &Post{Title: "by " + u.Name})
 	}).
 	Create()
-draft := UserFactory.MakeOne() // unsaved
+draft, err := UserFactory.MakeOne() // unsaved
 ```
+
+`State` and `Sequence` apply in the order they are called, so a later state
+overrides an earlier sequence; a negative `Count` or an empty `Sequence` is
+returned as an error by `Make` and `Create`.
 
 ## Raw SQL
 

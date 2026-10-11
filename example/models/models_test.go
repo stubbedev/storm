@@ -946,7 +946,7 @@ func TestFactories(t *testing.T) {
 	users := orm.NewFactory(Users.Table, func(n int) User {
 		return User{Name: fmt.Sprintf("Factory %d", n), Email: fmt.Sprintf("factory%d@example.com", n), Active: true}
 	})
-	made := users.Count(2).Make()
+	made := must(users.Count(2).Make())
 	eq(t, "make", [2]string{made[0].Name, made[1].Name}, [2]string{"Factory 1", "Factory 2"})
 	eq(t, "make unsaved", made[0].Exists(), false)
 
@@ -963,6 +963,19 @@ func TestFactories(t *testing.T) {
 	eq(t, "state", created[3].Karma, 7)
 	eq(t, "sequence", []int64{created[0].CountryID, created[1].CountryID, created[2].CountryID}, []int64{1, 2, 1})
 	eq(t, "afterCreating", must(Posts.Where(Posts.Title.Like("by Factory%")).Count()), int64(4))
+
+	layered := must(users.Count(3).
+		Sequence(func(u *User) { u.CountryID = 1 }, func(u *User) { u.CountryID = 2 }).
+		Sequence(func(u *User) { u.Karma = 10 }, func(u *User) { u.Karma = 20 }).
+		State(func(u *User) { u.CountryID = 9 }).
+		Make())
+	eq(t, "every sequence applies, in call order with states", [][2]int64{
+		{layered[0].CountryID, int64(layered[0].Karma)}, {layered[1].CountryID, int64(layered[1].Karma)}, {layered[2].CountryID, int64(layered[2].Karma)},
+	}, [][2]int64{{9, 10}, {9, 20}, {9, 10}})
+	_, err := users.Count(-1).Make()
+	eq(t, "a negative count is an error", err != nil && strings.Contains(err.Error(), "-1"), true)
+	_, err = users.Sequence().Create()
+	eq(t, "an empty sequence is an error", err != nil && strings.Contains(err.Error(), "at least one"), true)
 }
 
 // TestBoundContexts checks every builder runs inside the transaction its

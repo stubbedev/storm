@@ -239,7 +239,7 @@ func TestFactoryOne(t *testing.T) {
 	users := orm.NewFactory(Users.Table, func(n int) User {
 		return User{Name: fmt.Sprintf("One %d", n), Email: fmt.Sprintf("one%d@example.com", n), Active: true}
 	})
-	eq(t, "makeOne", users.MakeOne().Name, "One 1")
+	eq(t, "makeOne", must(users.MakeOne()).Name, "One 1")
 	created := must(users.CreateOne())
 	eq(t, "createOne", must(Users.Find(created.ID)).Email, "one2@example.com")
 }
