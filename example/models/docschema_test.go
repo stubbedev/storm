@@ -78,6 +78,8 @@ func assertDocMigrations(t *testing.T, ctx context.Context, conn string) {
 		rex := must(pets.Where("id", orm.Eq, valid["id"]).First())
 		eq(t, "rename and drop rewrite documents", fmt.Sprintf("%v %v", rex["about"], rex["age"]), "good <nil>")
 		eq(t, "new unique index enforced", pets.Insert(map[string]any{"id": "x7", "name": "Rex"}) != nil, true)
+		eq(t, "dropIndexOn leaves a unique index alone", strings.Contains(fmt.Sprint(s.Table(ctx, "pets", func(t *schema.Blueprint) { t.DropIndexOn("name") })), "no such index"), true)
+		eq(t, "dropIndexOn leaves the primary index alone", strings.Contains(fmt.Sprint(s.Table(ctx, "pets", func(t *schema.Blueprint) { t.DropIndexOn("id") })), "no such index"), true)
 		ok(s.Table(ctx, "pets", func(t *schema.Blueprint) { t.String("color").Change() }))
 		eq(t, "changed column", must(s.GetColumns(ctx, "pets"))[4].Nullable, false)
 		pretend, log := s.Pretend()

@@ -329,19 +329,32 @@ func docFieldEqual(a, b orm.DocField) bool {
 
 // docFindIndex finds the index a drop names: by its name, or — where a
 // store names indexes by field, as Qdrant does — by the Laravel-style name
-// the blueprint would have given an index on that field.
+// the blueprint would have given an index of that kind on its fields.
 func docFindIndex(idxs []orm.DocIndex, table string, want *Index) (orm.DocIndex, bool) {
+	if i := slices.IndexFunc(idxs, func(idx orm.DocIndex) bool { return idx.Name == want.IndexName }); i >= 0 {
+		return idxs[i], true
+	}
 	for _, idx := range idxs {
-		if idx.Name == want.IndexName || len(want.Columns) > 0 && slices.Equal(idx.FieldNames(), want.Columns) {
-			return idx, true
-		}
-		for _, suffix := range []string{suffixIndex, suffixUnique, suffixFullText, suffixPrimary} {
-			if indexName(table, suffix, idx.FieldNames()) == want.IndexName {
+		for _, k := range docIndexKinds {
+			if k.is(idx) && indexName(table, k.suffix, idx.FieldNames()) == want.IndexName {
 				return idx, true
 			}
 		}
 	}
 	return orm.DocIndex{}, false
+}
+
+// docIndexKinds tells the kinds of document index apart by the suffix of
+// their conventional names, so that DropIndexOn never drops a unique or
+// primary index on the same fields.
+var docIndexKinds = []struct {
+	suffix string
+	is     func(orm.DocIndex) bool
+}{
+	{suffixIndex, func(i orm.DocIndex) bool { return !i.Unique && !i.Text && !i.Primary }},
+	{suffixUnique, func(i orm.DocIndex) bool { return i.Unique && !i.Primary }},
+	{suffixFullText, func(i orm.DocIndex) bool { return i.Text }},
+	{suffixPrimary, func(i orm.DocIndex) bool { return i.Primary }},
 }
 
 func (s *Builder) docDrop(ctx context.Context, ds orm.DocSchema, table string, ifExists bool) error {
