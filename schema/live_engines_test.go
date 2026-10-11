@@ -88,6 +88,11 @@ func TestLiveFixes(t *testing.T) {
 		}
 	}
 	want(t, "ID().Primary() keys the table by id", keys, [][]string{{"id"}})
+	if x.g.engine == engineSQLite {
+		failed(t, "a second key beside the inline one", s.Table(ctx, "keyed", func(t *Blueprint) { t.Primary("code") }), "DropPrimary first")
+	} else {
+		failed(t, "a second key beside the inline one", s.Table(ctx, "keyed", func(t *Blueprint) { t.Primary("code") }))
+	}
 
 	if x.g.mysqlFamily() {
 		check(t, s.Create(ctx, "defaults", func(t *Blueprint) {

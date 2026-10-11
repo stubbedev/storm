@@ -336,13 +336,19 @@ func (g grammar) planSQLiteRebuild(bp *Blueprint, cmds []*command, t sqliteTable
 
 	tmp := "__temp__" + table
 	defs := make([]string, 0, len(cols)+len(fks)+len(t.constraints)+1)
-	autoinc, inlinePK := false, false
+	autoinc, inlinePK := false, ""
 	for _, c := range cols {
 		defs = append(defs, c.def)
 		autoinc = autoinc || autoincrementDef(c.def)
-		inlinePK = inlinePK || inlinePrimaryKey(c.def)
+		if inlinePrimaryKey(c.def) {
+			inlinePK = c.name
+		}
 	}
-	if len(pk) > 0 && !inlinePK {
+	switch {
+	case inlinePK != "" && len(pk) > 0 && !slices.Equal(pk, []string{inlinePK}):
+		return nil, fmt.Errorf("schema: sqlite: table %s cannot take the primary key (%s): column %s is declared as its key; DropPrimary first",
+			table, strings.Join(pk, ", "), inlinePK)
+	case len(pk) > 0 && inlinePK == "":
 		defs = append(defs, "PRIMARY KEY ("+g.list(pk)+")")
 	}
 	for _, f := range fks {
