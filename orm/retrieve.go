@@ -398,7 +398,7 @@ func aggregate[V, M any, K comparable](ctx context.Context, q Query[M, K], agg A
 		return zero, err
 	}
 	if !ok {
-		v, err := optionalOn[V](ctx, q.connName(), func(b *SQL) { q.renderSelect(b, func(b *SQL) { fn(b, agg.String(), e) }) })
+		v, err := optionalOn[V](ctx, q.connName(), func(b *SQL) { q.renderSelect(b, func(b *SQL) { agg.build(b, e) }) })
 		if err != nil {
 			var zero V
 			return zero, err

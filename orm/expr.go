@@ -608,7 +608,7 @@ func CountDistinct[M, V any](e Expr[M, V]) Scalar[M, int64] {
 
 func Sum[M any, V Number](e Expr[M, V]) Scalar[M, V] { return wrap[M, V](AggregateSum.String(), e) }
 func Avg[M any, V Number](e Expr[M, V]) Scalar[M, float64] {
-	return wrap[M, float64](AggregateAvg.String(), e)
+	return Scalar[M, float64]{f: func(b *SQL) { AggregateAvg.build(b, e) }}
 }
 
 func Min[M, V any](e Expr[M, V]) Scalar[M, V] { return wrap[M, V](AggregateMin.String(), e) }

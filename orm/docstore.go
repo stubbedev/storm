@@ -75,6 +75,14 @@ func (a Aggregate) String() string {
 	return fmt.Sprintf("Aggregate(%d)", int(a))
 }
 
+func (a Aggregate) build(b *SQL, e AnyExpr) {
+	if a == AggregateAvg {
+		b.Dialect.Avg(b, e)
+		return
+	}
+	fn(b, a.String(), e)
+}
+
 // DocUpdate is the change UpdateDocs applies: Set overwrites fields (nil
 // clears one), Inc adds to numeric fields (a negative amount subtracts).
 // A store that cannot add atomically refuses Inc with ErrNotTranslatable.

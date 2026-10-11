@@ -35,6 +35,7 @@ type Dialect interface {
 	// last, in either direction.
 	OrderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls)
 	Random() string
+	Avg(b *SQL, e AnyExpr)
 	// DatePart extracts "date", "time", "year", "month" or "day" from e.
 	DatePart(b *SQL, part string, e AnyExpr)
 	// JSONExtract reads path from the JSON in e as kind.
@@ -148,6 +149,7 @@ func (sqliteDialect) InsertVerb(bool) string         { return "INSERT" }
 func (sqliteDialect) Lock(LockMode, LockWait) string { return "" } // SQLite locks the whole database
 
 func (sqliteDialect) Random() string         { return "RANDOM()" }
+func (sqliteDialect) Avg(b *SQL, e AnyExpr)  { fn(b, AggregateAvg.String(), e) }
 func (sqliteDialect) Limit(b *SQL, l, o int) { limit(b, l, o, "-1") }
 
 func (sqliteDialect) OrderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls) {
@@ -353,6 +355,7 @@ func (postgresDialect) Returning() bool          { return true }
 func (postgresDialect) AutoKeys() bool           { return true }
 func (postgresDialect) InsertVerb(bool) string   { return "INSERT" }
 func (postgresDialect) Random() string           { return "RANDOM()" }
+func (postgresDialect) Avg(b *SQL, e AnyExpr)    { fn(b, AggregateAvg.String(), e) }
 func (postgresDialect) Limit(b *SQL, l, o int)   { limit(b, l, o, "") }
 
 func (postgresDialect) OrderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls) {
@@ -487,6 +490,12 @@ func (mysqlDialect) Returning() bool        { return false }
 func (mysqlDialect) AutoKeys() bool         { return true }
 func (mysqlDialect) Random() string         { return "RAND()" }
 func (mysqlDialect) Limit(b *SQL, l, o int) { limit(b, l, o, "18446744073709551615") }
+
+func (mysqlDialect) Avg(b *SQL, e AnyExpr) {
+	b.Write(AggregateAvg.String(), "(CAST(")
+	e.build(b)
+	b.Write(" AS DOUBLE))")
+}
 
 func (mysqlDialect) identifierLimit() (int, bool) { return 64, true }
 

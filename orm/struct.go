@@ -1027,7 +1027,7 @@ func rowAggregate[V any](ctx context.Context, r RowQuery, agg Aggregate, c Quali
 	if len(r.unions) > 0 {
 		return zero, fmt.Errorf("orm: %s on %s: aggregate the union in SQL (SelectRaw over a subquery) or Get its rows", method, r.name)
 	}
-	v, err := optionalOn[V](ctx, r.connName(), func(b *SQL) { r.render(b, func(b *SQL) { fn(b, agg.String(), c) }) })
+	v, err := optionalOn[V](ctx, r.connName(), func(b *SQL) { r.render(b, func(b *SQL) { agg.build(b, c) }) })
 	if err != nil {
 		return zero, err
 	}

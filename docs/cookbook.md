@@ -276,7 +276,9 @@ name, err := Users.Query().OrderBy(Users.Karma.Desc()).Value(Users.Name)
 
 `Sum` of no rows is zero; `Min`, `Max` and `Avg` of no rows (or only
 NULLs) have no value and return `orm.ErrNotFound`, never a zero that
-could be real.
+could be real. `Avg` is the same double-precision average on every
+engine: MySQL and MariaDB average the column as a `DOUBLE`, since their
+`AVG` of integers is a decimal cut to four places.
 
 A plain order puts NULLs where the engine does — first ascending on
 SQLite, MySQL and MariaDB, last on Postgres, DuckDB and ClickHouse — which
