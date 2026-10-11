@@ -402,6 +402,10 @@ func mongoFields(opts bson.Raw) ([]DocField, error) {
 	return fields, nil
 }
 
+// mongoNullsKey prefixes the fields a find adds to sort NULLs and missing
+// values first or last, where MongoDB's own order puts them elsewhere.
+const mongoNullsKey = "__storm_nulls_"
+
 func (s *MongoStore) FindDocs(ctx context.Context, p Plan) ([]map[string]any, error) {
 	if p.Vector != nil {
 		return nil, &ErrNotTranslatable{Reason: "vector search (MongoDB Atlas Vector Search is not wired up; use Qdrant or pgvector)"}
@@ -410,38 +414,58 @@ func (s *MongoStore) FindDocs(ctx context.Context, p Plan) ([]map[string]any, er
 	if err != nil {
 		return nil, err
 	}
-	opts := options.Find()
-	if p.Limit > 0 {
-		opts.SetLimit(int64(p.Limit))
-	}
-	if p.Offset > 0 {
-		opts.SetSkip(int64(p.Offset))
-	}
-	if len(p.Orders) > 0 {
-		sort := bson.D{}
-		for _, o := range p.Orders {
-			switch {
-			case o.Nulls == NullsLast && !o.Desc:
-				return nil, &ErrNotTranslatable{Reason: fmt.Sprintf("an ascending order on %s with NULLs last (MongoDB sorts them first)", o.Column)}
-			case o.Nulls == NullsFirst && o.Desc:
-				return nil, &ErrNotTranslatable{Reason: fmt.Sprintf("a descending order on %s with NULLs first (MongoDB sorts them last)", o.Column)}
-			}
-			dir := 1
-			if o.Desc {
-				dir = -1
-			}
-			sort = append(sort, bson.E{Key: mongoField(o.Column, p.Key), Value: dir})
+	sort, nullKeys := bson.D{}, bson.D{}
+	for i, o := range p.Orders {
+		field := mongoField(o.Column, p.Key)
+		if o.Nulls != NullsDefault {
+			key := fmt.Sprintf("%s%d", mongoNullsKey, i)
+			nullKeys = append(nullKeys, bson.E{Key: key, Value: bson.D{{Key: "$cond", Value: bson.A{
+				bson.D{{Key: "$eq", Value: bson.A{bson.D{{Key: "$ifNull", Value: bson.A{"$" + field, nil}}}, nil}}}, 1, 0,
+			}}}})
+			sort = append(sort, bson.E{Key: key, Value: map[Nulls]int{NullsLast: 1, NullsFirst: -1}[o.Nulls]})
 		}
-		opts.SetSort(sort)
+		sort = append(sort, bson.E{Key: field, Value: map[bool]int{false: 1, true: -1}[o.Desc]})
 	}
-	if len(p.Columns) > 0 {
-		proj := bson.D{}
+	var cursor *mongo.Cursor
+	if len(nullKeys) > 0 {
+		pipeline := mongo.Pipeline{{{Key: "$match", Value: filter}}, {{Key: "$addFields", Value: nullKeys}}, {{Key: "$sort", Value: sort}}}
+		if p.Offset > 0 {
+			pipeline = append(pipeline, bson.D{{Key: "$skip", Value: int64(p.Offset)}})
+		}
+		if p.Limit > 0 {
+			pipeline = append(pipeline, bson.D{{Key: "$limit", Value: int64(p.Limit)}})
+		}
+		project := bson.D{}
 		for _, c := range p.Columns {
-			proj = append(proj, bson.E{Key: c, Value: 1})
+			project = append(project, bson.E{Key: c, Value: 1})
 		}
-		opts.SetProjection(proj)
+		if len(project) == 0 {
+			for _, k := range nullKeys {
+				project = append(project, bson.E{Key: k.Key, Value: 0})
+			}
+		}
+		pipeline = append(pipeline, bson.D{{Key: "$project", Value: project}})
+		cursor, err = s.coll(p.Table).Aggregate(ctx, pipeline)
+	} else {
+		opts := options.Find()
+		if p.Limit > 0 {
+			opts.SetLimit(int64(p.Limit))
+		}
+		if p.Offset > 0 {
+			opts.SetSkip(int64(p.Offset))
+		}
+		if len(sort) > 0 {
+			opts.SetSort(sort)
+		}
+		if len(p.Columns) > 0 {
+			proj := bson.D{}
+			for _, c := range p.Columns {
+				proj = append(proj, bson.E{Key: c, Value: 1})
+			}
+			opts.SetProjection(proj)
+		}
+		cursor, err = s.coll(p.Table).Find(ctx, filter, opts)
 	}
-	cursor, err := s.coll(p.Table).Find(ctx, filter, opts)
 	if err != nil {
 		return nil, fmt.Errorf("orm: mongo find on %s: %w", p.Table, err)
 	}

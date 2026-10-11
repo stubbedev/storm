@@ -899,6 +899,24 @@ func TestMongo(t *testing.T) {
 	eq(t, "sub-millisecond times refused", err != nil && strings.Contains(err.Error(), "finer than the millisecond"), true)
 	assertDocModelQueries(t, ctx, "mongo")
 
+	sparse := orm.From("sparse").On("mongo")
+	ok(sparse.Insert(
+		map[string]any{"id": "a", "n": 2}, map[string]any{"id": "b"}, map[string]any{"id": "c", "n": 1},
+		map[string]any{"id": "d", "n": nil}, map[string]any{"id": "e", "n": 3}))
+	for _, desc := range []bool{false, true} {
+		q := sparse.OrderBy("n")
+		want := []string{"c", "a", "e", "b", "d"}
+		if desc {
+			q, want = sparse.OrderByDesc("n"), []string{"e", "a", "c", "b", "d"}
+		}
+		forward, backward := walkCursor(t, func(cursor string) orm.CursorPage[map[string]any] {
+			return must(q.OrderBy("id").CursorPaginate(2, cursor))
+		},
+			func(d map[string]any) string { return fmt.Sprint(d["id"]) })
+		eq(t, fmt.Sprintf("mongo pages NULLs and missing fields last (desc %v)", desc), [2][]string{forward, backward}, [2][]string{want, want})
+	}
+	ok(schema.On("mongo").Drop(ctx, "sparse"))
+
 	mostViewed := orm.HasOne(Docs.Title, Docs.Title, func(d, best *Doc) { d.Best = best }).OfMany(Docs.Views, true)
 	busier := Doc{Title: "near", Views: 1000}
 	ok(Docs.Query().On("mongo").Create(&busier))
