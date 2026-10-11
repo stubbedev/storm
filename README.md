@@ -475,7 +475,11 @@ of the plan. What refuses, with a precise error naming the part
 (`orm.IsNotTranslatable`): joins, unions, `groupBy`, raw fragments,
 subqueries, expressions in place of columns, `SetExpr`, and aggregates
 and `Increment` on Qdrant, which has no server-side aggregation or atomic
-payload arithmetic. A custom store implements `orm.DocStore`;
+payload arithmetic. Both are refused on purpose: an aggregate would have to
+read every matching point into the client, an unbounded scan behind an
+innocent-looking `Sum`, and an increment would be a read-modify-write that
+loses concurrent updates. Aggregate in Go over `Lazy` or `Chunk` when the
+scan is what you want. A custom store implements `orm.DocStore`;
 `UpdateDocs` receives an `orm.DocUpdate` with the fields to set and the
 amounts to add.
 
