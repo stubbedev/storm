@@ -15,7 +15,7 @@ import (
 // interfaces, so the generic surface (With[R], WhereHas[R], ...) lives on
 // Query and dispatches here.
 type Loader[M, R any, RK comparable] interface {
-	eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error
+	eagerLoad(ctx context.Context, conn string, parents []M, scopes []func(Query[R, RK]) Query[R, RK]) error
 	mark() loadMark[M]
 }
 
@@ -32,8 +32,8 @@ func markOf[M any](state func(*M) *Model, set any) loadMark[M] {
 }
 
 // loadInto eager-loads rel onto models and marks it loaded on each.
-func loadInto[M, R any, RK comparable](ctx context.Context, conn string, models []M, rel Loader[M, R, RK], scope func(Query[R, RK]) Query[R, RK]) error {
-	if err := rel.eagerLoad(ctx, conn, models, scope); err != nil {
+func loadInto[M, R any, RK comparable](ctx context.Context, conn string, models []M, rel Loader[M, R, RK], scopes []func(Query[R, RK]) Query[R, RK]) error {
+	if err := rel.eagerLoad(ctx, conn, models, scopes); err != nil {
 		return err
 	}
 	mk := rel.mark()
@@ -67,16 +67,16 @@ const ofManyAlias = "laravel_reserved_2"
 // With eager-loads a relation. Scopes constrain the related query, and
 // nested eager loads are just With calls inside a scope.
 func (q Query[M, MK]) With[R any, RK comparable](rel Loader[M, R, RK], scopes ...func(Query[R, RK]) Query[R, RK]) Query[M, MK] {
-	scope := chain(scopes)
+	scopes = slices.Clone(scopes)
 	q.eager = append(slices.Clip(q.eager), func(ctx context.Context, conn string, models []M) error {
-		return loadInto(ctx, conn, models, rel, scope)
+		return loadInto(ctx, conn, models, rel, scopes)
 	})
 	return q
 }
 
 // Load eager-loads a relation onto already retrieved models ($models->load()).
 func Load[M, R any, RK comparable](ctx context.Context, models []M, rel Loader[M, R, RK], scopes ...func(Query[R, RK]) Query[R, RK]) error {
-	return loadInto(ctx, "", models, rel, chain(scopes))
+	return loadInto(ctx, "", models, rel, scopes)
 }
 
 // LoadMissing eager-loads a relation onto the models it has not been
@@ -97,7 +97,7 @@ func LoadMissing[M, R any, RK comparable](ctx context.Context, models []M, rel L
 	for j, i := range missing {
 		subset[j] = models[i]
 	}
-	if err := loadInto(ctx, "", subset, rel, chain(scopes)); err != nil {
+	if err := loadInto(ctx, "", subset, rel, scopes); err != nil {
 		return err
 	}
 	for j, i := range missing {
@@ -355,7 +355,8 @@ func MorphMany[M any, MK comparable, R any, RK comparable, J comparable](local C
 
 func (r *HasManyRel[M, MK, R, RK, J]) mark() loadMark[M] { return markOf(r.local.table.State, r.set) }
 
-func (r *HasManyRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error {
+func (r *HasManyRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, parents []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
+	scope := chain(scopes)
 	byKey, err := r.load(ctx, conn, parents, scope)
 	if err != nil {
 		return err
@@ -515,7 +516,8 @@ func (r *HasOneRel[M, MK, R, RK, J]) Of(parent *M) Query[R, RK] {
 
 func (r *HasOneRel[M, MK, R, RK, J]) mark() loadMark[M] { return markOf(r.local.table.State, r.set) }
 
-func (r *HasOneRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error {
+func (r *HasOneRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, parents []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
+	scope := chain(scopes)
 	byKey, err := r.loadPicked(ctx, conn, parents, scope)
 	if err != nil {
 		return err
@@ -614,7 +616,8 @@ func (r *BelongsToRel[M, MK, R, RK, J]) mark() loadMark[M] {
 	return markOf(r.foreign.table.State, r.set)
 }
 
-func (r *BelongsToRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, children []M, scope func(Query[R, RK]) Query[R, RK]) error {
+func (r *BelongsToRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, children []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
+	scope := chain(scopes)
 	byKey := map[J]*R{}
 	if keys := uniqueKeys(children, r.foreign, true); len(keys) > 0 {
 		owners, err := scope(relQuery(r.related, conn).Where(r.owner.In(keys...)).Scope(r.scopes...)).WithContext(ctx).Get()
@@ -784,7 +787,8 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) mark() loadMark[M] {
 	return markOf(r.parentKey.table.State, r.set)
 }
 
-func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error {
+func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) eagerLoad(ctx context.Context, conn string, parents []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
+	scope := chain(scopes)
 	keys := uniqueKeys(parents, r.parentKey, false)
 	if len(keys) == 0 {
 		return nil
@@ -1088,7 +1092,8 @@ func (r *HasManyThroughRel[M, MK, T, TK, R, RK, J, TJ]) mark() loadMark[M] {
 	return markOf(r.localKey.table.State, r.set)
 }
 
-func (r *HasManyThroughRel[M, MK, T, TK, R, RK, J, TJ]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error {
+func (r *HasManyThroughRel[M, MK, T, TK, R, RK, J, TJ]) eagerLoad(ctx context.Context, conn string, parents []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
+	scope := chain(scopes)
 	byKey, err := r.load(ctx, conn, parents, scope)
 	if err != nil {
 		return err
@@ -1121,7 +1126,8 @@ func (r *HasOneThroughRel[M, MK, T, TK, R, RK, J, TJ]) mark() loadMark[M] {
 	return markOf(r.localKey.table.State, r.set)
 }
 
-func (r *HasOneThroughRel[M, MK, T, TK, R, RK, J, TJ]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error {
+func (r *HasOneThroughRel[M, MK, T, TK, R, RK, J, TJ]) eagerLoad(ctx context.Context, conn string, parents []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
+	scope := chain(scopes)
 	byKey, err := r.load(ctx, conn, parents, scope)
 	if err != nil {
 		return err
@@ -1147,17 +1153,23 @@ type MorphTarget[J comparable] interface {
 	keyOf(owner any) (J, bool)
 }
 
-type morphTarget[R any, RK comparable, J comparable] struct{ key Column[R, RK, J] }
+type morphTarget[R any, RK comparable, J comparable] struct {
+	key    Column[R, RK, J]
+	scopes []func(Query[R, RK]) Query[R, RK]
+}
 
 // Target declares a MorphTo target by its key column: orm.Target(Posts.ID).
-func Target[R any, RK comparable, J comparable](key Column[R, RK, J]) MorphTarget[J] {
-	return morphTarget[R, RK, J]{key}
+// Scopes constrain the owners of that model an eager load fetches, and
+// nest eager loads on them (morphWith / constrain):
+// orm.Target(Posts.ID, Published, func(q PostQuery) PostQuery { return q.With(PostAuthor) }).
+func Target[R any, RK comparable, J comparable](key Column[R, RK, J], scopes ...func(Query[R, RK]) Query[R, RK]) MorphTarget[J] {
+	return morphTarget[R, RK, J]{key, slices.Clone(scopes)}
 }
 
 func (t morphTarget[R, RK, J]) alias() string { return t.key.table.morphAlias() }
 
 func (t morphTarget[R, RK, J]) load(ctx context.Context, conn string, keys []J) (map[J]any, error) {
-	rows, err := relQuery(t.key.table, conn).Where(t.key.In(keys...)).WithContext(ctx).Get()
+	rows, err := relQuery(t.key.table, conn).Where(t.key.In(keys...)).Scope(t.scopes...).WithContext(ctx).Get()
 	if err != nil {
 		return nil, err
 	}
@@ -1183,16 +1195,41 @@ type MorphToRel[M any, MK comparable, J comparable] struct {
 	typ     Column[M, MK, string]
 	set     func(*M, any)
 	targets []MorphTarget[J]
+	err     error
 }
 
 // MorphTo: comments(commentable_id, commentable_type) -> Post | Video.
 func MorphTo[M any, MK comparable, J comparable](id Column[M, MK, J], typ Column[M, MK, string], set func(*M, any), targets ...MorphTarget[J]) *MorphToRel[M, MK, J] {
-	return &MorphToRel[M, MK, J]{id, typ, set, targets}
+	return &MorphToRel[M, MK, J]{id: id, typ: typ, set: set, targets: targets}
 }
 
 func (r *MorphToRel[M, MK, J]) mark() loadMark[M] { return markOf(r.id.table.State, r.set) }
 
-func (r *MorphToRel[M, MK, J]) eagerLoad(ctx context.Context, conn string, children []M, _ func(Query[any, NoKey]) Query[any, NoKey]) error {
+// Constrain returns the relation with the given targets in place of those
+// of the same model, for one eager load with per-model scopes:
+// CommentCommentable.Constrain(orm.Target(Posts.ID, Published)). A target
+// for a model the relation does not point at is an error when it loads.
+func (r *MorphToRel[M, MK, J]) Constrain(targets ...MorphTarget[J]) *MorphToRel[M, MK, J] {
+	c := *r
+	c.targets = slices.Clone(r.targets)
+	for _, t := range targets {
+		i := slices.IndexFunc(c.targets, func(old MorphTarget[J]) bool { return old.alias() == t.alias() })
+		if i < 0 {
+			c.err = cmp.Or(c.err, fmt.Errorf("orm: MorphTo on %s has no target %s to constrain", r.id.table.Name, t.alias()))
+			continue
+		}
+		c.targets[i] = t
+	}
+	return &c
+}
+
+func (r *MorphToRel[M, MK, J]) eagerLoad(ctx context.Context, conn string, children []M, scopes []func(Query[any, NoKey]) Query[any, NoKey]) error {
+	if len(scopes) > 0 {
+		return fmt.Errorf("orm: eager loading the MorphTo of %s: its owners are of several models, so scopes go on each target: Constrain(orm.Target(Posts.ID, scopes...))", r.id.table.Name)
+	}
+	if r.err != nil {
+		return r.err
+	}
 	byType := map[string][]J{}
 	for i := range children {
 		t, k := r.typ.Get(&children[i]), r.id.Get(&children[i])

@@ -376,6 +376,16 @@ func TestEagerLoading(t *testing.T) {
 	comments := must(Comments.Query().OrderBy(Comments.ID.Asc()).With(CommentCommentable).Get())
 	eq(t, "morphTo post", comments[0].Commentable.(*Post).Title, "Generics in Go 1.27")
 	eq(t, "morphTo video", comments[3].Commentable.(*Video).Title, "Intro video")
+	constrained := must(Comments.Query().OrderBy(Comments.ID.Asc()).
+		With(CommentCommentable.Constrain(orm.Target(Posts.ID, Popular(100), func(q PostQuery) PostQuery { return q.With(PostAuthor) }))).
+		Get())
+	eq(t, "a morphTo target's scope loads nested relations", constrained[0].Commentable.(*Post).Author.Name, "Alice")
+	eq(t, "a morphTo target's scope filters its owners", constrained[4].Commentable == nil, true)
+	eq(t, "other targets load unconstrained", constrained[3].Commentable.(*Video).Title, "Intro video")
+	_, err = Comments.Query().With(CommentCommentable, func(q orm.Query[any, orm.NoKey]) orm.Query[any, orm.NoKey] { return q }).Get()
+	eq(t, "an untyped morphTo scope is refused, not ignored", err != nil && strings.Contains(err.Error(), "Constrain(orm.Target"), true)
+	_, err = Comments.Query().With(CommentCommentable.Constrain(orm.Target(Users.ID))).Get()
+	eq(t, "constraining a model the morphTo does not point at is refused", err != nil && strings.Contains(err.Error(), "no target users"), true)
 
 	countries := must(Countries.Query().OrderBy(Countries.ID.Asc()).With(CountryPosts).Get())
 	eq(t, "hasManyThrough", len(countries[0].Posts), 4)

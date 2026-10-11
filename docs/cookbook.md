@@ -457,6 +457,12 @@ users, err := Users.Query().
 
 err = orm.Load(ctx, users, UserCountry) // $users->load('country')
 err = orm.LoadMissing(ctx, users, UserPosts) // only the users whose posts are not loaded yet
+
+// MorphTo owners are of several models, so scopes go on each target
+// (morphWith / constrain); the untyped With scope is refused.
+comments, err := Comments.Query().With(CommentCommentable.Constrain(
+	orm.Target(Posts.ID, Published, func(q PostQuery) PostQuery { return q.With(PostAuthor) }),
+)).Get()
 err = orm.LoadCount(ctx, users, UserPosts, Users.PostsCount, Published)      // $users->loadCount('posts')
 err = orm.LoadSum(ctx, users, UserPosts, Posts.Views, Users.PostViews)       // also LoadAvg, LoadMin, LoadMax, LoadExists
 ```
