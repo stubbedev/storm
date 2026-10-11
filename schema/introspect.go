@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
@@ -359,6 +360,14 @@ func (x session) foreignKeys(ctx context.Context, table string) ([]ForeignKeyInf
 	if x.g.engine == engineClickHouse {
 		return nil, nil
 	}
+	var sqliteNames map[string]string
+	if x.g.engine == engineSQLite {
+		create, _, err := x.sqliteCreateSQL(ctx, table)
+		if err != nil {
+			return nil, err
+		}
+		sqliteNames = parseCreate(create).fkNames
+	}
 	var out []ForeignKeyInfo
 	actions := map[string]string{"a": "no action", "r": "restrict", "c": "cascade", "n": "set null", "d": "set default"}
 	err := x.introspect(ctx, "foreign keys", map[engine]string{
@@ -396,7 +405,7 @@ func (x session) foreignKeys(ctx context.Context, table string) ([]ForeignKeyInf
 		}
 		f.OnUpdate, f.OnDelete = strings.ToLower(f.OnUpdate), strings.ToLower(f.OnDelete)
 		if x.g.engine == engineSQLite {
-			f.Name = indexName(table, suffixForeign, f.Columns)
+			f.Name = cmp.Or(sqliteNames[strings.Join(f.Columns, ",")], indexName(table, suffixForeign, f.Columns))
 		}
 		out = append(out, f)
 		return nil

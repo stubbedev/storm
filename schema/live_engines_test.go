@@ -337,6 +337,34 @@ func TestSQLiteRebuild(t *testing.T) {
 
 	p, _ := s.Pretend()
 	failed(t, "pretend rebuild of a missing table", p.Table(ctx, "later", func(t *Blueprint) { t.String("x").Change() }), "does not exist", "pretend")
+
+	check(t, s.Create(ctx, "keywords", func(t *Blueprint) {
+		t.ID()
+		t.String("primary")
+		t.String("check").Nullable()
+		t.String("unique").Nullable()
+		t.ForeignID("foreign").Nullable().Constrained("authors")
+		t.UnsignedBigInteger("writer").Nullable()
+		t.Foreign("writer").References("id").On("authors").Named("fk_custom")
+	}))
+	fks, err := s.GetForeignKeys(ctx, "keywords")
+	check(t, err)
+	want(t, "a named foreign key keeps its name", []string{fks[0].Name, fks[1].Name}, []string{"fk_custom", "keywords_foreign_foreign"})
+	check(t, s.Create(ctx, "keyword_log", func(t *Blueprint) { t.String("msg") }))
+	execOn(t, ctx, conn, `CREATE TRIGGER "keywords_logged" AFTER INSERT ON "keywords" BEGIN INSERT INTO "keyword_log" VALUES (new."primary"); END`)
+	execOn(t, ctx, conn, `CREATE VIEW "keyword_names" AS SELECT "primary" FROM "keywords"`)
+	check(t, s.Table(ctx, "keywords", func(t *Blueprint) { t.String("primary", 50).Change() }))
+	execOn(t, ctx, conn, `INSERT INTO keywords ("primary") VALUES ('p')`)
+	want(t, "a trigger survives the rebuild", column[string](t, ctx, conn, "SELECT msg FROM keyword_log"), []string{"p"})
+	want(t, "a view over the table survives the rebuild", column[string](t, ctx, conn, "SELECT \"primary\" FROM keyword_names"), []string{"p"})
+	want(t, "legacy_alter_table is restored", column[int64](t, ctx, conn, "PRAGMA legacy_alter_table"), []int64{0})
+	fks, err = s.GetForeignKeys(ctx, "keywords")
+	check(t, err)
+	want(t, "a rebuild keeps a named foreign key's name", fks[0].Name, "fk_custom")
+	check(t, s.Table(ctx, "keywords", func(t *Blueprint) { t.DropForeign("fk_custom") }))
+	fks, err = s.GetForeignKeys(ctx, "keywords")
+	check(t, err)
+	want(t, "a named foreign key drops by its name", len(fks), 1)
 }
 
 func TestDuckDBSchema(t *testing.T) {

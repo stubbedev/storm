@@ -138,6 +138,13 @@ type sqliteTable struct {
 	fks         []*Foreign
 	constraints []string
 	autoinc     bool
+	// triggers holds the CREATE TRIGGER statements that dropping the old
+	// table drops with it.
+	triggers []string
+	// legacyAlter is the connection's legacy_alter_table setting; with it
+	// off, renaming the new table into place would check every view
+	// against a schema in which the table is missing.
+	legacyAlter bool
 }
 
 type sqliteColumn struct {
@@ -173,8 +180,9 @@ func (x session) sqliteTable(ctx context.Context, table string) (sqliteTable, er
 		}
 		return sqliteTable{}, fmt.Errorf("schema: sqlite cannot rebuild table %s: it does not exist%s", table, reason)
 	}
-	defs, constraints := columnDefs(create)
-	t := sqliteTable{constraints: constraints}
+	parsed := parseCreate(create)
+	defs := parsed.defs
+	t := sqliteTable{constraints: parsed.constraints}
 	err = x.query(ctx, "SELECT name, hidden IN (2, 3) FROM pragma_table_xinfo(?) ORDER BY cid", []any{table}, func(r *sql.Rows) error {
 		var c sqliteColumn
 		if err := r.Scan(&c.name, &c.generated); err != nil {
@@ -228,6 +236,21 @@ func (x session) sqliteTable(ctx context.Context, table string) (sqliteTable, er
 		t.fks = append(t.fks, fk)
 	}
 	t.autoinc = slices.ContainsFunc(t.columns, func(c sqliteColumn) bool { return autoincrementDef(c.def) })
+	err = x.query(ctx, "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? AND sql IS NOT NULL ORDER BY name", []any{table}, func(r *sql.Rows) error {
+		var trigger string
+		if err := r.Scan(&trigger); err != nil {
+			return err
+		}
+		t.triggers = append(t.triggers, trigger)
+		return nil
+	})
+	if err != nil {
+		return sqliteTable{}, fmt.Errorf("schema: sqlite: reading the triggers of %s: %w", table, err)
+	}
+	err = x.query(ctx, "PRAGMA legacy_alter_table", nil, func(r *sql.Rows) error { return r.Scan(&t.legacyAlter) })
+	if err != nil {
+		return sqliteTable{}, fmt.Errorf("schema: sqlite: reading legacy_alter_table: %w", err)
+	}
 	return t, nil
 }
 
@@ -412,51 +435,112 @@ func (g grammar) planSQLiteRebuild(bp *Blueprint, cmds []*command, t sqliteTable
 			"DELETE FROM sqlite_sequence WHERE name = "+g.literal(tmp),
 			"INSERT INTO sqlite_sequence (name, seq) SELECT "+g.literal(tmp)+", seq FROM sqlite_sequence WHERE name = "+g.literal(table))
 	}
-	stmts = append(stmts,
-		"DROP TABLE "+g.quote(table),
-		"ALTER TABLE "+g.quote(tmp)+" RENAME TO "+g.quote(table),
-	)
+	stmts = append(stmts, "DROP TABLE "+g.quote(table))
+	rename := "ALTER TABLE " + g.quote(tmp) + " RENAME TO " + g.quote(table)
+	if t.legacyAlter {
+		stmts = append(stmts, rename)
+	} else {
+		stmts = append(stmts, "PRAGMA legacy_alter_table = ON", rename, "PRAGMA legacy_alter_table = OFF")
+	}
 	for _, ix := range indexes {
 		stmts = append(stmts, ix.sql)
 	}
-	return append(stmts, newIndexes...), nil
+	stmts = append(stmts, newIndexes...)
+	return append(stmts, t.triggers...), nil
 }
 
-// columnDefs splits a CREATE TABLE statement into its column definitions,
-// keyed by column name, preserving CHECK, GENERATED, COLLATE and other
-// clauses that SQLite's pragmas don't report, and its CHECK and UNIQUE
-// table constraints verbatim. Primary and foreign keys are recomputed from
-// pragmas.
-func columnDefs(create string) (map[string]string, []string) {
-	out := map[string]string{}
-	var constraints []string
+// sqliteCreate is what a stored CREATE TABLE statement holds beyond
+// SQLite's pragmas: each column's full definition, keyed by name, with the
+// CHECK, GENERATED, COLLATE and other clauses the pragmas don't report;
+// the CHECK and UNIQUE table constraints verbatim; and the names of named
+// foreign keys, keyed by their comma-joined columns. Primary and foreign
+// keys themselves are read from the pragmas.
+type sqliteCreate struct {
+	defs        map[string]string
+	constraints []string
+	fkNames     map[string]string
+}
+
+func parseCreate(create string) sqliteCreate {
+	c := sqliteCreate{defs: map[string]string{}, fkNames: map[string]string{}}
 	open, end := strings.IndexByte(create, '('), strings.LastIndexByte(create, ')')
 	if open < 0 || end <= open {
-		return out, nil
+		return c
 	}
 	for _, part := range splitTopLevel(create[open+1 : end]) {
 		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
 		name, rest := splitName(part)
-		kind := strings.ToUpper(name)
+		if strings.IndexByte("\"`[", part[0]) >= 0 {
+			c.defs[name] = part
+			continue
+		}
+		kind, constraint := strings.ToUpper(name), ""
 		if kind == "CONSTRAINT" {
-			_, after := splitName(rest)
-			kind, _ = splitName(strings.ToUpper(after))
+			constraint, rest = splitName(rest)
+			name, rest = splitName(rest)
+			kind = strings.ToUpper(name)
 		}
 		switch kind {
-		case "PRIMARY", "FOREIGN":
+		case "PRIMARY":
+		case "FOREIGN":
+			if constraint != "" {
+				_, cols := splitName(rest)
+				c.fkNames[strings.Join(identifierList(cols), ",")] = constraint
+			}
 		case "CHECK", "UNIQUE":
-			constraints = append(constraints, part)
+			c.constraints = append(c.constraints, part)
 		default:
-			out[name] = part
+			c.defs[name] = part
 		}
 	}
-	return out, constraints
+	return c
+}
+
+// identifierList reads the identifiers of the parenthesised list s starts
+// with: ("a", "b") REFERENCES ... gives [a b].
+func identifierList(s string) []string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "(") {
+		return nil
+	}
+	inner := s[1:]
+	eachTopLevel(inner, func(i int, c byte) bool {
+		if c == ')' {
+			inner = inner[:i]
+			return false
+		}
+		return true
+	})
+	var names []string
+	for _, part := range splitTopLevel(inner) {
+		name, _ := splitName(part)
+		names = append(names, name)
+	}
+	return names
 }
 
 // splitTopLevel splits on commas outside parentheses and quotes.
 func splitTopLevel(s string) []string {
 	var parts []string
-	depth, start := 0, 0
+	start := 0
+	eachTopLevel(s, func(i int, c byte) bool {
+		if c == ',' {
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+		return true
+	})
+	return append(parts, s[start:])
+}
+
+// eachTopLevel calls fn with each byte of s outside quotes and nested
+// parentheses (an unmatched closing parenthesis included) until fn
+// returns false.
+func eachTopLevel(s string, fn func(i int, c byte) bool) {
+	depth := 0
 	var quote byte
 	for i := range len(s) {
 		c := s[i]
@@ -471,14 +555,12 @@ func splitTopLevel(s string) []string {
 			quote = ']'
 		case c == '(':
 			depth++
-		case c == ')':
+		case c == ')' && depth > 0:
 			depth--
-		case c == ',' && depth == 0:
-			parts = append(parts, s[start:i])
-			start = i + 1
+		case depth == 0 && !fn(i, c):
+			return
 		}
 	}
-	return append(parts, s[start:])
 }
 
 // splitName returns the (unquoted) leading identifier of a definition and the rest.
