@@ -396,7 +396,7 @@ func (x session) foreignKeys(ctx context.Context, table string) ([]ForeignKeyInf
 		}
 		f.OnUpdate, f.OnDelete = strings.ToLower(f.OnUpdate), strings.ToLower(f.OnDelete)
 		if x.g.engine == engineSQLite {
-			f.Name = indexName(table, "foreign", f.Columns)
+			f.Name = indexName(table, suffixForeign, f.Columns)
 		}
 		out = append(out, f)
 		return nil
@@ -460,33 +460,99 @@ func (x session) duckdbDropOrder(ctx context.Context, tables []string) ([]string
 	return ordered, nil
 }
 
-// postgresOwnedRenames renames the primary key, enum checks and sequences
-// named after a Postgres table that is being renamed, so the grammar's
-// conventional names (to_pkey, to_col_seq, to_col_check) keep matching.
+// duckdbRenameRefusal refuses renaming a DuckDB table that a sequence
+// feeds, that has indexes or that a foreign key references: DuckDB
+// cannot rename the first two, and refuses the rename for the last.
+func (x session) duckdbRenameRefusal(ctx context.Context, table string) error {
+	var reasons []string
+	err := x.query(ctx, `SELECT 'its column ' || column_name || ' draws from a sequence named after it' FROM duckdb_columns()
+			WHERE table_name = ? AND schema_name = current_schema() AND column_default LIKE 'nextval(%'
+		UNION ALL
+		SELECT 'it has index ' || index_name FROM duckdb_indexes() WHERE table_name = ? AND schema_name = current_schema()
+		UNION ALL
+		SELECT 'table ' || table_name || ' references it' FROM duckdb_constraints()
+			WHERE constraint_type = 'FOREIGN KEY' AND referenced_table = ? AND schema_name = current_schema()
+		ORDER BY 1`, []any{table, table, table}, func(r *sql.Rows) error {
+		var reason string
+		if err := r.Scan(&reason); err != nil {
+			return err
+		}
+		reasons = append(reasons, reason)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("schema: reading what depends on table %s: %w", table, err)
+	}
+	if len(reasons) > 0 {
+		return x.g.unsupported(table, "rename table "+table, "DuckDB cannot rename a table while "+strings.Join(reasons, ", ")+"; create the new table and copy the rows")
+	}
+	return nil
+}
+
+// mysqlOwnedRenames renames the foreign keys of table from named after
+// it: MySQL and MariaDB foreign key names are global to the database and
+// cannot be renamed in place, so each is dropped and added again.
+func (x session) mysqlOwnedRenames(ctx context.Context, from, to string) ([]string, error) {
+	fks, err := x.foreignKeys(ctx, from)
+	if err != nil {
+		return nil, err
+	}
+	var stmts []string
+	for _, f := range fks {
+		renamed, ok := renamedOwned(f.Name, from, to)
+		if !ok {
+			continue
+		}
+		ref := f.ForeignTable
+		if ref == from {
+			ref = to
+		}
+		def, err := x.g.foreign(to, &Foreign{Name: renamed, Columns: f.Columns, RefTable: ref, RefColumns: f.ForeignColumns, OnDel: f.OnDelete, OnUpd: f.OnUpdate})
+		if err != nil {
+			return nil, err
+		}
+		stmts = append(stmts, "ALTER TABLE "+x.g.quote(to)+" DROP FOREIGN KEY "+x.g.quote(f.Name)+", ADD "+def)
+	}
+	return stmts, nil
+}
+
+// postgresOwnedRenames renames the constraints, indexes and sequences of
+// table from that are named after it, so that they follow the table and
+// a new table called from can take its names again.
 func (x session) postgresOwnedRenames(ctx context.Context, from, to string) ([]string, error) {
 	var stmts []string
-	err := x.query(ctx, `SELECT 'constraint', c.conname, c.contype::text FROM pg_constraint c
+	err := x.query(ctx, `SELECT 'constraint', c.conname FROM pg_constraint c
 			JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
-			WHERE t.relname = $1 AND n.nspname = current_schema() AND c.contype IN ('p', 'c')
+			WHERE t.relname = $1 AND n.nspname = current_schema() AND c.contype IN ('p', 'u', 'c', 'f', 'x')
 		UNION ALL
-		SELECT 'sequence', s.relname, 'S' FROM pg_class s
+		SELECT 'index', i.relname FROM pg_index ix
+			JOIN pg_class i ON i.oid = ix.indexrelid JOIN pg_class t ON t.oid = ix.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+			WHERE t.relname = $1 AND n.nspname = current_schema()
+			AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.oid AND c.conrelid = t.oid AND c.contype IN ('p', 'u', 'x'))
+		UNION ALL
+		SELECT 'sequence', s.relname FROM pg_class s
 			JOIN pg_depend d ON d.objid = s.oid AND d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass
 			JOIN pg_class t ON t.oid = d.refobjid JOIN pg_namespace n ON n.oid = t.relnamespace
 			WHERE s.relkind = 'S' AND t.relname = $1 AND n.nspname = current_schema()
 		ORDER BY 1, 2`, []any{from}, func(r *sql.Rows) error {
-		var kind, name, contype string
-		if err := r.Scan(&kind, &name, &contype); err != nil {
+		var kind, name string
+		if err := r.Scan(&kind, &name); err != nil {
 			return err
 		}
-		rest, ok := strings.CutPrefix(name, from+"_")
+		renamed, ok := renamedOwned(name, from, to)
 		switch {
 		case !ok:
-		case kind == "sequence" && strings.HasSuffix(rest, "_seq"):
-			stmts = append(stmts, "ALTER SEQUENCE "+x.g.quote(name)+" RENAME TO "+x.g.quote(to+"_"+rest))
-		case contype == "p" && rest == "pkey", contype == "c" && strings.HasSuffix(rest, "_check"):
-			stmts = append(stmts, "ALTER TABLE "+x.g.quote(to)+" RENAME CONSTRAINT "+x.g.quote(name)+" TO "+x.g.quote(to+"_"+rest))
+		case kind == "sequence":
+			stmts = append(stmts, "ALTER SEQUENCE "+x.g.quote(name)+" RENAME TO "+x.g.quote(renamed))
+		case kind == "index":
+			stmts = append(stmts, "ALTER INDEX "+x.g.quote(name)+" RENAME TO "+x.g.quote(renamed))
+		default:
+			stmts = append(stmts, "ALTER TABLE "+x.g.quote(to)+" RENAME CONSTRAINT "+x.g.quote(name)+" TO "+x.g.quote(renamed))
 		}
 		return nil
 	})
-	return stmts, err
+	if err != nil {
+		return nil, fmt.Errorf("schema: reading what table %s owns: %w", from, err)
+	}
+	return stmts, nil
 }

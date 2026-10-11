@@ -94,6 +94,35 @@ func TestLiveFixes(t *testing.T) {
 		failed(t, "a second key beside the inline one", s.Table(ctx, "keyed", func(t *Blueprint) { t.Primary("code") }))
 	}
 
+	planes := func(t *Blueprint) {
+		t.ID()
+		t.String("tail").Unique()
+		t.String("model")
+		t.Index("model")
+		t.ForeignID("keyed_id").Nullable().Constrained("keyed")
+	}
+	check(t, s.Create(ctx, "planes", planes))
+	check(t, s.Rename(ctx, "planes", "old_planes"))
+	check(t, s.Create(ctx, "planes", planes))
+	execOn(t, ctx, conn, "INSERT INTO planes (tail, model) VALUES (?, ?)", "N1", "A320")
+	if x.g.engine != engineMySQL && x.g.engine != engineMariaDB {
+		indexes, err := s.GetIndexes(ctx, "old_planes")
+		check(t, err)
+		var names []string
+		for _, ix := range indexes {
+			if !ix.Primary {
+				names = append(names, ix.Name)
+			}
+		}
+		slices.Sort(names)
+		want(t, "a renamed table's indexes follow it", names, []string{"old_planes_model_index", "old_planes_tail_unique"})
+	}
+	if x.g.engine != engineSQLite {
+		fks, err := s.GetForeignKeys(ctx, "old_planes")
+		check(t, err)
+		want(t, "a renamed table's foreign keys follow it", fks[0].Name, "old_planes_keyed_id_foreign")
+	}
+
 	if x.g.mysqlFamily() {
 		check(t, s.Create(ctx, "defaults", func(t *Blueprint) {
 			t.String("b").Default("abc")
@@ -337,7 +366,13 @@ func TestDuckDBSchema(t *testing.T) {
 	check(t, s.Create(ctx, "keyed", func(t *Blueprint) { t.ID().Primary(); t.String("code") }))
 	execOn(t, ctx, conn, "INSERT INTO keyed (code) VALUES ('a'), ('b')")
 	want(t, "ID().Primary() declares one auto-incrementing key", column[int64](t, ctx, conn, "SELECT id FROM keyed ORDER BY id"), []int64{1, 2})
+	failed(t, "duckdb refuses renaming a table fed by a sequence", s.Rename(ctx, "keyed", "old_keyed"), "draws from a sequence")
 	check(t, s.Drop(ctx, "keyed"))
+	check(t, s.Create(ctx, "tags", func(t *Blueprint) { t.String("name").Index() }))
+	failed(t, "duckdb refuses renaming an indexed table", s.Rename(ctx, "tags", "labels"), "has index tags_name_index")
+	check(t, s.Table(ctx, "tags", func(t *Blueprint) { t.DropIndexOn("name") }))
+	check(t, s.Rename(ctx, "tags", "labels"))
+	check(t, s.Drop(ctx, "labels"))
 	failed(t, "duckdb cannot alter a referenced table", s.Table(ctx, "it's", func(t *Blueprint) { t.Integer("votes").Default(0) }), "Dependency")
 	ok, err := s.HasColumn(ctx, "it's", "votes")
 	check(t, err)

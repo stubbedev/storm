@@ -369,6 +369,27 @@ func TestBlueprintNames(t *testing.T) {
 	want(t, "DropForeignIDFor drops the column", stmts, []string{`ALTER TABLE "sites" DROP COLUMN "tenant_ulid"`})
 }
 
+func TestRenamedOwned(t *testing.T) {
+	for name, wantName := range map[string]string{
+		"users_email_unique":    "members_email_unique",
+		"users_pkey":            "members_pkey",
+		"users_id_seq":          "members_id_seq",
+		"users_role_check":      "members_role_check",
+		"users_team_id_foreign": "members_team_id_foreign",
+		"users_primary":         "members_primary",
+		"users_name_index":      "members_name_index",
+		"users_email_lower":     "",
+		"accounts_email_index":  "",
+		"usersx_email_unique":   "",
+	} {
+		got, ok := renamedOwned(name, "users", "members")
+		want(t, name+" renamed", got, wantName)
+		want(t, name+" owned", ok, wantName != "")
+	}
+	got, _ := renamedOwned("my_users_email_unique", "My-Users", "Members")
+	want(t, "an index named after a mixed-case table", got, "members_email_unique")
+}
+
 func TestInflection(t *testing.T) {
 	for singularForm, plural := range map[string]string{
 		"user": "users", "category": "categories", "status": "statuses", "address": "addresses",

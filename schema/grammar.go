@@ -411,7 +411,7 @@ func isTime(t string) bool {
 	return false
 }
 
-func checkName(table, column string) string { return table + "_" + column + "_check" }
+func checkName(table, column string) string { return table + "_" + column + "_" + suffixCheck }
 
 // postgresIfCheck runs stmt only when table has the CHECK constraint
 // name. The dollar-quote tag is chosen so that it never occurs in the body.
@@ -561,7 +561,9 @@ func (g grammar) columnDef(c *Column, nullability bool) (string, error) {
 	return b.String(), nil
 }
 
-func sequenceName(table, column string) string { return table + "_" + column + "_seq" }
+func sequenceName(table, column string) string { return table + "_" + column + "_" + suffixSequence }
+
+func pkeyName(table string) string { return table + "_" + suffixPkey }
 
 func isNumeric(t string) bool {
 	switch t {
@@ -719,8 +721,8 @@ func (g grammar) compileCreate(bp *Blueprint) ([]string, error) {
 }
 
 func (g grammar) primaryName(table string, idx *Index) string {
-	if g.engine == enginePostgres && (idx == nil || idx.IndexName == indexName(table, "primary", idx.Columns)) {
-		return table + "_pkey"
+	if g.engine == enginePostgres && (idx == nil || idx.IndexName == indexName(table, suffixPrimary, idx.Columns)) {
+		return pkeyName(table)
 	}
 	return idx.IndexName
 }
@@ -987,7 +989,7 @@ func (g grammar) alterCommand(table string, cmd *command) ([]string, error) {
 		case engineMySQL, engineMariaDB:
 			return one("ALTER TABLE " + t + " DROP PRIMARY KEY")
 		case enginePostgres:
-			return one("ALTER TABLE " + t + " DROP CONSTRAINT " + g.quote(table+"_pkey"))
+			return one("ALTER TABLE " + t + " DROP CONSTRAINT " + g.quote(pkeyName(table)))
 		}
 		return nil, g.unsupported(table, "drop the primary key", "the primary key is fixed when the table is created")
 	}

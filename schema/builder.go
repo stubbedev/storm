@@ -137,8 +137,10 @@ func (s *Builder) DropColumns(ctx context.Context, table, column string, more ..
 	return s.Table(ctx, table, func(t *Blueprint) { t.DropColumn(column, more...) })
 }
 
-// Rename renames a table. On Postgres the primary key, enum checks and
-// sequences named after the table are renamed along with it.
+// Rename renames a table. The indexes, keys, checks and sequences named
+// after the table whose names the engine keeps database-wide are renamed
+// along with it, so that a new table can take the old name. DuckDB, which can rename
+// neither sequences nor indexes, refuses a table that has them.
 func (s *Builder) Rename(ctx context.Context, from, to string) error {
 	if ds, ok, err := s.docStore(ctx); err != nil || ok {
 		return thenRun(err, func() error { return docRefusal(ds, from, "rename collection", ds.RenameCollection(ctx, from, to)) })
@@ -150,15 +152,21 @@ func (s *Builder) Rename(ctx context.Context, from, to string) error {
 	if err := x.g.checkIdentifiers(from, from, to); err != nil {
 		return err
 	}
-	stmts := []string{x.g.rename(from, to)}
-	if x.g.engine == enginePostgres {
-		owned, err := x.postgresOwnedRenames(ctx, from, to)
-		if err != nil {
-			return err
-		}
-		stmts = append(stmts, owned...)
+	var owned []string
+	switch x.g.engine {
+	case enginePostgres:
+		owned, err = x.postgresOwnedRenames(ctx, from, to)
+	case engineSQLite:
+		owned, err = x.sqliteOwnedRenames(ctx, from, to)
+	case engineMySQL, engineMariaDB:
+		owned, err = x.mysqlOwnedRenames(ctx, from, to)
+	case engineDuckDB:
+		err = x.duckdbRenameRefusal(ctx, from)
 	}
-	return x.execAll(ctx, stmts...)
+	if err != nil {
+		return err
+	}
+	return x.execAll(ctx, append([]string{x.g.rename(from, to)}, owned...)...)
 }
 
 func (s *Builder) HasTable(ctx context.Context, table string) (bool, error) {

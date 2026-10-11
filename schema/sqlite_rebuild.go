@@ -231,6 +231,47 @@ func (x session) sqliteTable(ctx context.Context, table string) (sqliteTable, er
 	return t, nil
 }
 
+// renameInSQL replaces the first mention of identifier from, quoted or
+// bare, in an SQLite statement, failing when it names it in neither form.
+func (g grammar) renameInSQL(stmt, from, to string) (string, error) {
+	text := strings.Replace(stmt, g.quote(from), g.quote(to), 1)
+	if text == stmt {
+		text = strings.Replace(text, " "+from+" ", " "+g.quote(to)+" ", 1)
+	}
+	if text == stmt {
+		return "", fmt.Errorf("schema: sqlite: cannot find %s in %q", from, stmt)
+	}
+	return text, nil
+}
+
+// sqliteOwnedRenames renames the indexes of table from named after it;
+// SQLite index names are global, so the old names would block a new table
+// called from. Constraint names are local to their table and stay.
+func (x session) sqliteOwnedRenames(ctx context.Context, from, to string) ([]string, error) {
+	var stmts []string
+	err := x.query(ctx, "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL ORDER BY name",
+		[]any{from}, func(r *sql.Rows) error {
+			var name, create string
+			if err := r.Scan(&name, &create); err != nil {
+				return err
+			}
+			renamed, ok := renamedOwned(name, from, to)
+			if !ok {
+				return nil
+			}
+			text, err := x.g.renameInSQL(create, name, renamed)
+			if err == nil {
+				text, err = x.g.renameInSQL(text, from, to)
+			}
+			if err != nil {
+				return fmt.Errorf("schema: sqlite: renaming index %s with table %s: %w", name, from, err)
+			}
+			stmts = append(stmts, "DROP INDEX "+x.g.quote(name), text)
+			return nil
+		})
+	return stmts, err
+}
+
 func autoincrementDef(def string) bool {
 	return strings.Contains(strings.ToUpper(def), "AUTOINCREMENT")
 }
@@ -321,12 +362,9 @@ func (g grammar) planSQLiteRebuild(bp *Blueprint, cmds []*command, t sqliteTable
 			if i < 0 {
 				return nil, missing("index", cmd.from+" to rename")
 			}
-			text := strings.Replace(indexes[i].sql, g.quote(cmd.from), g.quote(cmd.to), 1)
-			if text == indexes[i].sql {
-				text = strings.Replace(text, " "+cmd.from+" ", " "+g.quote(cmd.to)+" ", 1)
-			}
-			if text == indexes[i].sql {
-				return nil, fmt.Errorf("schema: sqlite: cannot find the name of index %s in %q", cmd.from, text)
+			text, err := g.renameInSQL(indexes[i].sql, cmd.from, cmd.to)
+			if err != nil {
+				return nil, err
 			}
 			indexes[i].sql, indexes[i].name = text, cmd.to
 		default:

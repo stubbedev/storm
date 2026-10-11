@@ -335,7 +335,7 @@ func docFindIndex(idxs []orm.DocIndex, table string, want *Index) (orm.DocIndex,
 		if idx.Name == want.IndexName || len(want.Columns) > 0 && slices.Equal(idx.FieldNames(), want.Columns) {
 			return idx, true
 		}
-		for _, suffix := range []string{"index", "unique", "fulltext", "primary"} {
+		for _, suffix := range []string{suffixIndex, suffixUnique, suffixFullText, suffixPrimary} {
 			if indexName(table, suffix, idx.FieldNames()) == want.IndexName {
 				return idx, true
 			}

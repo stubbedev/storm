@@ -583,7 +583,7 @@ func (i *Index) Language(lang string) *Index  { i.Lang = lang; return i }
 
 // Primary sets the primary key. On ClickHouse it is the MergeTree primary
 // key, which also becomes the sorting key unless OrderBy sets one.
-func (b *Blueprint) Primary(cols ...string) *Index { return b.index(cmdPrimary, "primary", cols) }
+func (b *Blueprint) Primary(cols ...string) *Index { return b.index(cmdPrimary, suffixPrimary, cols) }
 
 // keyedByCommand reports whether a Primary command names exactly column;
 // that command then declares the key, not the column's definition.
@@ -593,7 +593,7 @@ func (b *Blueprint) keyedByCommand(column string) bool {
 	})
 }
 
-func (b *Blueprint) Unique(cols ...string) *Index { return b.index(cmdUnique, "unique", cols) }
+func (b *Blueprint) Unique(cols ...string) *Index { return b.index(cmdUnique, suffixUnique, cols) }
 
 // RawIndex indexes an SQL expression (rawIndex): RawIndex("lower(email)",
 // "users_email_lower"). MariaDB indexes columns only.
@@ -602,17 +602,19 @@ func (b *Blueprint) RawIndex(expression, name string) *Index {
 	b.commands = append(b.commands, &command{kind: cmdIndex, index: idx})
 	return idx
 }
-func (b *Blueprint) Index(cols ...string) *Index    { return b.index(cmdIndex, "index", cols) }
-func (b *Blueprint) FullText(cols ...string) *Index { return b.index(cmdFullText, "fulltext", cols) }
+func (b *Blueprint) Index(cols ...string) *Index { return b.index(cmdIndex, suffixIndex, cols) }
+func (b *Blueprint) FullText(cols ...string) *Index {
+	return b.index(cmdFullText, suffixFullText, cols)
+}
 
 func (b *Blueprint) SpatialIndex(cols ...string) *Index {
-	return b.index(cmdSpatial, "spatialindex", cols)
+	return b.index(cmdSpatial, suffixSpatial, cols)
 }
 
 // HnswIndex builds a pgvector HNSW index over one vector column, making
 // Nearest ordering an index-backed search instead of a sequential scan.
 func (b *Blueprint) HnswIndex(column string, metric orm.VectorMetric) *Index {
-	idx := b.index(cmdHnsw, "hnsw", []string{column})
+	idx := b.index(cmdHnsw, suffixHnsw, []string{column})
 	idx.Algo = "hnsw"
 	idx.VectorOp = vectorOpClass(metric)
 	return idx
@@ -634,7 +636,7 @@ func (b *Blueprint) RenameIndex(from, to string) {
 
 // Foreign starts a foreign key on cols.
 func (b *Blueprint) Foreign(cols ...string) *Foreign {
-	f := &Foreign{Columns: cols, Name: indexName(b.table, "foreign", cols)}
+	f := &Foreign{Columns: cols, Name: indexName(b.table, suffixForeign, cols)}
 	b.commands = append(b.commands, &command{kind: cmdForeign, foreign: f})
 	return f
 }
@@ -688,7 +690,7 @@ func (b *Blueprint) DropIndex(name string) { b.dropNamed(cmdDropIndex, name) }
 
 // DropIndexOn drops the index Index(columns...) created (dropIndex(['a', 'b'])).
 func (b *Blueprint) DropIndexOn(column string, more ...string) {
-	b.dropOn(cmdDropIndex, "index", column, more)
+	b.dropOn(cmdDropIndex, suffixIndex, column, more)
 }
 
 // DropUnique drops the unique index named name.
@@ -696,7 +698,7 @@ func (b *Blueprint) DropUnique(name string) { b.dropNamed(cmdDropIndex, name) }
 
 // DropUniqueOn drops the unique index Unique(columns...) created.
 func (b *Blueprint) DropUniqueOn(column string, more ...string) {
-	b.dropOn(cmdDropIndex, "unique", column, more)
+	b.dropOn(cmdDropIndex, suffixUnique, column, more)
 }
 
 // DropFullText drops the full text index named name.
@@ -704,7 +706,7 @@ func (b *Blueprint) DropFullText(name string) { b.dropNamed(cmdDropIndex, name) 
 
 // DropFullTextOn drops the full text index FullText(columns...) created.
 func (b *Blueprint) DropFullTextOn(column string, more ...string) {
-	b.dropOn(cmdDropIndex, "fulltext", column, more)
+	b.dropOn(cmdDropIndex, suffixFullText, column, more)
 }
 
 // DropSpatialIndex drops the spatial index named name.
@@ -712,7 +714,7 @@ func (b *Blueprint) DropSpatialIndex(name string) { b.dropNamed(cmdDropIndex, na
 
 // DropSpatialIndexOn drops the spatial index SpatialIndex(columns...) created.
 func (b *Blueprint) DropSpatialIndexOn(column string, more ...string) {
-	b.dropOn(cmdDropIndex, "spatialindex", column, more)
+	b.dropOn(cmdDropIndex, suffixSpatial, column, more)
 }
 
 // DropForeign drops the foreign key named name.
@@ -720,11 +722,11 @@ func (b *Blueprint) DropForeign(name string) { b.dropNamed(cmdDropForeign, name)
 
 // DropForeignOn drops the foreign key Foreign(columns...) created.
 func (b *Blueprint) DropForeignOn(column string, more ...string) {
-	b.dropOn(cmdDropForeign, "foreign", column, more)
+	b.dropOn(cmdDropForeign, suffixForeign, column, more)
 }
 
 func (b *Blueprint) DropPrimary() {
-	b.commands = append(b.commands, &command{kind: cmdDropPrimary, index: &Index{IndexName: indexName(b.table, "primary", nil)}})
+	b.commands = append(b.commands, &command{kind: cmdDropPrimary, index: &Index{IndexName: indexName(b.table, suffixPrimary, nil)}})
 }
 
 // DropConstrainedForeignID drops the foreign key on column and the column.
@@ -767,10 +769,42 @@ func (b *Blueprint) dropOn(kind commandKind, suffix, column string, more []strin
 	b.commands = append(b.commands, &command{kind: kind, index: &Index{IndexName: indexName(b.table, suffix, cols), Columns: cols}})
 }
 
+// Suffixes of the conventional index and constraint names,
+// <table>_<columns>_<suffix>.
+const (
+	suffixPrimary  = "primary"
+	suffixUnique   = "unique"
+	suffixIndex    = "index"
+	suffixFullText = "fulltext"
+	suffixSpatial  = "spatialindex"
+	suffixHnsw     = "hnsw"
+	suffixForeign  = "foreign"
+	suffixCheck    = "check"
+	suffixSequence = "seq"
+	suffixPkey     = "pkey"
+)
+
+var ownedSuffixes = []string{suffixPrimary, suffixUnique, suffixIndex, suffixFullText, suffixSpatial, suffixHnsw, suffixForeign, suffixCheck, suffixSequence, suffixPkey}
+
+var nameSeparators = strings.NewReplacer("-", "_", ".", "_")
+
 // indexName follows Laravel's convention: users_email_unique.
 func indexName(table, suffix string, cols []string) string {
 	parts := append(append([]string{table}, cols...), suffix)
-	return strings.ToLower(strings.NewReplacer("-", "_", ".", "_").Replace(strings.Join(parts, "_")))
+	return strings.ToLower(nameSeparators.Replace(strings.Join(parts, "_")))
+}
+
+// renamedOwned maps a name that follows the conventions for an index,
+// constraint or sequence of table from onto table to; ok is false for any
+// other name, which a table rename leaves alone.
+func renamedOwned(name, from, to string) (string, bool) {
+	for _, p := range [][2]string{{strings.ToLower(nameSeparators.Replace(from)), strings.ToLower(nameSeparators.Replace(to))}, {from, to}} {
+		rest, ok := strings.CutPrefix(name, p[0]+"_")
+		if ok && slices.ContainsFunc(ownedSuffixes, func(s string) bool { return rest == s || strings.HasSuffix(rest, "_"+s) }) {
+			return p[1] + "_" + rest, true
+		}
+	}
+	return "", false
 }
 
 func first[T comparable](vs []T, def T) T {
