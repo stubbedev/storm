@@ -409,6 +409,16 @@ func TestSQLiteRebuild(t *testing.T) {
 	check(t, err)
 	want(t, "a named foreign key drops by its name", len(fks), 1)
 
+	execOn(t, ctx, conn, `CREATE TABLE "kids" ("id" integer PRIMARY KEY, "author_id" integer REFERENCES "authors")`)
+	bare := ForeignKeyInfo{Name: "kids_author_id_foreign", Columns: []string{"author_id"}, ForeignTable: "authors", ForeignColumns: []string{"id"}, OnUpdate: "no action", OnDelete: "no action"}
+	fks, err = s.GetForeignKeys(ctx, "kids")
+	check(t, err)
+	want(t, "REFERENCES without columns names the parent's key", fks, []ForeignKeyInfo{bare})
+	check(t, s.Table(ctx, "kids", func(t *Blueprint) { t.Integer("author_id").Nullable().Change() }))
+	fks, err = s.GetForeignKeys(ctx, "kids")
+	check(t, err)
+	want(t, "a rebuild keeps a foreign key written without columns", fks, []ForeignKeyInfo{bare})
+
 	check(t, s.Create(ctx, "pairs", func(t *Blueprint) {
 		t.Integer("a")
 		t.Integer("b")

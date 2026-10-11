@@ -371,8 +371,10 @@ func (x session) foreignKeys(ctx context.Context, table string) ([]ForeignKeyInf
 	var out []ForeignKeyInfo
 	actions := map[string]string{"a": "no action", "r": "restrict", "c": "cascade", "n": "set null", "d": "set default"}
 	err := x.introspect(ctx, "foreign keys", map[engine]string{
-		engineSQLite: `SELECT id, group_concat("from", ','), "table", group_concat("to", ','), on_update, on_delete
-			FROM (SELECT * FROM pragma_foreign_key_list(?) ORDER BY id, seq) GROUP BY id, "table", on_update, on_delete`,
+		engineSQLite: `SELECT id, group_concat("from", ','), "table",
+				coalesce(group_concat("to", ','), (SELECT group_concat(name, ',') FROM (SELECT name FROM pragma_table_info(fk."table") WHERE pk > 0 ORDER BY pk))),
+				on_update, on_delete
+			FROM (SELECT * FROM pragma_foreign_key_list(?) ORDER BY id, seq) AS fk GROUP BY id, "table", on_update, on_delete`,
 		enginePostgres: `SELECT c.conname, string_agg(la.attname, ',' ORDER BY k.ord), ft.relname, string_agg(fa.attname, ',' ORDER BY k.ord), c.confupdtype, c.confdeltype
 			FROM pg_constraint c
 			JOIN pg_class t ON t.oid = c.conrelid
