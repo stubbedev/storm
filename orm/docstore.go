@@ -157,7 +157,7 @@ func (q Query[M, K]) plan() (Plan, error) {
 			}
 			p.Vector = o.vec
 		case o.col != nil:
-			p.Orders = append(p.Orders, PlanOrder{Column: o.col.Name(), Desc: o.desc, NullsLast: o.nullsLast})
+			p.Orders = append(p.Orders, PlanOrder{Column: o.col.Name(), Desc: o.desc, Nulls: o.nulls})
 		default:
 			return notSupported("orderByRaw or ordering by an expression")
 		}

@@ -691,11 +691,14 @@ type SimplePage[M any] struct {
 	HasMore     bool `json:"has_more"`
 }
 
-// CursorPage is a keyset page (cursorPaginate()).
+// CursorPage is a keyset page (cursorPaginate()): NextCursor fetches the
+// items after it and PrevCursor the items before it, each empty when there
+// are none.
 type CursorPage[M any] struct {
 	Items      []M    `json:"data"`
 	PerPage    int    `json:"per_page"`
 	NextCursor string `json:"next_cursor,omitempty"`
+	PrevCursor string `json:"prev_cursor,omitempty"`
 }
 
 // Paginate returns page (from 1) of perPage models with the total count;
@@ -760,36 +763,39 @@ func simplePaginate[T any](perPage, page int, get func(limit, offset int) ([]T, 
 }
 
 // CursorPaginate pages by the values of the ORDER BY columns (keyset
-// pagination). Orders must be plain columns; with none, the primary key is used.
+// pagination), from the start or from a page's NextCursor or PrevCursor.
+// Orders must be plain columns; with none, the primary key is used.
 func (q Query[M, K]) CursorPaginate(perPage int, cursor string) (CursorPage[M], error) {
 	ctx := q.context()
 	orders := q.orders
 	if len(orders) == 0 {
 		orders = []Order[M]{q.table.keyOrder()}
-		q = q.Reorder(orders...)
 	}
 	terms := make([]keysetTerm, len(orders))
-	nullsLast := make([]Order[M], len(orders))
 	for i, o := range orders {
 		if o.col == nil {
 			return CursorPage[M]{}, errors.New("orm: CursorPaginate needs column orders")
 		}
-		nullable := nullableColumn(o.col) || slices.Contains(q.table.NullZero, o.col.Name())
-		terms[i] = keysetTerm{e: o.col, col: o.col.Name(), desc: o.desc, nullable: nullable}
-		nullsLast[i] = terms[i].order(o)
+		terms[i] = keysetTerm{e: o.col, col: o.col.Name(), desc: o.desc}
+		if nullableColumn(o.col) || slices.Contains(q.table.NullZero, o.col.Name()) {
+			terms[i].nulls = NullsLast
+		}
 	}
-	q = q.Reorder(nullsLast...)
 	value := func(m M, i int) any {
 		v := orders[i].col.anyValue(&m)
-		if terms[i].nullable && isZero(v) && slices.Contains(q.table.NullZero, terms[i].col) {
+		if terms[i].nulls != NullsDefault && isZero(v) && slices.Contains(q.table.NullZero, terms[i].col) {
 			return nil
 		}
 		return v
 	}
 	return cursorPaginate(perPage, cursor, terms,
 		func(i int, raw json.RawMessage) (any, error) { return orders[i].col.decode(raw) },
-		func(after *Cond[M], limit int) ([]M, error) {
-			page := q.Limit(limit)
+		func(terms []keysetTerm, after *Cond[M], limit int) ([]M, error) {
+			ordered := make([]Order[M], len(terms))
+			for i, t := range terms {
+				ordered[i] = t.order(orders[i])
+			}
+			page := q.Reorder(ordered...).Limit(limit)
 			if after != nil {
 				page = page.Where(*after)
 			}
@@ -799,27 +805,34 @@ func (q Query[M, K]) CursorPaginate(perPage int, cursor string) (CursorPage[M], 
 }
 
 // keysetTerm is one ORDER BY column of a keyset (cursor) page; a nullable
-// one sorts NULLs last and pages over them.
+// one sorts its NULLs at one end and pages over them.
 type keysetTerm struct {
-	e        AnyExpr
-	col      string
-	desc     bool
-	nullable bool
+	e     AnyExpr
+	col   string
+	desc  bool
+	nulls Nulls
 }
 
 // write renders the term as an ORDER BY item.
 func (t keysetTerm) write(b *SQL) {
-	if t.nullable {
-		b.Dialect.NullsLast(b, t.e, t.desc)
+	if t.nulls != NullsDefault {
+		b.Dialect.OrderNulls(b, t.e, t.desc, t.nulls)
 		return
 	}
 	t.e.build(b)
 	b.Write(map[bool]string{false: " ASC", true: " DESC"}[t.desc])
 }
 
+// reversed is t read backwards: the other direction, NULLs at the other end.
+func (t keysetTerm) reversed() keysetTerm {
+	t.desc = !t.desc
+	t.nulls = map[Nulls]Nulls{NullsDefault: NullsDefault, NullsFirst: NullsLast, NullsLast: NullsFirst}[t.nulls]
+	return t
+}
+
 // order is t as a model order on o's column.
 func (t keysetTerm) order[M any](o Order[M]) Order[M] {
-	o.f, o.nullsLast = t.write, t.nullable
+	o.f, o.desc, o.nulls = t.write, t.desc, t.nulls
 	return o
 }
 
@@ -829,76 +842,114 @@ func nullableColumn[M any](c AnyColumn[M]) bool {
 	return reflect.TypeOf(c.anyPtr(new(M))).Elem().Kind() == reflect.Pointer
 }
 
-// cursorPaginate fetches perPage items after cursor in the order of terms:
-// decode reads term i's value back from the cursor, fetch runs the page
-// query (after is nil on the first page), value reads term i from an item.
-func cursorPaginate[T, M any](perPage int, cursor string, terms []keysetTerm,
+// cursor is what a cursor encodes: the order values of the item it points
+// at, and whether it points at the items before that item.
+type cursor struct {
+	Prev   bool              `json:"prev,omitempty"`
+	Values []json.RawMessage `json:"values"`
+}
+
+// cursorPaginate fetches perPage items after (or, for a previous-page
+// cursor, before) cursor in the order of terms: decode reads term i's value
+// back from the cursor, fetch runs the page query in the given order
+// (after is nil on the first page), value reads term i from an item.
+func cursorPaginate[T, M any](perPage int, encoded string, terms []keysetTerm,
 	decode func(i int, raw json.RawMessage) (any, error),
-	fetch func(after *Cond[M], limit int) ([]T, error),
+	fetch func(terms []keysetTerm, after *Cond[M], limit int) ([]T, error),
 	value func(item T, i int) any,
 ) (CursorPage[T], error) {
 	if perPage < 1 {
 		return CursorPage[T]{}, fmt.Errorf("orm: CursorPaginate needs perPage of at least 1, got %d", perPage)
 	}
+	order, prev := terms, false
 	var after *Cond[M]
-	if cursor != "" {
-		vals, err := decodeCursor(cursor, len(terms), decode)
+	if encoded != "" {
+		vals, back, err := decodeCursor(encoded, len(terms), decode)
 		if err != nil {
 			return CursorPage[T]{}, err
 		}
-		c := keysetAfter[M](terms, vals)
+		if prev = back; prev {
+			order = make([]keysetTerm, len(terms))
+			for i, t := range terms {
+				order[i] = t.reversed()
+			}
+		}
+		c := keysetAfter[M](order, vals)
 		after = &c
 	}
-	items, err := fetch(after, perPage+1)
+	items, err := fetch(order, after, perPage+1)
 	if err != nil {
 		return CursorPage[T]{}, err
 	}
+	more := len(items) > perPage
+	if more {
+		items = items[:perPage]
+	}
+	if prev {
+		slices.Reverse(items)
+	}
 	page := CursorPage[T]{Items: items, PerPage: perPage}
-	if len(items) <= perPage {
+	if len(items) == 0 {
 		return page, nil
 	}
-	page.Items = items[:perPage]
-	vals := make([]any, len(terms))
-	for i := range terms {
-		vals[i] = value(items[perPage-1], i)
+	encode := func(item T, back bool) (string, error) {
+		c := cursor{Prev: back, Values: make([]json.RawMessage, len(terms))}
+		for i := range terms {
+			raw, err := json.Marshal(value(item, i))
+			if err != nil {
+				return "", fmt.Errorf("orm: encoding a cursor: %w", err)
+			}
+			c.Values[i] = raw
+		}
+		raw, err := json.Marshal(c)
+		if err != nil {
+			return "", fmt.Errorf("orm: encoding a cursor: %w", err)
+		}
+		return base64.RawURLEncoding.EncodeToString(raw), nil
 	}
-	raw, err := json.Marshal(vals)
-	if err != nil {
-		return CursorPage[T]{}, fmt.Errorf("orm: encoding the next cursor: %w", err)
+	if prev || more {
+		if page.NextCursor, err = encode(items[len(items)-1], false); err != nil {
+			return CursorPage[T]{}, err
+		}
 	}
-	page.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
+	if prev && more || !prev && encoded != "" {
+		if page.PrevCursor, err = encode(items[0], true); err != nil {
+			return CursorPage[T]{}, err
+		}
+	}
 	return page, nil
 }
 
-func decodeCursor(cursor string, n int, decode func(i int, raw json.RawMessage) (any, error)) ([]any, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+func decodeCursor(encoded string, n int, decode func(i int, raw json.RawMessage) (any, error)) ([]any, bool, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
-		return nil, fmt.Errorf("orm: bad cursor: %w", err)
+		return nil, false, fmt.Errorf("orm: bad cursor: %w", err)
 	}
-	var parts []json.RawMessage
-	if err := json.Unmarshal(raw, &parts); err != nil {
-		return nil, fmt.Errorf("orm: bad cursor: %w", err)
+	var c cursor
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return nil, false, fmt.Errorf("orm: bad cursor: %w", err)
 	}
-	if len(parts) != n {
-		return nil, fmt.Errorf("orm: bad cursor: %d values for %d order columns", len(parts), n)
+	if len(c.Values) != n {
+		return nil, false, fmt.Errorf("orm: bad cursor: %d values for %d order columns", len(c.Values), n)
 	}
 	vals := make([]any, n)
-	for i, p := range parts {
+	for i, p := range c.Values {
 		if string(p) == "null" {
 			continue
 		}
 		if vals[i], err = decode(i, p); err != nil {
-			return nil, fmt.Errorf("orm: bad cursor: %w", err)
+			return nil, false, fmt.Errorf("orm: bad cursor: %w", err)
 		}
 	}
-	return vals, nil
+	return vals, c.Prev, nil
 }
 
 // keysetAfter is the condition for rows after vals in the order of terms —
 // (a > x) OR (a = x AND b > y) ..., with < for descending terms — in its
-// SQL and document-store forms. A nullable term sorts NULLs last: after a
-// value come the larger values and the NULLs, after a NULL nothing, and a
-// NULL equals a NULL.
+// SQL and document-store forms. A term with NULLs last has after a value
+// the larger values and the NULLs, and after a NULL nothing; one with NULLs
+// first has after a NULL every value, and after a value only the larger
+// values. A NULL equals a NULL.
 func keysetAfter[M any](terms []keysetTerm, vals []any) Cond[M] {
 	ors := make([]Cond[M], len(terms))
 	for i := range terms {
@@ -913,15 +964,19 @@ func keysetAfter[M any](terms []keysetTerm, vals []any) Cond[M] {
 
 // keysetCond is term t past value v (after) or equal to it.
 func keysetCond[M any](t keysetTerm, v any, after bool) Cond[M] {
-	isNull := Cond[M]{
-		f:  func(b *SQL) { t.e.build(b); b.Write(" IS NULL") },
-		ir: NullTest{Column: t.col},
+	null := func(not bool) Cond[M] {
+		return Cond[M]{
+			f:  func(b *SQL) { t.e.build(b); b.Write(map[bool]string{false: " IS NULL", true: " IS NOT NULL"}[not]) },
+			ir: NullTest{Column: t.col, Not: not},
+		}
 	}
 	switch {
-	case t.nullable && v == nil && after:
+	case v == nil && after && t.nulls == NullsLast:
 		return Cond[M]{f: func(b *SQL) { b.Write("1 = 0") }, ir: List{Column: t.col}}
-	case t.nullable && v == nil:
-		return isNull
+	case v == nil && after && t.nulls == NullsFirst:
+		return null(true)
+	case v == nil:
+		return null(false)
 	}
 	op := "="
 	if after {
@@ -931,8 +986,8 @@ func keysetCond[M any](t keysetTerm, v any, after bool) Cond[M] {
 		f:  func(b *SQL) { t.e.build(b); b.Write(" ", op, " "); b.Arg(v) },
 		ir: Field{Column: t.col, Op: op, Value: v},
 	}
-	if t.nullable && after {
-		return Or(c, isNull)
+	if after && t.nulls == NullsLast {
+		return Or(c, null(false))
 	}
 	return c
 }

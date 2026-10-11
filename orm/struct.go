@@ -536,20 +536,23 @@ func (r RowQuery) CursorPaginate(perPage int, cursor string) (CursorPage[map[str
 	if slices.ContainsFunc(r.orders, func(o keysetTerm) bool { return o.col == "" }) {
 		return CursorPage[map[string]any]{}, fmt.Errorf("orm: cursor pagination on %s needs column orders, not a random order", r.name)
 	}
-	r.orders = slices.Clone(r.orders)
-	for i := range r.orders {
-		r.orders[i].nullable = resultName(r.orders[i].col) != r.key
+	terms := slices.Clone(r.orders)
+	for i := range terms {
+		if resultName(terms[i].col) != r.key {
+			terms[i].nulls = NullsLast
+		}
 	}
-	return cursorPaginate(perPage, cursor, r.orders,
+	return cursorPaginate(perPage, cursor, terms,
 		func(_ int, raw json.RawMessage) (any, error) { return jsonScalar(raw) },
-		func(after *Cond[rowModel], limit int) ([]map[string]any, error) {
+		func(order []keysetTerm, after *Cond[rowModel], limit int) ([]map[string]any, error) {
 			page := r.Limit(limit)
+			page.orders = order
 			if after != nil {
 				page = page.addWhere(after.f, after.ir)
 			}
 			return page.WithContext(ctx).Get()
 		},
-		func(row map[string]any, i int) any { return cursorValue(row[resultName(r.orders[i].col)]) })
+		func(row map[string]any, i int) any { return cursorValue(row[resultName(terms[i].col)]) })
 }
 
 // rowModel is the model type of conditions a row query builds itself.
@@ -791,7 +794,7 @@ func (r RowQuery) planOf() (Plan, error) {
 		if o.col == "" {
 			return Plan{}, &ErrNotTranslatable{Reason: "random order"}
 		}
-		p.Orders = append(p.Orders, PlanOrder{Column: unqualified(o.col, r.name), Desc: o.desc, NullsLast: o.nullable})
+		p.Orders = append(p.Orders, PlanOrder{Column: unqualified(o.col, r.name), Desc: o.desc, Nulls: o.nulls})
 	}
 	for _, t := range r.selects {
 		if t.col == "" {

@@ -275,7 +275,7 @@ func (q Query[M, K]) OrderBy(orders ...Order[M]) Query[M, K] {
 // OrderByOf orders by a joined model's columns.
 func (q Query[M, K]) OrderByOf[O any](orders ...Order[O]) Query[M, K] {
 	for _, o := range orders {
-		q.orders = append(slices.Clip(q.orders), Order[M]{f: o.f, e: o.e, desc: o.desc, nullsLast: o.nullsLast})
+		q.orders = append(slices.Clip(q.orders), Order[M]{f: o.f, e: o.e, desc: o.desc, nulls: o.nulls})
 	}
 	return q
 }

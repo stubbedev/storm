@@ -31,9 +31,9 @@ type Dialect interface {
 	Lock(mode LockMode, wait LockWait) string
 	// Limit writes LIMIT/OFFSET; zero means absent.
 	Limit(b *SQL, limit, offset int)
-	// NullsLast writes an ORDER BY term for e that sorts NULLs after every
-	// value in either direction.
-	NullsLast(b *SQL, e AnyExpr, desc bool)
+	// OrderNulls writes an ORDER BY term for e that sorts NULLs first or
+	// last, in either direction.
+	OrderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls)
 	Random() string
 	// DatePart extracts "date", "time", "year", "month" or "day" from e.
 	DatePart(b *SQL, part string, e AnyExpr)
@@ -146,11 +146,14 @@ func (sqliteDialect) Returning() bool                { return true }
 func (sqliteDialect) AutoKeys() bool                 { return true }
 func (sqliteDialect) InsertVerb(bool) string         { return "INSERT" }
 func (sqliteDialect) Lock(LockMode, LockWait) string { return "" } // SQLite locks the whole database
-func (sqliteDialect) Random() string                 { return "RANDOM()" }
-func (sqliteDialect) Limit(b *SQL, l, o int)         { limit(b, l, o, "-1") }
 
-func (sqliteDialect) NullsLast(b *SQL, e AnyExpr, desc bool) { nullsLast(b, e, desc) }
-func (sqliteDialect) JSONLength(b *SQL, e AnyExpr)           { fn(b, "json_array_length", e) }
+func (sqliteDialect) Random() string         { return "RANDOM()" }
+func (sqliteDialect) Limit(b *SQL, l, o int) { limit(b, l, o, "-1") }
+
+func (sqliteDialect) OrderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls) {
+	orderNulls(b, e, desc, nulls)
+}
+func (sqliteDialect) JSONLength(b *SQL, e AnyExpr) { fn(b, "json_array_length", e) }
 
 func (sqliteDialect) OnConflict(b *SQL, ignore bool, uniqueBy, update []string) {
 	onConflict(b, ignore, uniqueBy, update)
@@ -352,7 +355,9 @@ func (postgresDialect) InsertVerb(bool) string   { return "INSERT" }
 func (postgresDialect) Random() string           { return "RANDOM()" }
 func (postgresDialect) Limit(b *SQL, l, o int)   { limit(b, l, o, "") }
 
-func (postgresDialect) NullsLast(b *SQL, e AnyExpr, desc bool) { nullsLast(b, e, desc) }
+func (postgresDialect) OrderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls) {
+	orderNulls(b, e, desc, nulls)
+}
 
 func (postgresDialect) identifierLimit() (int, bool) { return 63, false }
 
@@ -483,11 +488,12 @@ func (mysqlDialect) Limit(b *SQL, l, o int) { limit(b, l, o, "184467440737095516
 
 func (mysqlDialect) identifierLimit() (int, bool) { return 64, true }
 
-// NullsLast on MySQL and MariaDB, which have no NULLS LAST: sorting on
-// "e IS NULL" first puts the NULLs after every value.
-func (mysqlDialect) NullsLast(b *SQL, e AnyExpr, desc bool) {
+// OrderNulls on MySQL and MariaDB, which have no NULLS FIRST / LAST:
+// sorting on "e IS NULL" first puts the NULLs after every value, or
+// before it in descending order.
+func (mysqlDialect) OrderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls) {
 	e.build(b)
-	b.Write(" IS NULL, ")
+	b.Write(map[bool]string{false: " IS NULL, ", true: " IS NULL DESC, "}[nulls == NullsFirst])
 	e.build(b)
 	b.Write(map[bool]string{false: " ASC", true: " DESC"}[desc])
 }
@@ -674,9 +680,9 @@ func onConflict(b *SQL, ignore bool, uniqueBy, update []string) {
 
 // limit writes LIMIT/OFFSET; unbounded is the LIMIT required before a bare
 // OFFSET ("" if the dialect allows OFFSET alone).
-func nullsLast(b *SQL, e AnyExpr, desc bool) {
+func orderNulls(b *SQL, e AnyExpr, desc bool, nulls Nulls) {
 	e.build(b)
-	b.Write(map[bool]string{false: " ASC", true: " DESC"}[desc], " NULLS LAST")
+	b.Write(map[bool]string{false: " ASC", true: " DESC"}[desc], map[bool]string{false: " NULLS LAST", true: " NULLS FIRST"}[nulls == NullsFirst])
 }
 
 func limit(b *SQL, l, o int, unbounded string) {

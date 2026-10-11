@@ -23,10 +23,22 @@ type Plan struct {
 
 // PlanOrder is one ORDER BY term.
 type PlanOrder struct {
-	Column    string
-	Desc      bool
-	NullsLast bool // missing or null values sort after every value
+	Column string
+	Desc   bool
+	Nulls  Nulls
 }
+
+// Nulls is where an order puts NULLs and missing values.
+type Nulls int
+
+const (
+	// NullsDefault leaves them where the engine sorts them.
+	NullsDefault Nulls = iota
+	// NullsFirst sorts them before every value.
+	NullsFirst
+	// NullsLast sorts them after every value.
+	NullsLast
+)
 
 // VectorOrder is a nearest-neighbour search: rows ranked by distance from
 // Floats under Metric (Qdrant search, pgvector KNN).

@@ -435,12 +435,12 @@ func colSets[M any](as []Assignment[M]) []colSet {
 
 // Order is an ORDER BY term for model M.
 type Order[M any] struct {
-	f         frag
-	e         AnyExpr      // the ordered expression, when the order has one
-	col       AnyColumn[M] // set when ordering by a plain column (needed by CursorPaginate)
-	vec       *VectorOrder // set when ordering by distance from a vector
-	desc      bool
-	nullsLast bool
+	f     frag
+	e     AnyExpr      // the ordered expression, when the order has one
+	col   AnyColumn[M] // set when ordering by a plain column (needed by CursorPaginate)
+	vec   *VectorOrder // set when ordering by distance from a vector
+	desc  bool
+	nulls Nulls
 }
 
 // NullsLast sorts NULLs after every value, in either direction and on
@@ -453,7 +453,7 @@ func (o Order[M]) NullsLast() Order[M] {
 		o.f = func(b *SQL) { b.fail(errors.New("orm: NullsLast needs a column or expression order")) }
 		return o
 	}
-	o.f, o.nullsLast = func(b *SQL) { b.Dialect.NullsLast(b, e, desc) }, true
+	o.f, o.nulls = func(b *SQL) { b.Dialect.OrderNulls(b, e, desc, NullsLast) }, NullsLast
 	return o
 }
 

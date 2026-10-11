@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -716,6 +717,45 @@ func TestEventsAndScopes(t *testing.T) {
 	eq(t, "a listener can stop itself", events, 1)
 }
 
+// walkCursor pages forward to the end and then back to the start through
+// the previous-page cursors, returning the keys seen each way in forward
+// order. The first page has no previous cursor and the last no next one.
+func walkCursor[T any](t *testing.T, page func(cursor string) orm.CursorPage[T], key func(T) string) (forward, backward []string) {
+	t.Helper()
+	keys := func(items []T) []string {
+		out := make([]string, len(items))
+		for i, it := range items {
+			out[i] = key(it)
+		}
+		return out
+	}
+	p := page("")
+	eq(t, "the first page has no previous cursor", p.PrevCursor, "")
+	for n := 0; ; n++ {
+		if n > 100 {
+			t.Fatal("cursor pages never end")
+		}
+		forward = append(forward, keys(p.Items)...)
+		if p.NextCursor == "" {
+			break
+		}
+		p = page(p.NextCursor)
+	}
+	pages := [][]string{keys(p.Items)}
+	for n := 0; p.PrevCursor != ""; n++ {
+		if n > 100 {
+			t.Fatal("previous cursor pages never end")
+		}
+		p = page(p.PrevCursor)
+		pages = append(pages, keys(p.Items))
+		eq(t, "a page reached backwards has a next cursor", p.NextCursor != "", true)
+	}
+	for _, keys := range slices.Backward(pages) {
+		backward = append(backward, keys...)
+	}
+	return forward, backward
+}
+
 func TestPaginationAndIteration(t *testing.T) {
 	setup(t)
 	for _, name := range []string{"Nil One", "Nil Two"} {
@@ -757,6 +797,29 @@ func TestPaginationAndIteration(t *testing.T) {
 		}
 	}
 	eq(t, "row cursor pages over NULLs and times", int64(len(rowsSeen)), total)
+	for _, desc := range []bool{false, true} {
+		order := Users.CountryID.Asc()
+		if desc {
+			order = Users.CountryID.Desc()
+		}
+		var want []string
+		for _, u := range must(Users.Query().WithTrashed().OrderBy(order.NullsLast(), Users.ID.Asc()).Get()) {
+			want = append(want, strconv.FormatInt(u.ID, 10))
+		}
+		forward, backward := walkCursor(t, func(cursor string) orm.CursorPage[User] {
+			return must(Users.Query().WithTrashed().OrderBy(order, Users.ID.Asc()).CursorPaginate(2, cursor))
+		}, func(u User) string { return strconv.FormatInt(u.ID, 10) })
+		eq(t, fmt.Sprintf("cursor pages forward over NULLs (desc %v)", desc), forward, want)
+		eq(t, fmt.Sprintf("cursor pages back over NULLs (desc %v)", desc), backward, want)
+	}
+	var wantRows []string
+	for _, r := range must(orm.From("users").OrderBy("country_id").OrderByDesc("created_at").OrderBy("id").CursorPaginate(int(total), "")).Items {
+		wantRows = append(wantRows, fmt.Sprint(r["id"]))
+	}
+	forward, backward := walkCursor(t, func(cursor string) orm.CursorPage[map[string]any] {
+		return must(orm.From("users").OrderBy("country_id").OrderByDesc("created_at").OrderBy("id").CursorPaginate(2, cursor))
+	}, func(r map[string]any) string { return fmt.Sprint(r["id"]) })
+	eq(t, "row cursor pages forward and back", [2][]string{forward, backward}, [2][]string{wantRows, wantRows})
 	for _, desc := range []bool{false, true} {
 		order := Users.CountryID.Asc()
 		if desc {

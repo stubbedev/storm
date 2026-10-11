@@ -290,7 +290,7 @@ for p, err := range Posts.Query().Cursor() { _, _ = p, err }                    
 page, err := Posts.Query().Latest().Paginate(20, 2)   // Items, Total, LastPage, From, To, HasMore
 simple, err := Posts.Query().SimplePaginate(20, 2)    // HasMore, no count query
 cur, err := Posts.Query().OrderBy(Posts.Views.Desc(), Posts.ID.Asc()).CursorPaginate(20, cursor)
-next := cur.NextCursor
+next, prev := cur.NextCursor, cur.PrevCursor // pass either back as cursor
 ```
 
 `Paginate` is length-aware on every engine — SQL, ClickHouse, MongoDB and
@@ -301,7 +301,11 @@ distinct row query counts groups or distinct rows. Page and size must be
 at least 1. `CursorPaginate`, `ChunkByID` and `Lazy` page by key instead
 of offset on every engine too; on Qdrant, which can only order by an
 indexed payload field, ordering by the key (or not at all) uses its native
-point-id scroll.
+point-id scroll. A cursor page serialises as `data`, `per_page`, `next_cursor` and
+`prev_cursor`: `PrevCursor` walks back towards the first page (which has
+none), and `NextCursor` is empty on the last page. Nullable order columns
+page with their NULLs last in either direction. Qdrant scrolls forward
+only, so it refuses a previous-page cursor as not translatable.
 
 ```go
 page, err := orm.From("events").On("mongo").OrderBy("created_at").Paginate(50, 3)

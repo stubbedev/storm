@@ -452,6 +452,9 @@ func (s *QdrantStore) scroll(ctx context.Context, p Plan, filter map[string]any,
 		if p.Orders[0].Desc {
 			return nil, &ErrNotTranslatable{Reason: "descending order (Qdrant order_by is ascending; store a negated field to sort descending)"}
 		}
+		if p.Orders[0].Nulls == NullsFirst {
+			return nil, &ErrNotTranslatable{Reason: "NULLs first (Qdrant sorts points without " + p.Orders[0].Column + " last)"}
+		}
 		body["order_by"] = p.Orders[0].Column
 		if want == 0 {
 			n, err := s.CountDocs(ctx, p)

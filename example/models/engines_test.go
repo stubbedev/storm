@@ -1023,6 +1023,16 @@ func assertDocPagination(t *testing.T, ctx context.Context, conn string, total i
 		}
 	}
 	eq(t, "cursor pages cover every document once", len(seen), int(total))
+	if conn == "qdrant" {
+		second := must(docs.CursorPaginate(2, must(docs.CursorPaginate(2, "")).NextCursor))
+		_, err := docs.CursorPaginate(2, second.PrevCursor)
+		eq(t, "qdrant, which scrolls forward only, refuses a previous page", orm.IsNotTranslatable(err), true)
+		return
+	}
+	forward, backward := walkCursor(t, func(cursor string) orm.CursorPage[map[string]any] { return must(docs.CursorPaginate(2, cursor)) },
+		func(d map[string]any) string { return fmt.Sprint(d["id"]) })
+	eq(t, "document cursor pages back to the start", backward, forward)
+	eq(t, "document cursor pages cover every document", len(forward), int(total))
 }
 
 func TestQdrant(t *testing.T) {

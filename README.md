@@ -631,7 +631,7 @@ valid operators after `orm.`.
 | `get`, `first`, `firstOrFail`, `find`, `findMany`, `sole`, `value`, `pluck` | `Get`, `First` (`ErrNotFound`), `Find`, `FindMany`, `FindOr`, `Sole`, `Value`, `Pluck`, `PluckMap` |
 | `count`, `sum`, `avg`, `min`, `max`, `exists` | same names; `Sum` and `Avg` only accept numeric columns |
 | `chunk`, `chunkById`, `chunkWhile`, `lazy`, `cursor` | `Chunk`, `ChunkByID`, `ChunkWhile`, `Lazy` and `Cursor` (Go iterators) |
-| `paginate`, `simplePaginate`, `cursorPaginate` | same names |
+| `paginate`, `simplePaginate`, `cursorPaginate` (next and previous cursors) | same names |
 | `create`, `save`, `update`, `delete`, `destroy` | `Create`, `Save`, `Update`, `Delete`, `Destroy` |
 | `insert`, `insertOrIgnore`, `insertUsing`, `upsert`, `insertGetId` | same names, `InsertGetID` |
 | `increment`, `decrement`, `truncate` | `Increment`, `Decrement`, `Truncate` |
