@@ -465,6 +465,9 @@ func (r *HasOneRel[M, MK, R, RK, J]) OfMany[V cmp.Ordered | time.Time](col Colum
 	if useMax {
 		first, sign = []Order[R]{col.Desc(), key.Desc()}, 1
 	}
+	if col.Name() == t.PrimaryKey {
+		first = first[:1]
+	}
 	c.of = &ofMany[R]{orders: first, better: func(a, b *R) bool {
 		return sign*cmp.Or(compareValues(col.Get(a), col.Get(b)), compareValues(t.key(a), t.key(b))) > 0
 	}}
