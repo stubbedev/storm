@@ -16,6 +16,31 @@ import (
 // Query and dispatches here.
 type Loader[M, R any, RK comparable] interface {
 	eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error
+	mark() loadMark[M]
+}
+
+// loadMark tells where a relation records that it is loaded: the parent's
+// Model, and the field it fills, identified by its setter, so that scoped
+// and other copies of a relation count as the same.
+type loadMark[M any] struct {
+	state func(*M) *Model
+	slot  uintptr
+}
+
+func markOf[M any](state func(*M) *Model, set any) loadMark[M] {
+	return loadMark[M]{state, reflect.ValueOf(set).Pointer()}
+}
+
+// loadInto eager-loads rel onto models and marks it loaded on each.
+func loadInto[M, R any, RK comparable](ctx context.Context, conn string, models []M, rel Loader[M, R, RK], scope func(Query[R, RK]) Query[R, RK]) error {
+	if err := rel.eagerLoad(ctx, conn, models, scope); err != nil {
+		return err
+	}
+	mk := rel.mark()
+	for i := range models {
+		mk.state(&models[i]).markLoaded(mk.slot)
+	}
+	return nil
 }
 
 // Relation is a Loader that can also be expressed as a subquery correlated
@@ -44,14 +69,106 @@ const ofManyAlias = "laravel_reserved_2"
 func (q Query[M, MK]) With[R any, RK comparable](rel Loader[M, R, RK], scopes ...func(Query[R, RK]) Query[R, RK]) Query[M, MK] {
 	scope := chain(scopes)
 	q.eager = append(slices.Clip(q.eager), func(ctx context.Context, conn string, models []M) error {
-		return rel.eagerLoad(ctx, conn, models, scope)
+		return loadInto(ctx, conn, models, rel, scope)
 	})
 	return q
 }
 
 // Load eager-loads a relation onto already retrieved models ($models->load()).
 func Load[M, R any, RK comparable](ctx context.Context, models []M, rel Loader[M, R, RK], scopes ...func(Query[R, RK]) Query[R, RK]) error {
-	return rel.eagerLoad(ctx, "", models, chain(scopes))
+	return loadInto(ctx, "", models, rel, chain(scopes))
+}
+
+// LoadMissing eager-loads a relation onto the models it has not been
+// loaded onto yet, by With, Load or LoadMissing ($models->loadMissing()).
+// Scoped copies of a relation fill the same field, so they count as it.
+func LoadMissing[M, R any, RK comparable](ctx context.Context, models []M, rel Loader[M, R, RK], scopes ...func(Query[R, RK]) Query[R, RK]) error {
+	mk := rel.mark()
+	var missing []int
+	for i := range models {
+		if !slices.Contains(mk.state(&models[i]).loaded, mk.slot) {
+			missing = append(missing, i)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	subset := make([]M, len(missing))
+	for j, i := range missing {
+		subset[j] = models[i]
+	}
+	if err := loadInto(ctx, "", subset, rel, chain(scopes)); err != nil {
+		return err
+	}
+	for j, i := range missing {
+		models[i] = subset[j]
+	}
+	return nil
+}
+
+// LoadCount loads the number of related rows into a virtual column of
+// already retrieved models ($models->loadCount()), in one query keyed by
+// their primary keys. LoadExists, LoadSum, LoadAvg, LoadMin and LoadMax
+// load the other relation aggregates the same way.
+func LoadCount[M any, MK comparable, R any, RK comparable](ctx context.Context, models []M, rel Relation[M, R, RK], into Column[M, MK, int64], scopes ...func(Query[R, RK]) Query[R, RK]) error {
+	return loadAggregate(ctx, models, into, func(q Query[M, MK]) Query[M, MK] { return q.WithCount(rel, into, scopes...) })
+}
+
+func LoadExists[M any, MK comparable, R any, RK comparable](ctx context.Context, models []M, rel Relation[M, R, RK], into Column[M, MK, bool], scopes ...func(Query[R, RK]) Query[R, RK]) error {
+	return loadAggregate(ctx, models, into, func(q Query[M, MK]) Query[M, MK] { return q.WithExists(rel, into, scopes...) })
+}
+
+func LoadSum[M any, MK comparable, R any, RK comparable, V Number](ctx context.Context, models []M, rel Relation[M, R, RK], col Column[R, RK, V], into Column[M, MK, V], scopes ...func(Query[R, RK]) Query[R, RK]) error {
+	return loadAggregate(ctx, models, into, func(q Query[M, MK]) Query[M, MK] { return q.WithSum(rel, col, into, scopes...) })
+}
+
+func LoadAvg[M any, MK comparable, R any, RK comparable, V Number](ctx context.Context, models []M, rel Relation[M, R, RK], col Column[R, RK, V], into Column[M, MK, float64], scopes ...func(Query[R, RK]) Query[R, RK]) error {
+	return loadAggregate(ctx, models, into, func(q Query[M, MK]) Query[M, MK] { return q.WithAvg(rel, col, into, scopes...) })
+}
+
+func LoadMin[M any, MK comparable, R any, RK comparable, V any](ctx context.Context, models []M, rel Relation[M, R, RK], col Column[R, RK, V], into Column[M, MK, V], scopes ...func(Query[R, RK]) Query[R, RK]) error {
+	return loadAggregate(ctx, models, into, func(q Query[M, MK]) Query[M, MK] { return q.WithMin(rel, col, into, scopes...) })
+}
+
+func LoadMax[M any, MK comparable, R any, RK comparable, V any](ctx context.Context, models []M, rel Relation[M, R, RK], col Column[R, RK, V], into Column[M, MK, V], scopes ...func(Query[R, RK]) Query[R, RK]) error {
+	return loadAggregate(ctx, models, into, func(q Query[M, MK]) Query[M, MK] { return q.WithMax(rel, col, into, scopes...) })
+}
+
+// loadAggregate selects each model's key and the aggregate with adds, over
+// the models' rows regardless of global scopes and soft deletes, and
+// writes the aggregate into each model.
+func loadAggregate[M any, MK comparable, V any](ctx context.Context, models []M, into Column[M, MK, V], with func(Query[M, MK]) Query[M, MK]) error {
+	t := into.table
+	if t.PrimaryKey == "" {
+		return fmt.Errorf("orm: loading %s onto %s needs a primary key", into.name, t.Name)
+	}
+	if len(models) == 0 {
+		return nil
+	}
+	keys := make([]MK, len(models))
+	for i := range models {
+		k, err := t.keyOf(t.key(&models[i]))
+		if err != nil {
+			return fmt.Errorf("orm: loading %s onto %s: %w", into.name, t.Name, err)
+		}
+		keys[i] = k
+	}
+	rows, err := with(t.Query().WithoutGlobalScopes().WithTrashed().WhereKey(keys...).Select(tableColumn[M, MK]{t, t.PrimaryKey})).WithContext(ctx).Get()
+	if err != nil {
+		return err
+	}
+	byKey := make(map[MK]V, len(rows))
+	for i := range rows {
+		k, err := t.keyOf(t.key(&rows[i]))
+		if err != nil {
+			return fmt.Errorf("orm: loading %s onto %s: %w", into.name, t.Name, err)
+		}
+		byKey[k] = into.Get(&rows[i])
+	}
+	for i := range models {
+		*into.Ptr(&models[i]) = byKey[keys[i]]
+	}
+	return nil
 }
 
 // WithCount selects the number of related rows into a virtual column.
@@ -236,6 +353,8 @@ func MorphMany[M any, MK comparable, R any, RK comparable, J comparable](local C
 	return r
 }
 
+func (r *HasManyRel[M, MK, R, RK, J]) mark() loadMark[M] { return markOf(r.local.table.State, r.set) }
+
 func (r *HasManyRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error {
 	byKey, err := r.load(ctx, conn, parents, scope)
 	if err != nil {
@@ -394,6 +513,8 @@ func (r *HasOneRel[M, MK, R, RK, J]) Of(parent *M) Query[R, RK] {
 	return q
 }
 
+func (r *HasOneRel[M, MK, R, RK, J]) mark() loadMark[M] { return markOf(r.local.table.State, r.set) }
+
 func (r *HasOneRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error {
 	byKey, err := r.loadPicked(ctx, conn, parents, scope)
 	if err != nil {
@@ -487,6 +608,10 @@ func (r *BelongsToRel[M, MK, R, RK, J]) WithDefault(fn func(*M) *R) *BelongsToRe
 	c := *r
 	c.def = fn
 	return &c
+}
+
+func (r *BelongsToRel[M, MK, R, RK, J]) mark() loadMark[M] {
+	return markOf(r.foreign.table.State, r.set)
 }
 
 func (r *BelongsToRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, children []M, scope func(Query[R, RK]) Query[R, RK]) error {
@@ -653,6 +778,10 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) pivotConds() []Cond[P] {
 
 func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) pivotQuery(conn string, parent J) Query[P, PK] {
 	return relQuery(r.pivot, conn).Where(r.pivotParent.Eq(parent)).Where(r.pivotConds()...)
+}
+
+func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) mark() loadMark[M] {
+	return markOf(r.parentKey.table.State, r.set)
 }
 
 func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error {
@@ -955,6 +1084,10 @@ func through[M any, MK comparable, T any, TK comparable, R any, RK comparable, J
 	return throughBase[M, MK, T, TK, R, RK, J, TJ]{secondKey.table, firstKey.table, localKey, firstKey, secondLocal, secondKey}
 }
 
+func (r *HasManyThroughRel[M, MK, T, TK, R, RK, J, TJ]) mark() loadMark[M] {
+	return markOf(r.localKey.table.State, r.set)
+}
+
 func (r *HasManyThroughRel[M, MK, T, TK, R, RK, J, TJ]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error {
 	byKey, err := r.load(ctx, conn, parents, scope)
 	if err != nil {
@@ -982,6 +1115,10 @@ func HasOneThrough[M any, MK comparable, T any, TK comparable, R any, RK compara
 	set func(*M, *R),
 ) *HasOneThroughRel[M, MK, T, TK, R, RK, J, TJ] {
 	return &HasOneThroughRel[M, MK, T, TK, R, RK, J, TJ]{through(localKey, firstKey, secondLocal, secondKey), set}
+}
+
+func (r *HasOneThroughRel[M, MK, T, TK, R, RK, J, TJ]) mark() loadMark[M] {
+	return markOf(r.localKey.table.State, r.set)
 }
 
 func (r *HasOneThroughRel[M, MK, T, TK, R, RK, J, TJ]) eagerLoad(ctx context.Context, conn string, parents []M, scope func(Query[R, RK]) Query[R, RK]) error {
@@ -1052,6 +1189,8 @@ type MorphToRel[M any, MK comparable, J comparable] struct {
 func MorphTo[M any, MK comparable, J comparable](id Column[M, MK, J], typ Column[M, MK, string], set func(*M, any), targets ...MorphTarget[J]) *MorphToRel[M, MK, J] {
 	return &MorphToRel[M, MK, J]{id, typ, set, targets}
 }
+
+func (r *MorphToRel[M, MK, J]) mark() loadMark[M] { return markOf(r.id.table.State, r.set) }
 
 func (r *MorphToRel[M, MK, J]) eagerLoad(ctx context.Context, conn string, children []M, _ func(Query[any, NoKey]) Query[any, NoKey]) error {
 	byType := map[string][]J{}

@@ -596,3 +596,46 @@ func TestJoinLateral(t *testing.T) {
 		Get())
 	eq(t, "joinLateral yields a row per subquery row", []string{pairs[0].LatestPostTitle, pairs[1].LatestPostTitle}, []string{"Generics in Go 1.27", "Iterators"})
 }
+
+func TestLoadAggregatesAndMissing(t *testing.T) {
+	ctx := setup(t)
+	want := must(Users.Query().WithTrashed().OrderBy(Users.ID.Asc()).
+		WithCount(UserPosts, Users.PostsCount, Published).
+		WithSum(UserPosts, Posts.Views, Users.PostViews).
+		WithExists(UserAvatar, Users.HasAvatar).
+		WithMax(UserPosts, Posts.Title, Users.LatestPostTitle).
+		WithAvg(UserPosts, Posts.Views, Users.AvgPostViews).
+		Get())
+	users := must(Users.Query().WithTrashed().OrderBy(Users.ID.Asc()).Get())
+	ok(orm.LoadCount(ctx, users, UserPosts, Users.PostsCount, Published))
+	ok(orm.LoadSum(ctx, users, UserPosts, Posts.Views, Users.PostViews))
+	ok(orm.LoadExists(ctx, users, UserAvatar, Users.HasAvatar))
+	ok(orm.LoadMax(ctx, users, UserPosts, Posts.Title, Users.LatestPostTitle))
+	ok(orm.LoadAvg(ctx, users, UserPosts, Posts.Views, Users.AvgPostViews))
+	aggregates := func(us []User) []string {
+		out := make([]string, len(us))
+		for i, u := range us {
+			out[i] = fmt.Sprintf("%d %d %d %v %s %.2f", u.ID, u.PostsCount, u.PostViews, u.HasAvatar, u.LatestPostTitle, u.AvgPostViews)
+		}
+		return out
+	}
+	eq(t, "load aggregates match the with aggregates, trashed models included", aggregates(users), aggregates(want))
+	ok(orm.LoadMin(ctx, users[:1], UserPosts, Posts.Title, Users.LatestPostTitle))
+	eq(t, "loadMin", users[0].LatestPostTitle, "Draft: ORMs")
+
+	loaded := must(Users.Query().OrderBy(Users.ID.Asc()).With(UserPosts, Published).Get())
+	published := len(loaded[0].Posts)
+	queries := 0
+	stop := orm.Listen(func(orm.QueryEvent) { queries++ })
+	ok(orm.LoadMissing(ctx, loaded, UserPosts))
+	stop()
+	eq(t, "loadMissing skips a loaded relation", [2]int{queries, len(loaded[0].Posts)}, [2]int{0, published})
+	ok(orm.LoadMissing(ctx, loaded, UserPosts.Scoped(Popular(1000))))
+	eq(t, "a scoped copy fills the same field, so it is loaded too", len(loaded[0].Posts), published)
+	ok(orm.LoadMissing(ctx, loaded, UserCountry))
+	eq(t, "loadMissing loads a missing relation", loaded[0].Country.Name, "Denmark")
+	fresh := must(Users.Query().OrderBy(Users.ID.Asc()).Get())
+	ok(orm.Load(ctx, fresh[:1], UserPosts))
+	ok(orm.LoadMissing(ctx, fresh, UserPosts))
+	eq(t, "loadMissing loads only the models missing it", [2]int{len(fresh[0].Posts), len(fresh[1].Posts)}, [2]int{3, len(must(UserPosts.Of(&fresh[1]).Get()))})
+}

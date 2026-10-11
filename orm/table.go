@@ -88,6 +88,14 @@ type Model struct {
 	recentlyCreated bool
 	original        map[string]any
 	changes         []string
+	loaded          []uintptr
+}
+
+// markLoaded records that the relation filling slot has been loaded.
+func (m *Model) markLoaded(slot uintptr) {
+	if !slices.Contains(m.loaded, slot) {
+		m.loaded = append(slices.Clip(m.loaded), slot)
+	}
 }
 
 // Exists reports whether the model was loaded from or saved to the database.

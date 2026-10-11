@@ -647,10 +647,10 @@ valid operators after `orm.`.
 | `hasOneThrough`, `hasManyThrough` | `orm.HasOneThrough`, `HasManyThrough` |
 | `morphOne`, `morphMany`, `morphTo`, `morphToMany`, `morphedByMany` | same names |
 | `latestOfMany`, `oldestOfMany`, `ofMany` (picked in SQL), `withDefault`, `chaperone`, `touches` | `OfMany(col, useMax)`, `WithDefault`, `Chaperone`, `Touches` |
-| `with`, nested and constrained eager loading, `load` | `With(rel, scopes...)`, `orm.Load` |
+| `with`, nested and constrained eager loading, `load`, `loadMissing` | `With(rel, scopes...)`, `orm.Load`, `orm.LoadMissing` |
 | `has`, `whereHas`, `doesntHave`, `whereRelation`, `whereHasMorph`, `whereMorphedTo` | `HasCount`, `WhereHas`, `WhereDoesntHave`, `WhereRelation`, `Rel.HasMorph`, `Rel.Is` |
 | `whereBelongsTo`, `whereAttachedTo` | `PostAuthor.Is(&u)`, `UserRoles.AttachedTo(&role)` |
-| `withCount/Sum/Avg/Min/Max/Exists` | same names, into typed virtual columns |
+| `withCount/Sum/Avg/Min/Max/Exists`, `loadCount/Sum/Avg/Min/Max/Exists` | same names (`orm.LoadCount`, ...), into typed virtual columns |
 | `$user->posts()->...`, `create`, `save`, `associate` | `UserPosts.Of(&u)...`, `.Create`, `.Save`, `.Associate`, `.Dissociate` |
 | `attach`, `detach`, `sync`, `toggle`, `updateExistingPivot` | same names |
 | Casts (array/json, dates, enums, encrypted, hashed, custom) | `orm.JSON[T]`, `orm.Encrypted[V]` (`orm.SetEncryptionKey`), `orm.Hashed`, `time.Time`, typed string enums, any `sql.Scanner` / `driver.Valuer` |

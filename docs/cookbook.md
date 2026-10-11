@@ -456,6 +456,9 @@ users, err := Users.Query().
 	Get()
 
 err = orm.Load(ctx, users, UserCountry) // $users->load('country')
+err = orm.LoadMissing(ctx, users, UserPosts) // only the users whose posts are not loaded yet
+err = orm.LoadCount(ctx, users, UserPosts, Users.PostsCount, Published)      // $users->loadCount('posts')
+err = orm.LoadSum(ctx, users, UserPosts, Posts.Views, Users.PostViews)       // also LoadAvg, LoadMin, LoadMax, LoadExists
 ```
 
 ## Querying relationships
