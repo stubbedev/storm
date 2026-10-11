@@ -644,7 +644,7 @@ valid operators after `orm.`.
 | `whereAny`, `whereAll` | `orm.AnyOf`, `orm.AllOf` |
 | `whereExists`, `whereIn(subquery)` | `orm.Exists`, `Col.InSub(q.Subquery(col))` |
 | `select`, `addSelect`, `selectRaw`, `distinct` | `Select`, `AddSelect`, `AddSelectAs(col, expr)`, `Distinct` |
-| `join`, `leftJoin`, `rightJoin`, `crossJoin`, `joinSub`, `joinLateral`, `leftJoinLateral` | `Join`, `LeftJoin`, `RightJoin`, `CrossJoin`, `JoinSub`, `JoinLateral`, `LeftJoinLateral` (Postgres, MySQL, DuckDB) |
+| `join`, `leftJoin`, `rightJoin`, `crossJoin`, `joinSub`, `joinLateral`, `leftJoinLateral` | `Join`, `LeftJoin`, `RightJoin`, `CrossJoin`, `JoinSub`, `JoinLateral`, `LeftJoinLateral` (Postgres, MySQL, DuckDB); `orm.Joined` returns both models of each row as `orm.Pair[L, R]` |
 | `groupBy`, `having`, `orderBy`, `latest`, `inRandomOrder`, `reorder` | same names |
 | `union`, `unionAll`, `when`, `unless`, `lockForUpdate`, `sharedLock`, `skipLocked`, `noWait` | same names |
 | `get`, `first`, `firstOrFail`, `find`, `findMany`, `sole`, `value`, `pluck` | `Get`, `First` (`ErrNotFound`), `Find`, `FindMany`, `FindOr`, `Sole`, `Value`, `Pluck`, `PluckMap` |

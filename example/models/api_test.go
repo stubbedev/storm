@@ -639,3 +639,28 @@ func TestLoadAggregatesAndMissing(t *testing.T) {
 	ok(orm.LoadMissing(ctx, fresh, UserPosts))
 	eq(t, "loadMissing loads only the models missing it", [2]int{len(fresh[0].Posts), len(fresh[1].Posts)}, [2]int{3, len(must(UserPosts.Of(&fresh[1]).Get()))})
 }
+
+func TestJoinedPairs(t *testing.T) {
+	setup(t)
+	pairs := must(orm.Joined(Users.Query().
+		LeftJoin(Posts, Posts.UserID.EqCol(Users.ID), Posts.Published.Eq(true)).
+		Where(Users.ID.In(1, 4)).
+		OrderBy(Users.ID.Asc()).OrderByOf(Posts.ID.Asc()).
+		With(UserCountry), Posts.Table))
+	got := make([]string, len(pairs))
+	for i, p := range pairs {
+		got[i] = fmt.Sprintf("%d %s", p.Left.ID, p.Left.Name)
+		if p.Right != nil {
+			got[i] += fmt.Sprintf(" / %d %s %d", p.Right.ID, p.Right.Title, p.Right.UserID)
+		}
+	}
+	eq(t, "each side reads its own columns; a left join without a match has no right", got, []string{
+		"1 Alice / 1 Generics in Go 1.27 1", "1 Alice / 3 Iterators 1", "4 Dave",
+	})
+	eq(t, "eager loads run on the left models", pairs[0].Left.Country.Name, "Denmark")
+	eq(t, "both sides are tracked", pairs[0].Left.Exists() && pairs[0].Right.Exists(), true)
+	_, err := orm.Joined(Users.Query(), Posts.Table)
+	eq(t, "a query without a join is refused", err != nil && strings.Contains(err.Error(), "joins no table"), true)
+	_, err = orm.Joined(Users.Query().Join(Users, Users.ID.EqCol(Users.ID)), Users.Table)
+	eq(t, "a self join is refused", err != nil && strings.Contains(err.Error(), "itself"), true)
+}

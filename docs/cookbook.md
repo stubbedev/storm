@@ -226,6 +226,11 @@ Users.Query().
 counts := Posts.Query().Select(Posts.UserID).AddSelectAs(Posts.Views, orm.Count[Post]()).GroupBy(Posts.UserID)
 Users.Query().JoinSub(counts, "pc", Posts.UserID.EqCol(Users.ID), Posts.Views.Gte(2))
 
+// A model query returns its own model; Joined returns both sides of each row,
+// each from its own table's columns, Right nil where a LEFT JOIN found none.
+pairs, err := orm.Joined(Users.Query().LeftJoin(Posts, Posts.UserID.EqCol(Users.ID)), Posts.Table)
+for _, p := range pairs { _, _ = p.Left.Name, p.Right } // Right is *Post
+
 // A lateral subquery sees the outer row; read its columns with From(alias).
 latest := Posts.Where(Posts.UserID.EqCol(Users.ID)).OrderBy(Posts.CreatedAt.Desc()).Limit(1)
 Users.Query().LeftJoinLateral(latest, "lp").AddSelectAs(Users.LatestPostTitle, Posts.Title.From("lp"))
