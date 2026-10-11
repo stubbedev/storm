@@ -132,6 +132,28 @@ func TestLiveFixes(t *testing.T) {
 	want(t, "views that depend on each other all drop", len(views), 0)
 
 	if x.g.mysqlFamily() {
+		pool, ok := x.db.(*sql.DB)
+		want(t, "pool handle", ok, true)
+		held, err := pool.Conn(ctx)
+		check(t, err)
+		var mode string
+		check(t, held.QueryRowContext(ctx, "SELECT @@SESSION.sql_mode").Scan(&mode))
+		_, err = held.ExecContext(ctx, "SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_BACKSLASH_ESCAPES')")
+		check(t, err)
+		heldCtx := orm.WithConn(ctx, conn, held)
+		check(t, s.Create(heldCtx, "paths", func(t *Blueprint) {
+			t.ID()
+			t.String("dir").Default(`C:\temp\it's`)
+		}))
+		execOn(t, heldCtx, conn, "INSERT INTO paths (id) VALUES (1)")
+		var dir string
+		check(t, held.QueryRowContext(ctx, "SELECT dir FROM paths").Scan(&dir))
+		want(t, "a default with backslashes under NO_BACKSLASH_ESCAPES", dir, `C:\temp\it's`)
+		_, err = held.ExecContext(ctx, "SET SESSION sql_mode = ?", mode)
+		check(t, err)
+		check(t, held.Close())
+		check(t, s.Drop(ctx, "paths"))
+
 		check(t, s.Create(ctx, "defaults", func(t *Blueprint) {
 			t.String("b").Default("abc")
 			t.String("c").Nullable()

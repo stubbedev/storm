@@ -84,7 +84,12 @@ const (
 var errRebuild = errors.New("schema: sqlite table rebuild required")
 
 // grammar compiles blueprints for one database engine.
-type grammar struct{ engine engine }
+type grammar struct {
+	engine engine
+	// noBackslashEscapes is MySQL's NO_BACKSLASH_ESCAPES sql_mode, read
+	// from the server, under which a backslash in a literal is itself.
+	noBackslashEscapes bool
+}
 
 // grammarFor maps an orm dialect name to its grammar; MariaDB is MySQL's
 // grammar with MariaDB's differences.
@@ -272,7 +277,7 @@ func (g grammar) literal(v any) string {
 	case Expr:
 		return string(v)
 	case string:
-		if g.mysqlFamily() || g.engine == engineClickHouse {
+		if g.engine == engineClickHouse || g.mysqlFamily() && !g.noBackslashEscapes {
 			v = strings.ReplaceAll(v, `\`, `\\`)
 		}
 		return "'" + strings.ReplaceAll(v, "'", "''") + "'"

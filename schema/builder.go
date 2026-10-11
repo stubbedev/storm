@@ -523,6 +523,14 @@ func (s *Builder) session(ctx context.Context) (session, error) {
 	if x.db == nil && x.pretend == nil {
 		return session{}, fmt.Errorf("schema: connection %q has no database handle", s.conn)
 	}
+	if g.mysqlFamily() && x.db != nil {
+		err := x.query(ctx, "SELECT @@SESSION.sql_mode LIKE '%NO_BACKSLASH_ESCAPES%'", nil, func(r *sql.Rows) error {
+			return r.Scan(&x.g.noBackslashEscapes)
+		})
+		if err != nil {
+			return session{}, fmt.Errorf("schema: reading the sql_mode of %q: %w", s.conn, err)
+		}
+	}
 	return x, nil
 }
 
