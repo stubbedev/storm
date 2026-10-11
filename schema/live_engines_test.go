@@ -73,6 +73,22 @@ func TestLiveFixes(t *testing.T) {
 	execOn(t, ctx, conn, "INSERT INTO orders (ref) VALUES (?)", "c")
 	want(t, "auto increment survives Change", column[int64](t, ctx, conn, "SELECT id FROM orders WHERE ref = ?", "c"), []int64{102})
 
+	check(t, s.Create(ctx, "keyed", func(t *Blueprint) {
+		t.ID().Primary()
+		t.String("code")
+	}))
+	execOn(t, ctx, conn, "INSERT INTO keyed (code) VALUES (?), (?)", "a", "b")
+	want(t, "ID().Primary() declares one auto-incrementing key", column[int64](t, ctx, conn, "SELECT id FROM keyed ORDER BY id"), []int64{1, 2})
+	indexes, err := s.GetIndexes(ctx, "keyed")
+	check(t, err)
+	var keys [][]string
+	for _, ix := range indexes {
+		if ix.Primary {
+			keys = append(keys, ix.Columns)
+		}
+	}
+	want(t, "ID().Primary() keys the table by id", keys, [][]string{{"id"}})
+
 	if x.g.mysqlFamily() {
 		check(t, s.Create(ctx, "defaults", func(t *Blueprint) {
 			t.String("b").Default("abc")
@@ -295,6 +311,10 @@ func TestDuckDBSchema(t *testing.T) {
 	want(t, "timestamptz", column[string](t, ctx, conn, "SELECT data_type FROM information_schema.columns WHERE table_name = 'it''s' AND column_name = 'at'"), []string{"TIMESTAMP WITH TIME ZONE"})
 	want(t, "column comment", column[string](t, ctx, conn, "SELECT comment FROM duckdb_columns() WHERE table_name = 'it''s' AND column_name = 'name'"), []string{"display name"})
 
+	check(t, s.Create(ctx, "keyed", func(t *Blueprint) { t.ID().Primary(); t.String("code") }))
+	execOn(t, ctx, conn, "INSERT INTO keyed (code) VALUES ('a'), ('b')")
+	want(t, "ID().Primary() declares one auto-incrementing key", column[int64](t, ctx, conn, "SELECT id FROM keyed ORDER BY id"), []int64{1, 2})
+	check(t, s.Drop(ctx, "keyed"))
 	failed(t, "duckdb cannot alter a referenced table", s.Table(ctx, "it's", func(t *Blueprint) { t.Integer("votes").Default(0) }), "Dependency")
 	ok, err := s.HasColumn(ctx, "it's", "votes")
 	check(t, err)

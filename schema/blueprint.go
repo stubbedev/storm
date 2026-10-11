@@ -21,6 +21,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/stubbedev/storm/orm"
@@ -583,6 +584,14 @@ func (i *Index) Language(lang string) *Index  { i.Lang = lang; return i }
 // Primary sets the primary key. On ClickHouse it is the MergeTree primary
 // key, which also becomes the sorting key unless OrderBy sets one.
 func (b *Blueprint) Primary(cols ...string) *Index { return b.index(cmdPrimary, "primary", cols) }
+
+// keyedByCommand reports whether a Primary command names exactly column;
+// that command then declares the key, not the column's definition.
+func (b *Blueprint) keyedByCommand(column string) bool {
+	return slices.ContainsFunc(b.commands, func(cmd *command) bool {
+		return cmd.kind == cmdPrimary && slices.Equal(cmd.columns, []string{column})
+	})
+}
 
 func (b *Blueprint) Unique(cols ...string) *Index { return b.index(cmdUnique, "unique", cols) }
 

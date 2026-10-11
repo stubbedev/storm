@@ -521,13 +521,17 @@ func (g grammar) columnDef(c *Column, nullability bool) (string, error) {
 		}
 	}
 	if c.IsAutoIncrement && !c.Changed {
+		key := " PRIMARY KEY"
+		if c.bp.keyedByCommand(c.Name) {
+			key = ""
+		}
 		switch g.engine {
 		case enginePostgres:
-			w(" PRIMARY KEY")
+			w(key)
 		case engineMySQL, engineMariaDB:
-			w(" AUTO_INCREMENT PRIMARY KEY")
+			w(" AUTO_INCREMENT", key)
 		case engineDuckDB:
-			w(" PRIMARY KEY DEFAULT nextval(", g.literal(g.quote(sequenceName(table, c.Name))), ")")
+			w(key, " DEFAULT nextval(", g.literal(g.quote(sequenceName(table, c.Name))), ")")
 		}
 	} else if c.IsAutoIncrement && g.mysqlFamily() {
 		w(" AUTO_INCREMENT")
@@ -611,9 +615,10 @@ func (g grammar) compileCreate(bp *Blueprint) ([]string, error) {
 				return nil, fmt.Errorf("schema: table %s declares two primary keys", bp.table)
 			}
 			primary = cmd.columns
-			switch g.engine {
-			case engineClickHouse:
-			case engineSQLite:
+			switch {
+			case g.engine == engineClickHouse:
+			case g.engine == engineSQLite && slices.ContainsFunc(bp.columns, func(c *Column) bool { return c.IsAutoIncrement && slices.Equal(cmd.columns, []string{c.Name}) }):
+			case g.engine == engineSQLite:
 				defs = append(defs, "PRIMARY KEY ("+g.list(cmd.columns)+")")
 			default:
 				defs = append(defs, "CONSTRAINT "+g.quote(g.primaryName(bp.table, cmd.index))+" PRIMARY KEY ("+g.list(cmd.columns)+")")
