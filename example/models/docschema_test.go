@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stubbedev/storm/orm"
 	"github.com/stubbedev/storm/schema"
@@ -188,4 +191,30 @@ func assertDocMigrations(t *testing.T, ctx context.Context, conn string) {
 		refused("migration lock", isolated, "unique keys")
 	}
 	ok(s.Drop(ctx, "schema_log"))
+}
+
+func TestMongoFreshWithViews(t *testing.T) {
+	if os.Getenv("STORM_TEST_MONGO") == "" {
+		t.Skip("set STORM_TEST_MONGO=mongodb://127.0.0.1:17017 to run")
+	}
+	ctx := context.Background()
+	store, err := orm.OpenMongo("mongo-fresh", os.Getenv("STORM_TEST_MONGO"), "stormfresh"+strconv.FormatInt(time.Now().UnixNano()%100000, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close(ctx) })
+	s := schema.On("mongo-fresh")
+	t.Cleanup(func() { ok(s.DropAllTables(ctx)) })
+	migrator := &schema.Migrator{Connection: "mongo-fresh", DropViews: true, Migrations: []schema.Migration{{
+		Name: "2026_01_01_000001_create_toys",
+		Up: func(ctx context.Context, s *schema.Builder) error {
+			return s.Create(ctx, "toys", func(t *schema.Blueprint) { t.UUID("id").Primary() })
+		},
+		Down: func(ctx context.Context, s *schema.Builder) error { return s.Drop(ctx, "toys") },
+	}}}
+	eq(t, "migrate", must(migrator.Migrate(ctx, false)), []string{"2026_01_01_000001_create_toys"})
+	eq(t, "fresh with views skips a document store's views", must(migrator.Fresh(ctx)), []string{"2026_01_01_000001_create_toys"})
+	var out strings.Builder
+	ok(schema.Run(ctx, migrator, []string{"wipe", "-drop-views"}, &out))
+	eq(t, "wipe -drop-views on a document store", must(s.HasTable(ctx, "toys")), false)
 }

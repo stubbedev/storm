@@ -331,16 +331,30 @@ func (m *Migrator) Fresh(ctx context.Context) ([]string, error) {
 		}
 	}
 	for _, c := range conns {
-		if m.DropViews {
-			if err := On(c).DropAllViews(ctx); err != nil {
-				return nil, fmt.Errorf("schema: dropping all views on %q: %w", c, err)
-			}
-		}
-		if err := On(c).DropAllTables(ctx); err != nil {
-			return nil, fmt.Errorf("schema: dropping all tables on %q: %w", c, err)
+		if err := wipe(ctx, c, m.DropViews); err != nil {
+			return nil, err
 		}
 	}
 	return m.Migrate(ctx, false)
+}
+
+// wipe drops every table on conn, and with views every view first; a
+// document store has no views to drop.
+func wipe(ctx context.Context, conn string, views bool) error {
+	b := On(conn)
+	_, doc, err := b.docStore(ctx)
+	if err != nil {
+		return err
+	}
+	if views && !doc {
+		if err := b.DropAllViews(ctx); err != nil {
+			return fmt.Errorf("schema: dropping all views on %q: %w", conn, err)
+		}
+	}
+	if err := b.DropAllTables(ctx); err != nil {
+		return fmt.Errorf("schema: dropping all tables on %q: %w", conn, err)
+	}
+	return nil
 }
 
 // Status reports which migrations have run.
@@ -467,6 +481,12 @@ func (m *Migrator) run(ctx context.Context, mig Migration, up bool, batch int) e
 			return m.logRan(ctx, mig.Name, batch)
 		}
 		return m.logReverted(ctx, mig.Name)
+	}
+	apply := func(ctx context.Context) error {
+		if err := body(ctx); err != nil {
+			return err
+		}
+		return log(ctx)
 	}
 	if _, doc, err := On(conn).docStore(ctx); err != nil || doc {
 		return thenRun(err, func() error { return apply(ctx) })

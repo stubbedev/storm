@@ -160,12 +160,7 @@ func Run(ctx context.Context, m *Migrator, args []string, out io.Writer) error {
 		}
 		return SeedReportOn(ctx, out, seedConn, names...)
 	case "wipe":
-		if *dropViews {
-			if err := On(m.conn()).DropAllViews(ctx); err != nil {
-				return err
-			}
-		}
-		if err := On(m.conn()).DropAllTables(ctx); err != nil {
+		if err := wipe(ctx, m.conn(), *dropViews); err != nil {
 			return err
 		}
 		fmt.Fprintln(out, "Dropped all tables.")
