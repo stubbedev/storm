@@ -6,12 +6,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"text/template"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -446,6 +448,27 @@ func TestRunCLI(t *testing.T) {
 	check(t, err)
 	src, _ = os.ReadFile(path)
 	want(t, "make scaffolds alter", strings.Contains(string(src), `s.Table(ctx, "users"`) && strings.HasSuffix(path, "2026_01_02_030405_add_votes_to_users_table.go"), true)
+}
+
+type failingRender struct{}
+
+func (failingRender) Fail() (string, error) { return "", errors.New("render failed") }
+
+func TestWriteNew(t *testing.T) {
+	dir := t.TempDir()
+	tmpl := template.Must(template.New("").Parse("package x // {{.Fail}}"))
+	_, err := writeNew(dir, "x.go", tmpl, failingRender{})
+	want(t, "a failed render is reported", err != nil && strings.Contains(err.Error(), "render failed"), true)
+	_, statErr := os.Stat(filepath.Join(dir, "x.go"))
+	want(t, "a failed render leaves no file", errors.Is(statErr, fs.ErrNotExist), true)
+
+	plain := template.Must(template.New("").Parse("package x\n"))
+	path, err := writeNew(dir, "x.go", plain, nil)
+	check(t, err)
+	_, err = writeNew(dir, "x.go", template.Must(template.New("").Parse("package y\n")), nil)
+	want(t, "an existing file is not overwritten", errors.Is(err, fs.ErrExist), true)
+	src, _ := os.ReadFile(path)
+	want(t, "the first write stays", string(src), "package x\n")
 }
 
 // render rewrites ? placeholders for the dialect, for the raw SQL in tests.

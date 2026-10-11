@@ -39,6 +39,7 @@ package main
 import (
 	"bytes"
 	"cmp"
+	"errors"
 	"flag"
 	"fmt"
 	"go/ast"
@@ -125,9 +126,32 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(*dir, *out), src, 0o644); err != nil { //nolint:gosec // generated sources are world-readable by convention
+	if err := writeAtomic(filepath.Join(*dir, *out), src); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// writeAtomic replaces path with src through a temporary file in the same
+// directory, so a failed run never leaves a half-written source behind.
+func writeAtomic(path string, src []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".ormgen-*.go")
+	if err != nil {
+		return fmt.Errorf("ormgen: writing %s: %w", path, err)
+	}
+	_, err = tmp.Write(src)
+	if err == nil {
+		err = tmp.Chmod(0o644)
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		return errors.Join(fmt.Errorf("ormgen: writing %s: %w", path, err), os.Remove(tmp.Name()))
+	}
+	return nil
 }
 
 func scanFile(file *ast.File, imports map[string]string) []model {

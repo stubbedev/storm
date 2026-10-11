@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -295,14 +296,31 @@ func MakeMigration(dir, pkg, name string, at time.Time) (string, error) {
 	} else if m := alterRe.FindStringSubmatch(name); m != nil {
 		data["Table"] = m[1]
 	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return "", err
+	return writeNew(dir, full+".go", makeTmpl, data)
+}
+
+// writeNew renders t into dir/file, refusing to overwrite an existing
+// file. The source is rendered before the file is created, and a failed
+// write removes the file, so no half-written source is left behind.
+func writeNew(dir, file string, t *template.Template, data any) (string, error) {
+	var src bytes.Buffer
+	if err := t.Execute(&src, data); err != nil {
+		return "", fmt.Errorf("schema: rendering %s: %w", file, err)
 	}
-	path := filepath.Join(dir, full+".go")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", fmt.Errorf("schema: creating %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, file)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // the path is assembled from the -dir flag and a generated file name
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("schema: creating %s: %w", path, err)
 	}
-	defer f.Close()
-	return path, makeTmpl.Execute(f, data)
+	_, err = f.Write(src.Bytes())
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return "", errors.Join(fmt.Errorf("schema: writing %s: %w", path, err), os.Remove(path))
+	}
+	return path, nil
 }
