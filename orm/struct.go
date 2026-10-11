@@ -23,7 +23,7 @@ import (
 //		WhereIn("country_id", 1, 2).
 //		WhereNull("deleted_at").
 //		OrderBy("name").
-//		Get(ctx) // []map[string]any{{"id": int64(1), "name": "Alice"}, ...}
+//		Get() // []map[string]any{{"id": int64(1), "name": "Alice"}, ...}
 //
 // Like Query, every method returns a new RowQuery, so builders can be shared.
 type RowQuery struct {
@@ -903,7 +903,7 @@ func (r RowQuery) Pluck(col string) ([]any, error) {
 	return out, nil
 }
 
-// PluckCol returns one typed column per row: PluckCol(ctx, Users.Email) is
+// PluckCol returns one typed column per row: PluckCol(Users.Email) is
 // a []string.
 func (r RowQuery) PluckCol[M any, K comparable, V any](c Column[M, K, V]) ([]V, error) {
 	ctx := r.context()
@@ -953,7 +953,7 @@ func (r RowQuery) Count() (int64, error) {
 }
 
 // Sum, Avg, Min and Max aggregate a column; the result type is chosen at
-// the call site: Sum[int64](ctx, "karma"). The *Col forms infer it from a
+// the call site: Sum[int64]("karma"). The *Col forms infer it from a
 // typed column. Document stores aggregate server-side where they can.
 func (r RowQuery) Sum[V Number](col string) (V, error) {
 	ctx := r.context()
@@ -976,7 +976,7 @@ func (r RowQuery) Max[V any](col string) (V, error) {
 }
 
 // SumCol, AvgCol, MinCol and MaxCol aggregate a typed column:
-// SumCol(ctx, Users.Karma) is an int64.
+// SumCol(Users.Karma) is an int64.
 func (r RowQuery) SumCol[M any, K comparable, V Number](c Column[M, K, V]) (V, error) {
 	ctx := r.context()
 	return rowAggregate[V](ctx, r, AggregateSum, c)
@@ -1059,7 +1059,7 @@ func (r RowQuery) Insert(ms ...map[string]any) error {
 }
 
 // InsertCols inserts one row from typed assignments:
-// InsertCols(ctx, Users.Name.Set("Ada"), Users.Email.Set("ada@example.com")).
+// InsertCols(Users.Name.Set("Ada"), Users.Email.Set("ada@example.com")).
 func (r RowQuery) InsertCols[M any](sets ...Assignment[M]) error {
 	ctx := r.context()
 	return r.insertRows(ctx, "insert", [][]colSet{colSets(sets)}, conflict{})
@@ -1074,7 +1074,7 @@ func (r RowQuery) InsertOrIgnore(ms ...map[string]any) error {
 
 // Upsert inserts rows, or updates the update columns (default: every
 // inserted column outside uniqueBy) of the row a uniqueBy combination
-// already names: Upsert(ctx, rows, []string{"email"}, "name").
+// already names: Upsert(rows, []string{"email"}, "name").
 func (r RowQuery) Upsert(ms []map[string]any, uniqueBy []string, update ...string) error {
 	ctx := r.context()
 	rows := mapRows(ms)
@@ -1178,7 +1178,7 @@ func (r RowQuery) Update(m map[string]any) (int64, error) {
 }
 
 // UpdateCols is Update with typed assignments:
-// UpdateCols(ctx, Users.Name.Set("Ada"), Users.Karma.Set(5)). Unlike the
+// UpdateCols(Users.Name.Set("Ada"), Users.Karma.Set(5)). Unlike the
 // model query's Update it leaves updated-at alone, as Update does.
 func (r RowQuery) UpdateCols[M any](sets ...Assignment[M]) (int64, error) {
 	ctx := r.context()

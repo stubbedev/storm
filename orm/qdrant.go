@@ -31,9 +31,9 @@ import (
 //		orm.Model
 //		ID    string         `db:"id"`
 //		Title string         `db:"title"`
-//		Vec   orm.Vector[384] `db:"vec"`
+//		Vec   orm.Vector[orm.D384] `db:"vec"`
 //	}
-//	docs, err := Docs.Query().OrderBy(orm.Nearest(Docs.Vec, q, orm.Cosine)).Limit(10).Get(ctx)
+//	docs, err := Docs.Query().OrderBy(orm.Nearest(Docs.Vec, q, orm.Cosine)).Limit(10).Get()
 type QdrantStore struct {
 	base string
 	http *http.Client

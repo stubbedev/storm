@@ -211,7 +211,7 @@ func (q Query[M, K]) Count() (int64, error) {
 	return selectScalar[int64](ctx, q, Count[M]().build)
 }
 
-// Sum only accepts numeric expressions: Sum(ctx, Users.Email) does not compile.
+// Sum only accepts numeric expressions: Sum(Users.Email) does not compile.
 func (q Query[M, K]) Sum[V Number](e Expr[M, V]) (V, error) {
 	ctx := q.context()
 	return aggregate[V](ctx, q, AggregateSum, e)
@@ -233,7 +233,7 @@ func (q Query[M, K]) Max[V any](e Expr[M, V]) (V, error) {
 }
 
 // Pluck returns one expression per row; V comes from the expression, so
-// Pluck(ctx, Users.Email) is a []string.
+// Pluck(Users.Email) is a []string.
 func (q Query[M, K]) Pluck[V any](e Expr[M, V]) ([]V, error) {
 	ctx := q.context()
 	q = q.prepared()

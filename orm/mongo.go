@@ -23,7 +23,7 @@ import (
 //
 //	orm.OpenMongo("mongo", "mongodb://localhost:27017", "app")
 //	//orm:table events connection=mongo key_type=uuid
-//	err := Events.Query().Where(Events.Kind.Eq("click")).Limit(10).Get(ctx)
+//	events, err := Events.Query().Where(Events.Kind.Eq("click")).Limit(10).Get()
 type MongoStore struct {
 	client *mongo.Client
 	db     *mongo.Database
