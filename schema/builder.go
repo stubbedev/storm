@@ -329,7 +329,9 @@ func (s *Builder) sqlOnly(ctx context.Context, table, op string) (session, error
 // DropAllTables drops every table on the connection (used by migrate:fresh):
 // with CASCADE on Postgres, children first on DuckDB (which cannot disable
 // foreign keys) along with its sequences, and with foreign key checks off
-// on SQLite and MySQL.
+// on SQLite and MySQL. On a document store it drops every collection in
+// the connection's database; Qdrant has no databases, so that is every
+// collection on the server.
 func (s *Builder) DropAllTables(ctx context.Context) error {
 	if ds, ok, err := s.docStore(ctx); err != nil || ok {
 		return thenRun(err, func() error {

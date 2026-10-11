@@ -13,7 +13,11 @@
 // DDL is compiled by a grammar chosen from the connection's dialect, so the
 // same blueprint produces SQLite, Postgres, MySQL, MariaDB, DuckDB or
 // ClickHouse statements. A blueprint the engine cannot express fails with an
-// *UnsupportedError naming the engine and the operation; nothing is
+// *UnsupportedError naming the engine and the operation. Two modifiers that
+// carry no data are skipped where the engine has no form for them, as in
+// Laravel: Comment on SQLite, which keeps no comments, and Unsigned on
+// SQLite and Postgres, which have no unsigned integers (so ForeignID, an
+// unsigned big integer, works on every engine). Nothing else is
 // approximated.
 package schema
 

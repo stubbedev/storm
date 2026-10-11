@@ -654,7 +654,7 @@ valid operators after `orm.`.
 | `$user->posts()->...`, `create`, `save`, `associate` | `UserPosts.Of(&u)...`, `.Create`, `.Save`, `.Associate`, `.Dissociate` |
 | `attach`, `detach`, `sync`, `toggle`, `updateExistingPivot` | same names |
 | Casts (array/json, dates, enums, encrypted, hashed, custom) | `orm.JSON[T]`, `orm.Encrypted[V]` (`orm.SetEncryptionKey`), `orm.Hashed`, `time.Time`, typed string enums, any `sql.Scanner` / `driver.Valuer` |
-| Model factories, seeders, `db:seed`, `--seed` | `orm.NewFactory(...).Count(n).State(...).Sequence(...).Create(ctx)`; `schema.Seeder` + `RegisterSeeder` + `schema.Seed`, `db:seed [-class]`, `fresh -seed` |
+| Model factories, seeders, `db:seed`, `--seed` | `orm.NewFactory(...).Count(n).State(...).Sequence(...).Create()`; `schema.Seeder` + `RegisterSeeder` + `schema.Seed`, `db:seed [-class]`, `fresh -seed` |
 | Prunable / MassPrunable | `Prune(chunk)` / `Delete` |
 | `DB::transaction`, nested savepoints, `afterCommit`, deadlock retry | `orm.Transaction` (nests), `orm.AfterCommit`, `orm.RetryingTransaction(ctx, attempts, fn)` |
 | `DB::listen`, `toSql`, `toRawSql`, `explain`, query log | `orm.Listen`, `ToSQL`, `ToRawSQL`, `Explain()`, `orm.EnableQueryLog` / `QueryLog` / `FlushQueryLog` |
