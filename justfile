@@ -59,7 +59,7 @@ test-duckdb:
 
 # Run the ClickHouse tests.
 test-clickhouse:
-    STORM_TEST_CLICKHOUSE='{{ch_dsn}}' go test -count=1 -p 1 -run TestClickHouse ./example/models/
+    STORM_TEST_CLICKHOUSE='{{ch_dsn}}' go test -count=1 -p 1 -run TestClickHouse ./example/models/ ./schema/
 
 # Run the MongoDB tests.
 test-mongo:
