@@ -450,6 +450,31 @@ func TestRunCLI(t *testing.T) {
 	want(t, "make scaffolds alter", strings.Contains(string(src), `s.Table(ctx, "users"`) && strings.HasSuffix(path, "2026_01_02_030405_add_votes_to_users_table.go"), true)
 }
 
+func TestScaffoldNames(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for what, err := range map[string]error{
+		"a migration escaping the directory":  second(MakeMigration(dir, "migrations", "x/../../../escaped", at)),
+		"a migration with a quote":            second(MakeMigration(dir, "migrations", `add_"x`, at)),
+		"a migration starting with a digit":   second(MakeMigration(dir, "migrations", "1_create", at)),
+		"a seeder escaping the directory":     second(MakeSeeder(dir, "migrations", "../Users")),
+		"a seeder with a quote":               second(MakeSeeder(dir, "migrations", `Us"ers`)),
+		"an unexported model":                 second(MakeModel(dir, "models", "flight")),
+		"a model escaping the directory":      second(MakeModel(dir, "models", "../Flight")),
+		"a package that is not an identifier": second(MakeMigration(dir, "my-pkg", "create_x_table", at)),
+		"a package that is a keyword":         second(MakeSeeder(dir, "func", "Users")),
+	} {
+		want(t, what+" is refused", err != nil, true)
+	}
+	entries, _ := os.ReadDir(dir)
+	want(t, "refused scaffolds write nothing", len(entries), 0)
+	check(t, second(MakeMigration(dir, "migrations", "Create-Flights_table", at)))
+	check(t, second(MakeSeeder(dir, "migrations", "Users-2")))
+	check(t, second(MakeModel(dir, "models", "Flight2")))
+}
+
+func second[T any](_ T, err error) error { return err }
+
 type failingRender struct{}
 
 func (failingRender) Fail() (string, error) { return "", errors.New("render failed") }

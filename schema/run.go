@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -244,9 +245,12 @@ func checkCommand(fs *flag.FlagSet, head, sub string) error {
 }
 
 var (
-	createRe = regexp.MustCompile(`^create_(\w+?)_table$`)
-	alterRe  = regexp.MustCompile(`^\w+_(?:to|from|in)_(\w+?)(?:_table)?$`)
-	makeTmpl = template.Must(template.New("").Parse(`package {{.Package}}
+	migrationNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	seederNameRe    = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
+	modelNameRe     = regexp.MustCompile(`^[A-Z][A-Za-z0-9]*$`)
+	createRe        = regexp.MustCompile(`^create_(\w+?)_table$`)
+	alterRe         = regexp.MustCompile(`^\w+_(?:to|from|in)_(\w+?)(?:_table)?$`)
+	makeTmpl        = template.Must(template.New("").Parse(`package {{.Package}}
 
 import (
 	"context"
@@ -289,6 +293,9 @@ func init() {
 // table from names like create_flights_table or add_votes_to_users_table.
 func MakeMigration(dir, pkg, name string, at time.Time) (string, error) {
 	name = strings.ToLower(strings.ReplaceAll(name, "-", "_"))
+	if err := checkScaffold("migration", name, migrationNameRe, pkg); err != nil {
+		return "", err
+	}
 	full := at.UTC().Format("2006_01_02_150405") + "_" + name
 	data := map[string]any{"Package": pkg, "Name": full}
 	if m := createRe.FindStringSubmatch(name); m != nil {
@@ -297,6 +304,18 @@ func MakeMigration(dir, pkg, name string, at time.Time) (string, error) {
 		data["Table"] = m[1]
 	}
 	return writeNew(dir, full+".go", makeTmpl, data)
+}
+
+// checkScaffold refuses a name or package that would escape the target
+// directory or not compile once written into a Go source file.
+func checkScaffold(kind, name string, valid *regexp.Regexp, pkg string) error {
+	if !valid.MatchString(name) {
+		return fmt.Errorf("schema: %s name %q must match %s", kind, name, valid)
+	}
+	if !token.IsIdentifier(pkg) {
+		return fmt.Errorf("schema: package %q is not a Go identifier", pkg)
+	}
+	return nil
 }
 
 // writeNew renders t into dir/file, refusing to overwrite an existing

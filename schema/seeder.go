@@ -138,6 +138,9 @@ func init() {
 // MakeSeeder writes a seeder skeleton (make:seeder) registering
 // {{.Name}}.
 func MakeSeeder(dir, pkg, name string) (string, error) {
+	if err := checkScaffold("seeder", name, seederNameRe, pkg); err != nil {
+		return "", err
+	}
 	data := map[string]any{"Package": pkg, "Name": name}
 	file := strings.ToLower(strings.ReplaceAll(name, "-", "_"))
 	if !strings.HasSuffix(file, "_seeder") {
@@ -166,6 +169,9 @@ type {{.Name}} struct {
 // MakeModel writes a model skeleton (make:model) with an //orm:table
 // directive; go generate then produces the typed columns.
 func MakeModel(dir, pkg, name string) (string, error) {
+	if err := checkScaffold("model", name, modelNameRe, pkg); err != nil {
+		return "", err
+	}
 	table := pluralize(snake(name))
 	data := map[string]any{"Package": pkg, "Name": name, "Table": table}
 	return writeNew(dir, snake(name)+".go", modelTmpl, data)
