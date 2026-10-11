@@ -3,6 +3,7 @@ package schema
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -207,7 +208,10 @@ var ErrMigrationLocked = errors.New("schema: another migration run holds the loc
 // atomic. While another run holds a lock younger than LockTimeout it
 // returns ErrMigrationLocked without running fn. Engines without unique
 // keys (ClickHouse, Qdrant) cannot hold the lock and refuse.
-func (m *Migrator) Isolated(ctx context.Context, fn func(context.Context) error) error {
+func (m *Migrator) Isolated(ctx context.Context, fn func(context.Context) error) (err error) {
+	if m.LockTimeout < 0 {
+		return fmt.Errorf("schema: Migrator.LockTimeout is %s; it must be positive, or zero for an hour", m.LockTimeout)
+	}
 	b := On(m.conn())
 	engine, err := b.DriverName(ctx)
 	if err != nil {
@@ -218,52 +222,101 @@ func (m *Migrator) Isolated(ctx context.Context, fn func(context.Context) error)
 	}
 	if err := b.CreateIfNotExists(ctx, m.lockTable(), func(t *Blueprint) {
 		t.String("id").Primary()
+		t.String("owner")
 		t.DateTime("acquired_at")
 	}); err != nil {
 		return err
 	}
-	if err := m.takeLock(ctx); err != nil {
+	owner, err := m.takeLock(ctx)
+	if err != nil {
 		return err
 	}
-	return errors.Join(fn(ctx), m.releaseLock(ctx))
+	stop := m.heartbeat(ctx, owner)
+	defer func() {
+		err = errors.Join(err, stop(), m.releaseLock(ctx, owner))
+	}()
+	return fn(ctx)
 }
 
 const lockID = "migrate"
 
 func (m *Migrator) lockTable() string { return m.table() + "_lock" }
 
-// takeLock inserts the lock row. When the row exists, a single
-// conditional update takes it over if it is older than LockTimeout, so of
-// several waiting runs exactly one wins.
-func (m *Migrator) takeLock(ctx context.Context) error {
-	locks := orm.From(m.lockTable()).On(m.conn())
+func (m *Migrator) lockTimeout() time.Duration { return cmp.Or(m.LockTimeout, time.Hour) }
+
+// takeLock inserts the lock row under a fresh owner token. When the row
+// exists, a single conditional update takes it over if it is older than
+// LockTimeout, so of several waiting runs exactly one wins.
+func (m *Migrator) takeLock(ctx context.Context) (string, error) {
+	token := make([]byte, 16)
+	if _, err := rand.Read(token); err != nil {
+		return "", fmt.Errorf("schema: generating a migration lock owner: %w", err)
+	}
+	owner := hex.EncodeToString(token)
+	locks := orm.From(m.lockTable()).On(m.conn()).WithContext(ctx)
 	now := time.Now().UTC().Truncate(time.Second)
-	insertErr := locks.WithContext(ctx).Insert(map[string]any{"id": lockID, "acquired_at": now})
+	insertErr := locks.Insert(map[string]any{"id": lockID, "owner": owner, "acquired_at": now})
 	if insertErr == nil {
-		return nil
+		return owner, nil
 	}
 	held := locks.Where("id", orm.Eq, lockID)
-	taken, err := held.Where("acquired_at", orm.Lt, now.Add(-cmp.Or(m.LockTimeout, time.Hour))).
-		WithContext(ctx).Update(map[string]any{"acquired_at": now})
+	taken, err := held.Where("acquired_at", orm.Lt, now.Add(-m.lockTimeout())).Update(map[string]any{"owner": owner, "acquired_at": now})
 	if err != nil {
-		return fmt.Errorf("schema: taking over a stale migration lock: %w", errors.Join(insertErr, err))
+		return "", fmt.Errorf("schema: taking over a stale migration lock: %w", errors.Join(insertErr, err))
 	}
 	if taken > 0 {
-		return nil
+		return owner, nil
 	}
-	exists, err := held.WithContext(ctx).Exists()
+	exists, err := held.Exists()
 	switch {
 	case err != nil:
-		return fmt.Errorf("schema: reading the migration lock: %w", errors.Join(insertErr, err))
+		return "", fmt.Errorf("schema: reading the migration lock: %w", errors.Join(insertErr, err))
 	case exists:
-		return ErrMigrationLocked
+		return "", ErrMigrationLocked
 	}
-	return fmt.Errorf("schema: taking the migration lock: %w", insertErr)
+	return "", fmt.Errorf("schema: taking the migration lock: %w", insertErr)
 }
 
-func (m *Migrator) releaseLock(ctx context.Context) error {
-	if _, err := orm.From(m.lockTable()).On(m.conn()).Where("id", orm.Eq, lockID).WithContext(ctx).Delete(); err != nil {
+// heartbeat refreshes the lock's acquired_at while the run works, at a
+// third of LockTimeout, so a run longer than LockTimeout is not taken over
+// as stale; stop ends it and reports the first refresh that failed.
+func (m *Migrator) heartbeat(ctx context.Context, owner string) (stop func() error) {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	var failed error
+	go func() {
+		defer close(finished)
+		tick := time.NewTicker(m.lockTimeout() / 3)
+		defer tick.Stop()
+		mine := orm.From(m.lockTable()).On(m.conn()).WithContext(context.WithoutCancel(ctx)).Where("id", orm.Eq, lockID).Where("owner", orm.Eq, owner)
+		for {
+			select {
+			case <-done:
+				return
+			case <-tick.C:
+				if _, err := mine.Update(map[string]any{"acquired_at": time.Now().UTC().Truncate(time.Second)}); err != nil && failed == nil {
+					failed = fmt.Errorf("schema: refreshing the migration lock: %w", err)
+				}
+			}
+		}
+	}()
+	return func() error {
+		close(done)
+		<-finished
+		return failed
+	}
+}
+
+// releaseLock deletes the lock only while owner still holds it; a lock
+// taken over in the meantime means another run may have migrated too.
+func (m *Migrator) releaseLock(ctx context.Context, owner string) error {
+	n, err := orm.From(m.lockTable()).On(m.conn()).WithContext(context.WithoutCancel(ctx)).
+		Where("id", orm.Eq, lockID).Where("owner", orm.Eq, owner).Delete()
+	switch {
+	case err != nil:
 		return fmt.Errorf("schema: releasing the migration lock: %w", err)
+	case n == 0:
+		return errors.New("schema: the migration lock was taken over while this run held it; another run may have migrated concurrently")
 	}
 	return nil
 }

@@ -342,11 +342,33 @@ func TestMigrator(t *testing.T) {
 	want(t, "isolated ran", inside, true)
 	check(t, m.Isolated(ctx, func(context.Context) error { return nil }))
 	stale := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
-	check(t, orm.From("migrations_lock").Insert(map[string]any{"id": "migrate", "acquired_at": stale}))
+	check(t, orm.From("migrations_lock").Insert(map[string]any{"id": "migrate", "owner": "crashed run", "acquired_at": stale}))
 	check(t, m.Isolated(ctx, func(context.Context) error { return nil }))
 	held, err := orm.From("migrations_lock").Count()
 	check(t, err)
 	want(t, "stale lock taken over and released", held, int64(0))
+	thief := &Migrator{Migrations: m.Migrations}
+	err = m.Isolated(ctx, func(ctx context.Context) error {
+		if _, err := orm.From("migrations_lock").WithContext(ctx).Update(map[string]any{"acquired_at": stale}); err != nil {
+			return err
+		}
+		return thief.Isolated(ctx, func(ctx context.Context) error {
+			_, err := m.takeLock(ctx)
+			want(t, "the thief holds the lock", errors.Is(err, ErrMigrationLocked), true)
+			return nil
+		})
+	})
+	want(t, "releasing a lock taken over is reported", err != nil && strings.Contains(err.Error(), "taken over"), true)
+	panicked := func() (did bool) {
+		defer func() { did = recover() != nil }()
+		_ = m.Isolated(ctx, func(context.Context) error { panic("migration panicked") })
+		return false
+	}()
+	held, err = orm.From("migrations_lock").Count()
+	check(t, err)
+	want(t, "a panicking run releases the lock", panicked && held == 0, true)
+	err = (&Migrator{LockTimeout: -time.Second}).Isolated(ctx, func(context.Context) error { return nil })
+	want(t, "a negative lock timeout is refused", err != nil && strings.Contains(err.Error(), "LockTimeout"), true)
 	check(t, s.Drop(ctx, "migrations_lock"))
 	back, err = m.Reset(ctx)
 	check(t, err)
