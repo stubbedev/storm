@@ -450,6 +450,45 @@ func TestRunCLI(t *testing.T) {
 	want(t, "make scaffolds alter", strings.Contains(string(src), `s.Table(ctx, "users"`) && strings.HasSuffix(path, "2026_01_02_030405_add_votes_to_users_table.go"), true)
 }
 
+func TestMigrationOnItsOwnConnection(t *testing.T) {
+	ctx := context.Background()
+	for _, name := range []string{"own-main", "own-other"} {
+		db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), name+".db"))
+		check(t, err)
+		t.Cleanup(func() { db.Close() })
+		orm.AddConnection(name, db, orm.SQLite)
+	}
+	m := &Migrator{Connection: "own-main", Migrations: []Migration{{
+		Name:       "2026_01_01_000001_create_partial",
+		Connection: "own-other",
+		Up: func(ctx context.Context, s *Builder) error {
+			if err := s.Create(ctx, "partial", func(t *Blueprint) { t.ID() }); err != nil {
+				return err
+			}
+			return errors.New("boom")
+		},
+		Down: func(context.Context, *Builder) error { return nil },
+	}}}
+	_, err := m.Migrate(ctx, false)
+	want(t, "the failing migration is reported", err != nil && strings.Contains(err.Error(), "boom"), true)
+	created, err := On("own-other").HasTable(ctx, "partial")
+	check(t, err)
+	want(t, "a failed migration on its own connection is rolled back", created, false)
+	status, err := m.Status(ctx)
+	check(t, err)
+	want(t, "the failed migration is not logged", status[0].Ran, false)
+
+	m.Migrations[0].Up = func(ctx context.Context, s *Builder) error {
+		return s.Create(ctx, "partial", func(t *Blueprint) { t.ID() })
+	}
+	check(t, second(m.Migrate(ctx, false)))
+	created, err = On("own-other").HasTable(ctx, "partial")
+	check(t, err)
+	status, err = m.Status(ctx)
+	check(t, err)
+	want(t, "a migration on its own connection commits and is logged", created && status[0].Ran, true)
+}
+
 func TestScaffoldNames(t *testing.T) {
 	dir := t.TempDir()
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)

@@ -461,10 +461,8 @@ func (m *Migrator) run(ctx context.Context, mig Migration, up bool, batch int) e
 	if fn == nil {
 		return fmt.Errorf("schema: migration %s has no %s function", mig.Name, direction)
 	}
-	apply := func(ctx context.Context) error {
-		if err := fn(ctx, On(conn)); err != nil {
-			return err
-		}
+	body := func(ctx context.Context) error { return fn(ctx, On(conn)) }
+	log := func(ctx context.Context) error {
 		if up {
 			return m.logRan(ctx, mig.Name, batch)
 		}
@@ -477,10 +475,16 @@ func (m *Migrator) run(ctx context.Context, mig Migration, up bool, batch int) e
 	if err != nil {
 		return err
 	}
-	if mig.NoTransaction || !x.g.transactionalDDL() || conn != m.conn() {
+	switch {
+	case mig.NoTransaction || !x.g.transactionalDDL():
 		return apply(ctx)
+	case conn == m.conn():
+		return orm.TransactionOn(ctx, conn, apply)
 	}
-	return orm.TransactionOn(ctx, conn, apply)
+	if err := orm.TransactionOn(ctx, conn, body); err != nil {
+		return err
+	}
+	return log(ctx)
 }
 
 // ensureTable creates the migrations table. Engines that generate no keys
