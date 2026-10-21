@@ -733,7 +733,7 @@ toggling has no effect inside a transaction.
 ```sh
 just test                      # SQLite, no setup needed
 docker compose up -d --wait    # Postgres 17 (pgvector), MySQL 8.4, MariaDB 11.8,
-                               # ClickHouse 25, MongoDB 8, Qdrant 1.15
+                               # ClickHouse 25, MongoDB 9, Qdrant 1.15
 just test-all                  # every engine
 ```
 

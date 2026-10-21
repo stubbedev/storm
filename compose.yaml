@@ -82,7 +82,7 @@ services:
   mongo:
     # A single-node replica set: MongoDB has transactions only on replica
     # sets. The health check initiates it on first run.
-    image: mongo:8
+    image: mongo:9.0
     command: ["--replSet", "rs0", "--bind_ip_all"]
     ports: ["127.0.0.1:17017:27017"]
     tmpfs: [/data/db]
