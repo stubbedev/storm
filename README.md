@@ -51,6 +51,7 @@ renders correctly for each, and the full test suite runs against all eight.
 - [Eloquent feature map](#eloquent-feature-map)
 - [What Go doesn't allow](#what-go-doesnt-allow)
 - [Testing](#testing)
+- [Nix](#nix)
 - [Cookbook](docs/cookbook.md): recipes for every feature
 
 ## Requirements and install
@@ -738,3 +739,12 @@ just test-all                  # every engine
 ```
 
 CI (`.github/workflows/test.yml`) runs the same matrix.
+
+## Nix
+
+- `nix develop` (or direnv with `use flake` in `.envrc`) enters the dev shell
+  from `nix/shell.nix`: Go 1.27, gopls, golangci-lint, delve and just
+- `nix build` builds `ormgen` (`nix/package.nix`); bump `vendorHash` when
+  go.sum changes
+- `nix run` runs `ormgen`
+- `nix fmt` formats the nix files with alejandra
