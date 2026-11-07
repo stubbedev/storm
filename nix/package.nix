@@ -19,7 +19,7 @@
         );
       };
 
-      vendorHash = "sha256-S5Fw0YwpXXEP7Fta23urG8Rnp8t/AZTdWiPpi0g/xVU=";
+      vendorHash = "sha256-8j9w39KS+27ybsHVg2mSaF5dm75fqjLYGt9pXXB5zoc=";
 
       subPackages = ["cmd/ormgen"];
 
