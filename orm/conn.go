@@ -255,7 +255,36 @@ type DocTransactor interface {
 // to undo the nested part alone, the whole transaction rolled back.
 var ErrNestedFailed = errors.New("orm: a nested transaction failed, so the whole transaction rolled back")
 
-type txKey struct{ conn string }
+type txKey struct{}
+
+type connScoped[V any] struct {
+	conn  string
+	value V
+	outer *connScoped[V]
+}
+
+func withConnScoped[V any](ctx context.Context, key any, conn string, v V) context.Context {
+	outer, _ := ctx.Value(key).(*connScoped[V])
+	return context.WithValue(ctx, key, &connScoped[V]{conn: conn, value: v, outer: outer})
+}
+
+func connScopedValue[V any](ctx context.Context, key any, conn string) (V, bool) {
+	for s, _ := ctx.Value(key).(*connScoped[V]); s != nil; s = s.outer {
+		if s.conn == conn {
+			return s.value, true
+		}
+	}
+	var zero V
+	return zero, false
+}
+
+func withTx(ctx context.Context, conn string, st *txState) context.Context {
+	return withConnScoped(ctx, txKey{}, conn, st)
+}
+
+func txOn(ctx context.Context, conn string) (*txState, bool) {
+	return connScopedValue[*txState](ctx, txKey{}, conn)
+}
 
 // TransactionOn is Transaction for a named connection.
 func TransactionOn(ctx context.Context, name string, fn func(ctx context.Context) error) (err error) {
@@ -286,7 +315,7 @@ func TransactionAttemptsOn(ctx context.Context, name string, attempts int, fn fu
 }
 
 func TransactionOnce(ctx context.Context, name string, fn func(ctx context.Context) error) (err error) {
-	if st, ok := ctx.Value(txKey{name}).(*txState); ok {
+	if st, ok := txOn(ctx, name); ok {
 		if st.flat {
 			if err := fn(ctx); err != nil {
 				st.failed = true
@@ -336,7 +365,7 @@ func TransactionOnce(ctx context.Context, name string, fn func(ctx context.Conte
 			}
 		}
 	}()
-	return fn(context.WithValue(ctx, txKey{name}, st))
+	return fn(withTx(ctx, name, st))
 }
 
 // docTransaction runs fn in the document store's own transaction; a store
@@ -348,7 +377,7 @@ func docTransaction(ctx context.Context, name string, c Conn, fn func(ctx contex
 	}
 	st := &txState{conn: c, flat: true, after: new([]func(context.Context))}
 	err := tr.Transaction(ctx, func(tctx context.Context) error {
-		if err := fn(context.WithValue(tctx, txKey{name}, st)); err != nil {
+		if err := fn(withTx(tctx, name, st)); err != nil {
 			return err
 		}
 		if st.failed {
@@ -406,7 +435,7 @@ func savepoint(ctx context.Context, name string, parent *txState, fn func(ctx co
 			panic(p)
 		}
 	}()
-	if err = fn(context.WithValue(ctx, txKey{name}, child)); err != nil {
+	if err = fn(withTx(ctx, name, child)); err != nil {
 		rollback()
 		return err
 	}
@@ -423,7 +452,7 @@ func AfterCommit(ctx context.Context, fn func(ctx context.Context)) {
 
 // AfterCommitOn is AfterCommit for a named connection.
 func AfterCommitOn(ctx context.Context, conn string, fn func(ctx context.Context)) {
-	if st, ok := ctx.Value(txKey{conn}).(*txState); ok {
+	if st, ok := txOn(ctx, conn); ok {
 		*st.after = append(*st.after, fn)
 		return
 	}
@@ -436,12 +465,12 @@ func InTransaction(ctx context.Context) bool { return InTransactionOn(ctx, Defau
 // InTransactionOn reports whether ctx carries a transaction on the named
 // connection.
 func InTransactionOn(ctx context.Context, name string) bool {
-	_, ok := ctx.Value(txKey{name}).(*txState)
+	_, ok := txOn(ctx, name)
 	return ok
 }
 
 func flatTransaction(ctx context.Context, name string) bool {
-	st, ok := ctx.Value(txKey{name}).(*txState)
+	st, ok := txOn(ctx, name)
 	return ok && st.flat
 }
 
@@ -594,20 +623,20 @@ func IsUniqueViolation(err error) bool {
 // transaction instead when ctx carries one for that connection.
 func Connection(ctx context.Context, name string) (Conn, error) { return lookup(ctx, name) }
 
-type heldKey struct{ conn string }
+type heldKey struct{}
 
 // WithConn returns a ctx in which every statement on the named connection
 // runs on conn, one connection taken from its pool — for session state
 // that only lives on a connection, like MySQL's FOREIGN_KEY_CHECKS or
 // SQLite's PRAGMAs. A transaction begun in that ctx runs on conn too.
 func WithConn(ctx context.Context, name string, conn *sql.Conn) context.Context {
-	return context.WithValue(ctx, heldKey{name}, conn)
+	return withConnScoped(ctx, heldKey{}, name, conn)
 }
 
 // lookup resolves a connection name: an active transaction in ctx wins,
 // then a connection held with WithConn, then the registry.
 func lookup(ctx context.Context, name string) (Conn, error) {
-	if st, ok := ctx.Value(txKey{name}).(*txState); ok {
+	if st, ok := txOn(ctx, name); ok {
 		return st.conn, nil
 	}
 	connMu.RLock()
@@ -616,7 +645,7 @@ func lookup(ctx context.Context, name string) (Conn, error) {
 	if !ok {
 		return Conn{}, fmt.Errorf("orm: no connection %q registered (call orm.Open, orm.SetDefault or orm.AddConnection)", name)
 	}
-	if held, ok := ctx.Value(heldKey{name}).(*sql.Conn); ok {
+	if held, ok := connScopedValue[*sql.Conn](ctx, heldKey{}, name); ok {
 		c.DB, c.Read = held, nil
 	}
 	return c, nil
