@@ -206,11 +206,11 @@ func (q Query[M, K]) performUpdate(ctx context.Context, m *M) error {
 // global scopes (newModelQuery()).
 func (q Query[M, K]) instance(m *M) Query[M, K] {
 	t := q.table
-	raw, ok := t.state(m).original[t.PrimaryKey]
-	if !ok {
-		raw = t.key(m)
+	keyed := m
+	if orig, ok := t.original(m); ok {
+		keyed = orig
 	}
-	key, err := t.keyOf(raw)
+	key, err := t.keyOf(t.key(keyed))
 	if err != nil {
 		q.err = cmp.Or(q.err, err)
 		return q

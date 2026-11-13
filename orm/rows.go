@@ -59,3 +59,32 @@ func formatUUID(b []byte) string {
 	hex.Encode(out[24:], b[10:])
 	return string(out[:])
 }
+
+type modelDests[M any, K comparable] struct {
+	table *Table[M, K]
+	cols  []string
+	cells []nullable
+}
+
+func newModelDests[M any, K comparable](t *Table[M, K], cols []string) modelDests[M, K] {
+	return modelDests[M, K]{table: t, cols: cols, cells: make([]nullable, len(cols))}
+}
+
+func (d modelDests[M, K]) args() []any {
+	args := make([]any, len(d.cells))
+	for i := range d.cells {
+		args[i] = &d.cells[i]
+	}
+	return args
+}
+
+func (d modelDests[M, K]) bind(m *M) error {
+	for i, c := range d.cols {
+		p := d.table.Ptr(m, c)
+		if p == nil {
+			return fmt.Errorf("orm: %s has no field for selected column %q", d.table.Name, c)
+		}
+		d.cells[i].dst = p
+	}
+	return nil
+}

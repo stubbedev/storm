@@ -363,10 +363,8 @@ func (c Column[M, K, V]) term() selectTerm { return selectTerm{f: c.build, col: 
 
 // Original is the value as last loaded from or saved to the database.
 func (c Column[M, K, V]) Original(m *M) V {
-	if v, ok := c.table.state(m).original[c.name]; ok {
-		if typed, ok := v.(V); ok {
-			return typed
-		}
+	if orig, ok := c.table.original(m); ok {
+		return *c.ptr(orig)
 	}
 	var zero V
 	return zero
@@ -374,9 +372,8 @@ func (c Column[M, K, V]) Original(m *M) V {
 
 // IsDirty reports whether the field changed since it was loaded or saved.
 func (c Column[M, K, V]) IsDirty(m *M) bool {
-	st := c.table.state(m)
-	orig, ok := st.original[c.name]
-	return !ok || !equal(orig, c.Get(m))
+	orig, ok := c.table.original(m)
+	return !ok || !equalValues(reflect.ValueOf(c.ptr(orig)).Elem(), reflect.ValueOf(c.ptr(m)).Elem())
 }
 
 // WasChanged reports whether the last save changed the column.
@@ -657,12 +654,31 @@ func (Subquery[V]) valueOf(V)      {}
 func selectOne(b *SQL) { b.Write("1") }
 
 // equal compares column values for dirty tracking.
-func equal(a, b any) bool {
-	if ta, ok := a.(time.Time); ok {
-		tb, ok := b.(time.Time)
+func equal(a, b any) bool { return equalValues(reflect.ValueOf(a), reflect.ValueOf(b)) }
+
+func equalValues(a, b reflect.Value) bool {
+	if !a.IsValid() || !b.IsValid() {
+		return a.IsValid() == b.IsValid()
+	}
+	if ta, ok := reflect.TypeAssert[time.Time](a); ok {
+		tb, ok := reflect.TypeAssert[time.Time](b)
 		return ok && ta.Equal(tb)
 	}
-	return reflect.DeepEqual(a, b)
+	if isScalar(a) {
+		return a.Equal(b)
+	}
+	return reflect.DeepEqual(a.Interface(), b.Interface())
+}
+
+func isScalar(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Bool, reflect.String,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128:
+		return true
+	}
+	return v.Type() == reflect.TypeFor[time.Time]()
 }
 
 // IfNull replaces NULL with fallback — e.g. for a correlated subquery that

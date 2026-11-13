@@ -48,32 +48,34 @@ func Joined[L any, LK comparable, R any, RK comparable](q Query[L, LK], right *T
 		return nil, err
 	}
 	defer closeRows(rows)
-	dests := q.dests()
+	left := newModelDests(q.table, q.dests())
+	rightDests := newModelDests(right, right.Columns)
+	var found bool
+	args := left.args()
+	for i := range rightDests.cells {
+		args = append(args, presence{&rightDests.cells[i], &found})
+	}
 	var pairs []Pair[L, R]
+	var zero Pair[L, R]
 	for rows.Next() {
-		var p Pair[L, R]
-		var r R
-		found := false
-		ptrs := make([]any, 0, len(dests)+len(right.Columns))
-		for _, d := range dests {
-			ptr := q.table.Ptr(&p.Left, d)
-			if ptr == nil {
-				return nil, fmt.Errorf("orm: %s has no field for selected column %q", q.table.Name, d)
-			}
-			ptrs = append(ptrs, nullable{ptr})
+		pairs = append(pairs, zero)
+		p := &pairs[len(pairs)-1]
+		r := new(R)
+		found = false
+		if err := left.bind(&p.Left); err != nil {
+			return nil, err
 		}
-		for _, c := range right.Columns {
-			ptrs = append(ptrs, presence{nullable{right.Ptr(&r, c)}, &found})
+		if err := rightDests.bind(r); err != nil {
+			return nil, err
 		}
-		if err := rows.Scan(ptrs...); err != nil {
+		if err := rows.Scan(args...); err != nil {
 			return nil, err
 		}
 		q.table.sync(&p.Left)
 		if found {
-			right.sync(&r)
-			p.Right = &r
+			right.sync(r)
+			p.Right = r
 		}
-		pairs = append(pairs, p)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -99,7 +101,7 @@ func Joined[L any, LK comparable, R any, RK comparable](q Query[L, LK], right *T
 // presence scans through to dst and records whether the value was
 // non-NULL, which tells a joined row from a LEFT JOIN's missing one.
 type presence struct {
-	dst   nullable
+	dst   *nullable
 	found *bool
 }
 

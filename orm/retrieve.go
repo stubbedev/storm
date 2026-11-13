@@ -40,23 +40,20 @@ func (q Query[M, K]) Get() ([]M, error) {
 
 func (q Query[M, K]) scan(rows *resultRows) ([]M, error) {
 	defer closeRows(rows)
-	dests := q.dests()
+	dests := newModelDests(q.table, q.dests())
+	args := dests.args()
 	var models []M
+	var zero M
 	for rows.Next() {
-		var m M
-		ptrs := make([]any, len(dests))
-		for i, d := range dests {
-			p := q.table.Ptr(&m, d)
-			if p == nil {
-				return nil, fmt.Errorf("orm: %s has no field for selected column %q", q.table.Name, d)
-			}
-			ptrs[i] = nullable{p}
-		}
-		if err := rows.Scan(ptrs...); err != nil {
+		models = append(models, zero)
+		m := &models[len(models)-1]
+		if err := dests.bind(m); err != nil {
 			return nil, err
 		}
-		q.table.sync(&m)
-		models = append(models, m)
+		if err := rows.Scan(args...); err != nil {
+			return nil, err
+		}
+		q.table.sync(m)
 	}
 	return models, rows.Err()
 }
@@ -632,14 +629,15 @@ func (q Query[M, K]) Cursor() iter.Seq2[M, error] {
 			return
 		}
 		defer closeRows(rows)
-		dests := q.dests()
+		dests := newModelDests(q.table, q.dests())
+		args := dests.args()
 		for rows.Next() {
 			var m M
-			ptrs := make([]any, len(dests))
-			for i, d := range dests {
-				ptrs[i] = nullable{q.table.Ptr(&m, d)}
+			if err := dests.bind(&m); err != nil {
+				yield(zero, err)
+				return
 			}
-			if err := rows.Scan(ptrs...); err != nil {
+			if err := rows.Scan(args...); err != nil {
 				yield(zero, err)
 				return
 			}

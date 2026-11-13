@@ -86,7 +86,7 @@ func (*Table[M, K]) tableOf(M) {}
 type Model struct {
 	exists          bool
 	recentlyCreated bool
-	original        map[string]any
+	original        any
 	changes         []string
 	loaded          []*loadSlot
 }
@@ -138,12 +138,10 @@ func (t *Table[M, K]) keyOrder() Order[M] {
 }
 
 // value reads a column's current value from m.
-func (t *Table[M, K]) value(m *M, col string) any {
-	return reflect.ValueOf(t.Ptr(m, col)).Elem().Interface()
-}
+func (t *Table[M, K]) value(m *M, col string) any { return t.field(m, col).Interface() }
 
 func (t *Table[M, K]) setValue(m *M, col string, v any) {
-	dst := reflect.ValueOf(t.Ptr(m, col)).Elem()
+	dst := t.field(m, col)
 	src := reflect.ValueOf(v)
 	switch {
 	case dst.Kind() == reflect.Pointer && src.Type() == dst.Type().Elem():
@@ -180,18 +178,25 @@ func (t *Table[M, K]) key(m *M) any { return t.value(m, t.PrimaryKey) }
 func (t *Table[M, K]) sync(m *M) {
 	st := t.state(m)
 	st.exists = true
-	st.original = make(map[string]any, len(t.Columns))
+	orig := new(M)
 	for _, c := range t.Columns {
-		st.original[c] = snapshot(t.value(m, c))
+		dst, src := t.field(orig, c), t.field(m, c)
+		if isScalar(src) {
+			dst.Set(src)
+		} else {
+			dst.Set(deepCopy(src))
+		}
 	}
+	st.original = orig
 }
 
-func snapshot(v any) any {
-	switch v.(type) {
-	case nil, string, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, time.Time:
-		return v
-	}
-	return deepCopy(reflect.ValueOf(v)).Interface()
+func (t *Table[M, K]) original(m *M) (*M, bool) {
+	orig, ok := t.state(m).original.(*M)
+	return orig, ok
+}
+
+func (t *Table[M, K]) field(m *M, col string) reflect.Value {
+	return reflect.ValueOf(t.Ptr(m, col)).Elem()
 }
 
 func deepCopy(v reflect.Value) reflect.Value {
@@ -247,10 +252,13 @@ func deepCopy(v reflect.Value) reflect.Value {
 
 // Dirty returns the columns changed since m was loaded or saved (getDirty).
 func (t *Table[M, K]) Dirty(m *M) []string {
-	st := t.state(m)
+	orig, ok := t.original(m)
+	if !ok {
+		return slices.Clone(t.Columns)
+	}
 	var dirty []string
 	for _, c := range t.Columns {
-		if orig, ok := st.original[c]; !ok || !equal(orig, t.value(m, c)) {
+		if !equalValues(t.field(orig, c), t.field(m, c)) {
 			dirty = append(dirty, c)
 		}
 	}
