@@ -16,7 +16,7 @@ import (
 type Dialect interface {
 	Name() string
 	Placeholder(n int) string
-	Quote(ident string) string
+	IdentQuote() byte
 	Bool(v bool) string
 	// Returning reports whether INSERT ... RETURNING is supported; if not,
 	// LastInsertId is used for auto-incrementing keys.
@@ -141,7 +141,7 @@ type sqliteDialect struct{}
 
 func (sqliteDialect) Name() string                   { return "sqlite" }
 func (sqliteDialect) Placeholder(int) string         { return "?" }
-func (sqliteDialect) Quote(id string) string         { return doubleQuote(id) }
+func (sqliteDialect) IdentQuote() byte               { return '"' }
 func (sqliteDialect) Bool(v bool) string             { return map[bool]string{true: "1", false: "0"}[v] }
 func (sqliteDialect) Returning() bool                { return true }
 func (sqliteDialect) AutoKeys() bool                 { return true }
@@ -296,7 +296,7 @@ func standardLike(b *SQL, e AnyExpr, pattern string, caseless, not bool) {
 }
 
 func (d sqliteDialect) Truncate(table string) []string {
-	return []string{"DELETE FROM " + d.Quote(table), "DELETE FROM sqlite_sequence WHERE name = " + stringLiteral(d, table)}
+	return []string{"DELETE FROM " + quoteIdent(d, table), "DELETE FROM sqlite_sequence WHERE name = " + stringLiteral(d, table)}
 }
 
 func (sqliteDialect) UpdatePrefix(b *SQL, table string) {
@@ -353,7 +353,7 @@ type postgresDialect struct{}
 
 func (postgresDialect) Name() string             { return "postgres" }
 func (postgresDialect) Placeholder(n int) string { return "$" + strconv.Itoa(n) }
-func (postgresDialect) Quote(id string) string   { return doubleQuote(id) }
+func (postgresDialect) IdentQuote() byte         { return '"' }
 func (postgresDialect) Bool(v bool) string       { return strings.ToUpper(strconv.FormatBool(v)) }
 func (postgresDialect) Returning() bool          { return true }
 func (postgresDialect) AutoKeys() bool           { return true }
@@ -457,7 +457,7 @@ func (postgresDialect) FullText(b *SQL, exprs []AnyExpr, term string) {
 }
 
 func (d postgresDialect) Truncate(table string) []string {
-	return []string{"TRUNCATE TABLE " + d.Quote(table) + " RESTART IDENTITY CASCADE"}
+	return []string{"TRUNCATE TABLE " + quoteIdent(d, table) + " RESTART IDENTITY CASCADE"}
 }
 
 func (postgresDialect) UpdatePrefix(b *SQL, table string) {
@@ -490,9 +490,7 @@ type mysqlDialect struct{}
 
 func (mysqlDialect) Name() string           { return "mysql" }
 func (mysqlDialect) Placeholder(int) string { return "?" }
-func (mysqlDialect) Quote(id string) string {
-	return "`" + strings.ReplaceAll(id, "`", "``") + "`"
-}
+func (mysqlDialect) IdentQuote() byte       { return '`' }
 func (mysqlDialect) Bool(v bool) string     { return map[bool]string{true: "1", false: "0"}[v] }
 func (mysqlDialect) Returning() bool        { return false }
 func (mysqlDialect) AutoKeys() bool         { return true }
@@ -624,7 +622,7 @@ func (mysqlDialect) FullText(b *SQL, exprs []AnyExpr, term string) {
 }
 
 func (d mysqlDialect) Truncate(table string) []string {
-	return []string{"TRUNCATE TABLE " + d.Quote(table)}
+	return []string{"TRUNCATE TABLE " + quoteIdent(d, table)}
 }
 
 func (mysqlDialect) UpdatePrefix(b *SQL, table string) {
@@ -737,7 +735,27 @@ func fn(b *SQL, name string, e AnyExpr) {
 	b.Write(")")
 }
 
-func doubleQuote(id string) string { return `"` + strings.ReplaceAll(id, `"`, `""`) + `"` }
+func quoteIdent(d Dialect, id string) string {
+	var sb strings.Builder
+	writeQuoted(&sb, d.IdentQuote(), id)
+	return sb.String()
+}
+
+func writeQuoted(sb *strings.Builder, quote byte, id string) {
+	sb.Grow(len(id) + 2)
+	sb.WriteByte(quote)
+	for {
+		i := strings.IndexByte(id, quote)
+		if i < 0 {
+			break
+		}
+		sb.WriteString(id[:i+1])
+		sb.WriteByte(quote)
+		id = id[i+1:]
+	}
+	sb.WriteString(id)
+	sb.WriteByte(quote)
+}
 
 func jsonPath(path []string) string { return "$." + strings.Join(path, ".") }
 

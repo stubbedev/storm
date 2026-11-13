@@ -3,7 +3,6 @@ package orm
 import (
 	"math"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -110,8 +109,8 @@ func (duckdbDialect) Like(b *SQL, e AnyExpr, pattern string, caseless, not bool)
 	standardLike(b, e, pattern, caseless, not)
 }
 
-func (duckdbDialect) Truncate(table string) []string {
-	return []string{"DELETE FROM " + doubleQuote(table)}
+func (d duckdbDialect) Truncate(table string) []string {
+	return []string{"DELETE FROM " + quoteIdent(d, table)}
 }
 
 func (duckdbDialect) VectorDistance(b *SQL, e AnyExpr, arg any, m VectorMetric) {
@@ -160,9 +159,7 @@ var ClickHouse Dialect = clickhouseDialect{}
 
 func (clickhouseDialect) Name() string { return "clickhouse" }
 
-func (clickhouseDialect) Quote(id string) string {
-	return "`" + strings.ReplaceAll(id, "`", "``") + "`"
-}
+func (clickhouseDialect) IdentQuote() byte { return '`' }
 
 func (clickhouseDialect) Returning() bool { return false }
 
@@ -328,8 +325,8 @@ func (clickhouseDialect) FullText(b *SQL, exprs []AnyExpr, term string) {
 	b.Write(")")
 }
 
-func (clickhouseDialect) Truncate(table string) []string {
-	return []string{"TRUNCATE TABLE " + clickhouseDialect{}.Quote(table)}
+func (d clickhouseDialect) Truncate(table string) []string {
+	return []string{"TRUNCATE TABLE " + quoteIdent(d, table)}
 }
 
 // renderArg writes times with their full fraction: the driver binds a

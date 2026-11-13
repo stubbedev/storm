@@ -61,7 +61,7 @@ func (b *SQL) Ident(name string) {
 					map[bool]string{true: "characters", false: "bytes"}[chars], part))
 			}
 		}
-		b.sb.WriteString(b.Dialect.Quote(part))
+		writeQuoted(&b.sb, b.Dialect.IdentQuote(), part)
 	}
 }
 
