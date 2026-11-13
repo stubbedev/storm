@@ -88,11 +88,11 @@ type Model struct {
 	recentlyCreated bool
 	original        map[string]any
 	changes         []string
-	loaded          []uintptr
+	loaded          []*loadSlot
 }
 
 // markLoaded records that the relation filling slot has been loaded.
-func (m *Model) markLoaded(slot uintptr) {
+func (m *Model) markLoaded(slot *loadSlot) {
 	if !slices.Contains(m.loaded, slot) {
 		m.loaded = append(slices.Clip(m.loaded), slot)
 	}

@@ -640,6 +640,20 @@ func TestLoadAggregatesAndMissing(t *testing.T) {
 	eq(t, "loadMissing loads only the models missing it", [2]int{len(fresh[0].Posts), len(fresh[1].Posts)}, [2]int{3, len(must(UserPosts.Of(&fresh[1]).Get()))})
 }
 
+func into[V any](field func(*User) *V) func(*User, V) {
+	return func(u *User, v V) { *field(u) = v }
+}
+
+func TestLoadMissingTellsRelationsWithSharedSetterCodeApart(t *testing.T) {
+	ctx := setup(t)
+	latest := orm.HasOne(Users.ID, Posts.UserID, into(func(u *User) **Post { return &u.LatestPost })).OfMany(Posts.ID, true)
+	country := orm.BelongsTo(Users.CountryID, Countries.ID, into(func(u *User) **Country { return &u.Country }))
+	users := must(Users.Query().Where(Users.ID.Eq(1)).Get())
+	ok(orm.Load(ctx, users, latest))
+	ok(orm.LoadMissing(ctx, users, country))
+	eq(t, "a relation whose setter shares code with a loaded one is still loaded", users[0].Country != nil && users[0].Country.Name == "Denmark", true)
+}
+
 func TestJoinedPairs(t *testing.T) {
 	setup(t)
 	pairs := must(orm.Joined(Users.Query().

@@ -20,16 +20,14 @@ type Loader[M, R any, RK comparable] interface {
 }
 
 // loadMark tells where a relation records that it is loaded: the parent's
-// Model, and the field it fills, identified by its setter, so that scoped
-// and other copies of a relation count as the same.
+// Model, and the slot the relation was given when it was declared, which
+// scoped and other copies of the relation share.
 type loadMark[M any] struct {
 	state func(*M) *Model
-	slot  uintptr
+	slot  *loadSlot
 }
 
-func markOf[M any](state func(*M) *Model, set any) loadMark[M] {
-	return loadMark[M]{state, reflect.ValueOf(set).Pointer()}
-}
+type loadSlot struct{ _ byte }
 
 // loadInto eager-loads rel onto models and marks it loaded on each.
 func loadInto[M, R any, RK comparable](ctx context.Context, conn string, models []M, rel Loader[M, R, RK], scopes []func(Query[R, RK]) Query[R, RK]) error {
@@ -333,7 +331,8 @@ func (h hasBase[M, MK, R, RK, J]) link(parent *M, child *R) {
 // HasManyRel is a one-to-many relation (hasMany / morphMany).
 type HasManyRel[M any, MK comparable, R any, RK comparable, J comparable] struct {
 	hasBase[M, MK, R, RK, J]
-	set func(*M, []R)
+	set  func(*M, []R)
+	slot *loadSlot
 }
 
 // HasMany: parent M has many R where R.foreign = M.local.
@@ -343,7 +342,7 @@ type HasManyRel[M any, MK comparable, R any, RK comparable, J comparable] struct
 //
 // The related table is foreign's, so it cannot disagree with the columns.
 func HasMany[M any, MK comparable, R any, RK comparable, J comparable](local Column[M, MK, J], foreign Column[R, RK, J], set func(*M, []R)) *HasManyRel[M, MK, R, RK, J] {
-	return &HasManyRel[M, MK, R, RK, J]{hasBase[M, MK, R, RK, J]{related: foreign.table, local: local, foreign: foreign}, set}
+	return &HasManyRel[M, MK, R, RK, J]{hasBase[M, MK, R, RK, J]{related: foreign.table, local: local, foreign: foreign}, set, new(loadSlot)}
 }
 
 // MorphMany: parent M has many polymorphic R (R.morphID = M.local AND R.morphType = M's alias).
@@ -353,7 +352,9 @@ func MorphMany[M any, MK comparable, R any, RK comparable, J comparable](local C
 	return r
 }
 
-func (r *HasManyRel[M, MK, R, RK, J]) mark() loadMark[M] { return markOf(r.local.table.State, r.set) }
+func (r *HasManyRel[M, MK, R, RK, J]) mark() loadMark[M] {
+	return loadMark[M]{r.local.table.State, r.slot}
+}
 
 func (r *HasManyRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, parents []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
 	scope := chain(scopes)
@@ -420,8 +421,9 @@ func (r *HasManyRel[M, MK, R, RK, J]) SaveMany(parent *M, children []R) error {
 // HasOneRel is a one-to-one relation (hasOne / morphOne / ofMany).
 type HasOneRel[M any, MK comparable, R any, RK comparable, J comparable] struct {
 	hasBase[M, MK, R, RK, J]
-	set func(*M, *R)
-	of  *ofMany[R]
+	set  func(*M, *R)
+	slot *loadSlot
+	of   *ofMany[R]
 }
 
 // ofMany picks one related row per parent: the first in orders among the
@@ -434,7 +436,7 @@ type ofMany[R any] struct {
 }
 
 func HasOne[M any, MK comparable, R any, RK comparable, J comparable](local Column[M, MK, J], foreign Column[R, RK, J], set func(*M, *R)) *HasOneRel[M, MK, R, RK, J] {
-	return &HasOneRel[M, MK, R, RK, J]{related: foreign.table, local: local, foreign: foreign, set: set}
+	return &HasOneRel[M, MK, R, RK, J]{related: foreign.table, local: local, foreign: foreign, set: set, slot: new(loadSlot)}
 }
 
 func MorphOne[M any, MK comparable, R any, RK comparable, J comparable](local Column[M, MK, J], morphID Column[R, RK, J], morphType Column[R, RK, string], set func(*M, *R)) *HasOneRel[M, MK, R, RK, J] {
@@ -517,7 +519,9 @@ func (r *HasOneRel[M, MK, R, RK, J]) Of(parent *M) Query[R, RK] {
 	return q
 }
 
-func (r *HasOneRel[M, MK, R, RK, J]) mark() loadMark[M] { return markOf(r.local.table.State, r.set) }
+func (r *HasOneRel[M, MK, R, RK, J]) mark() loadMark[M] {
+	return loadMark[M]{r.local.table.State, r.slot}
+}
 
 func (r *HasOneRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, parents []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
 	scope := chain(scopes)
@@ -599,13 +603,14 @@ type BelongsToRel[M any, MK comparable, R any, RK comparable, J comparable] stru
 	foreign Column[M, MK, J]
 	owner   Column[R, RK, J]
 	set     func(*M, *R)
+	slot    *loadSlot
 	def     func(*M) *R
 	scopes  []func(Query[R, RK]) Query[R, RK]
 }
 
 // BelongsTo: child M points at one R where M.foreign = R.owner.
 func BelongsTo[M any, MK comparable, R any, RK comparable, J comparable](foreign Column[M, MK, J], owner Column[R, RK, J], set func(*M, *R)) *BelongsToRel[M, MK, R, RK, J] {
-	return &BelongsToRel[M, MK, R, RK, J]{related: owner.table, foreign: foreign, owner: owner, set: set}
+	return &BelongsToRel[M, MK, R, RK, J]{related: owner.table, foreign: foreign, owner: owner, set: set, slot: new(loadSlot)}
 }
 
 // WithDefault supplies a model when the owner is missing (withDefault()).
@@ -616,7 +621,7 @@ func (r *BelongsToRel[M, MK, R, RK, J]) WithDefault(fn func(*M) *R) *BelongsToRe
 }
 
 func (r *BelongsToRel[M, MK, R, RK, J]) mark() loadMark[M] {
-	return markOf(r.foreign.table.State, r.set)
+	return loadMark[M]{r.foreign.table.State, r.slot}
 }
 
 func (r *BelongsToRel[M, MK, R, RK, J]) eagerLoad(ctx context.Context, conn string, children []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
@@ -703,6 +708,7 @@ type BelongsToManyRel[M any, MK comparable, R any, RK comparable, P any, PK comp
 	pivotType    *Column[P, PK, string] // morph pivots
 	typeValue    string
 	set          func(*M, []R)
+	slot         *loadSlot
 	setPivot     func(*R, P)
 	pivotWhere   []Cond[P]
 	scopes       []func(Query[R, RK]) Query[R, RK]
@@ -719,7 +725,7 @@ func BelongsToMany[M any, MK comparable, R any, RK comparable, P any, PK compara
 ) *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ] {
 	return &BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]{
 		related: relatedKey.table, pivot: pivotParent.table, parentKey: parentKey, relatedKey: relatedKey,
-		pivotParent: pivotParent, pivotRelated: pivotRelated, set: set,
+		pivotParent: pivotParent, pivotRelated: pivotRelated, set: set, slot: new(loadSlot),
 	}
 }
 
@@ -787,7 +793,7 @@ func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) pivotQuery(conn string, p
 }
 
 func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) mark() loadMark[M] {
-	return markOf(r.parentKey.table.State, r.set)
+	return loadMark[M]{r.parentKey.table.State, r.slot}
 }
 
 func (r *BelongsToManyRel[M, MK, R, RK, P, PK, J, RJ]) eagerLoad(ctx context.Context, conn string, parents []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
@@ -1111,7 +1117,8 @@ func (h throughBase[M, MK, T, TK, R, RK, J, TJ]) Of(parent *M) Query[R, RK] {
 // HasManyThroughRel reaches R through an intermediate T.
 type HasManyThroughRel[M any, MK comparable, T any, TK comparable, R any, RK comparable, J, TJ comparable] struct {
 	throughBase[M, MK, T, TK, R, RK, J, TJ]
-	set func(*M, []R)
+	set  func(*M, []R)
+	slot *loadSlot
 }
 
 // HasManyThrough: M -> T (T.firstKey = M.localKey) -> R (R.secondKey = T.secondLocal).
@@ -1123,7 +1130,7 @@ func HasManyThrough[M any, MK comparable, T any, TK comparable, R any, RK compar
 	secondLocal Column[T, TK, TJ], secondKey Column[R, RK, TJ],
 	set func(*M, []R),
 ) *HasManyThroughRel[M, MK, T, TK, R, RK, J, TJ] {
-	return &HasManyThroughRel[M, MK, T, TK, R, RK, J, TJ]{through(localKey, firstKey, secondLocal, secondKey), set}
+	return &HasManyThroughRel[M, MK, T, TK, R, RK, J, TJ]{through(localKey, firstKey, secondLocal, secondKey), set, new(loadSlot)}
 }
 
 // through is the shared part of the through relations; the tables are
@@ -1133,7 +1140,7 @@ func through[M any, MK comparable, T any, TK comparable, R any, RK comparable, J
 }
 
 func (r *HasManyThroughRel[M, MK, T, TK, R, RK, J, TJ]) mark() loadMark[M] {
-	return markOf(r.localKey.table.State, r.set)
+	return loadMark[M]{r.localKey.table.State, r.slot}
 }
 
 func (r *HasManyThroughRel[M, MK, T, TK, R, RK, J, TJ]) eagerLoad(ctx context.Context, conn string, parents []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
@@ -1155,7 +1162,8 @@ func (r *HasManyThroughRel[M, MK, T, TK, R, RK, J, TJ]) eagerLoad(ctx context.Co
 // HasOneThroughRel is HasManyThrough returning a single model.
 type HasOneThroughRel[M any, MK comparable, T any, TK comparable, R any, RK comparable, J, TJ comparable] struct {
 	throughBase[M, MK, T, TK, R, RK, J, TJ]
-	set func(*M, *R)
+	set  func(*M, *R)
+	slot *loadSlot
 }
 
 func HasOneThrough[M any, MK comparable, T any, TK comparable, R any, RK comparable, J, TJ comparable](
@@ -1163,11 +1171,11 @@ func HasOneThrough[M any, MK comparable, T any, TK comparable, R any, RK compara
 	secondLocal Column[T, TK, TJ], secondKey Column[R, RK, TJ],
 	set func(*M, *R),
 ) *HasOneThroughRel[M, MK, T, TK, R, RK, J, TJ] {
-	return &HasOneThroughRel[M, MK, T, TK, R, RK, J, TJ]{through(localKey, firstKey, secondLocal, secondKey), set}
+	return &HasOneThroughRel[M, MK, T, TK, R, RK, J, TJ]{through(localKey, firstKey, secondLocal, secondKey), set, new(loadSlot)}
 }
 
 func (r *HasOneThroughRel[M, MK, T, TK, R, RK, J, TJ]) mark() loadMark[M] {
-	return markOf(r.localKey.table.State, r.set)
+	return loadMark[M]{r.localKey.table.State, r.slot}
 }
 
 func (r *HasOneThroughRel[M, MK, T, TK, R, RK, J, TJ]) eagerLoad(ctx context.Context, conn string, parents []M, scopes []func(Query[R, RK]) Query[R, RK]) error {
@@ -1238,16 +1246,17 @@ type MorphToRel[M any, MK comparable, J comparable] struct {
 	id      Column[M, MK, J]
 	typ     Column[M, MK, string]
 	set     func(*M, any)
+	slot    *loadSlot
 	targets []MorphTarget[J]
 	err     error
 }
 
 // MorphTo: comments(commentable_id, commentable_type) -> Post | Video.
 func MorphTo[M any, MK comparable, J comparable](id Column[M, MK, J], typ Column[M, MK, string], set func(*M, any), targets ...MorphTarget[J]) *MorphToRel[M, MK, J] {
-	return &MorphToRel[M, MK, J]{id: id, typ: typ, set: set, targets: targets}
+	return &MorphToRel[M, MK, J]{id: id, typ: typ, set: set, slot: new(loadSlot), targets: targets}
 }
 
-func (r *MorphToRel[M, MK, J]) mark() loadMark[M] { return markOf(r.id.table.State, r.set) }
+func (r *MorphToRel[M, MK, J]) mark() loadMark[M] { return loadMark[M]{r.id.table.State, r.slot} }
 
 // Constrain returns the relation with the given targets in place of those
 // of the same model, for one eager load with per-model scopes:
