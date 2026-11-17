@@ -1,8 +1,10 @@
 package orm
 
 import (
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 type layoutRow struct {
@@ -77,5 +79,73 @@ func TestLayoutRefusesMisdeclaredTable(t *testing.T) {
 			}()
 			c.tab.plan()
 		})
+	}
+}
+
+type snapshotStamp struct {
+	Note string
+	At   time.Time
+}
+
+type snapshotRow struct {
+	Model
+	snapshotStamp
+	ID       int64
+	Tags     []string
+	Labels   map[string]string
+	Parent   *int64
+	Comments []layoutRow
+	cache    map[string]int
+}
+
+var snapshotTable = &Table[snapshotRow, int64]{
+	Name: "snapshot_rows", PrimaryKey: "id",
+	Columns: []string{"id", "tags", "labels", "parent", "at"},
+	Field: func(m *snapshotRow, i int) any {
+		switch i {
+		case 0:
+			return &m.ID
+		case 1:
+			return &m.Tags
+		case 2:
+			return &m.Labels
+		case 3:
+			return &m.Parent
+		case 4:
+			return &m.At
+		}
+		return nil
+	},
+	State: func(m *snapshotRow) *Model { return &m.Model },
+}
+
+func TestSnapshotCopiesColumnsOnly(t *testing.T) {
+	parent := int64(7)
+	m := snapshotRow{
+		ID: 1, Tags: []string{"a"}, Labels: map[string]string{"k": "v"}, Parent: &parent,
+		Comments: []layoutRow{{ID: 9}}, cache: map[string]int{"x": 1},
+	}
+	m.Note, m.At = "loaded", time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	snapshotTable.sync(&m)
+	snapshotTable.sync(&m)
+	orig, ok := snapshotTable.original(&m)
+	if !ok {
+		t.Fatal("no snapshot")
+	}
+	if orig.Comments != nil || orig.cache != nil || orig.Note != "" {
+		t.Fatalf("snapshot kept non-column fields: %+v", orig)
+	}
+	if orig.original != nil || orig.exists || orig.loaded != nil {
+		t.Fatalf("snapshot chains to model state: %+v", orig.Model)
+	}
+	if orig.ID != 1 || !orig.At.Equal(m.At) || orig.Tags[0] != "a" || orig.Labels["k"] != "v" || *orig.Parent != 7 {
+		t.Fatalf("snapshot lost column values: %+v", orig)
+	}
+	if &orig.Tags[0] == &m.Tags[0] || orig.Parent == m.Parent {
+		t.Fatal("snapshot shares references with the model")
+	}
+	m.Tags[0], m.Labels["k"], *m.Parent = "b", "w", 8
+	if got, want := snapshotTable.Dirty(&m), []string{"tags", "labels", "parent"}; !slices.Equal(got, want) {
+		t.Fatalf("Dirty = %v, want %v", got, want)
 	}
 }

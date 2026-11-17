@@ -183,16 +183,21 @@ func (t *Table[M, K]) key(m *M) any { return t.value(m, t.PrimaryKey) }
 // The snapshot is a deep copy, so edits made in place (a slice element, a
 // map entry, a pointee) still show as dirty.
 func (t *Table[M, K]) sync(m *M) {
+	l := t.plan()
 	st := t.state(m)
 	st.exists = true
 	orig := new(M)
-	for i := range t.Columns {
-		dst, src := t.fieldAt(orig, i), t.fieldAt(m, i)
-		if isScalar(src) {
-			dst.Set(src)
-		} else {
-			dst.Set(deepCopy(src))
+	*orig = *m
+	*t.state(orig) = Model{}
+	if len(l.clear) > 0 {
+		v := reflect.ValueOf(orig).Elem()
+		for _, c := range l.clear {
+			c.zero(v)
 		}
+	}
+	for _, i := range l.deep {
+		dst := t.fieldAt(orig, i)
+		dst.Set(deepCopy(dst))
 	}
 	st.original = orig
 }
