@@ -48,8 +48,14 @@ func Joined[L any, LK comparable, R any, RK comparable](q Query[L, LK], right *T
 		return nil, err
 	}
 	defer closeRows(rows)
-	left := newModelDests(q.table, q.dests())
-	rightDests := newModelDests(right, right.Columns)
+	left, err := newModelDests(q.table, q.dests())
+	if err != nil {
+		return nil, err
+	}
+	rightDests, err := newModelDests(right, right.Columns)
+	if err != nil {
+		return nil, err
+	}
 	var found bool
 	args := left.args()
 	for i := range rightDests.cells {
@@ -62,12 +68,8 @@ func Joined[L any, LK comparable, R any, RK comparable](q Query[L, LK], right *T
 		p := &pairs[len(pairs)-1]
 		r := new(R)
 		found = false
-		if err := left.bind(&p.Left); err != nil {
-			return nil, err
-		}
-		if err := rightDests.bind(r); err != nil {
-			return nil, err
-		}
+		left.bind(&p.Left)
+		rightDests.bind(r)
 		if err := rows.Scan(args...); err != nil {
 			return nil, err
 		}

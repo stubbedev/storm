@@ -391,6 +391,16 @@ func parseTag(db string) (field, error) {
 	return f, nil
 }
 
+func (m model) Persisted() []field {
+	return slices.DeleteFunc(slices.Clone(m.Fields), func(f field) bool { return f.Virtual })
+}
+
+func (m model) Virtuals() []field {
+	return slices.DeleteFunc(slices.Clone(m.Fields), func(f field) bool { return !f.Virtual })
+}
+
+func (m model) Accessors() []field { return slices.Concat(m.Persisted(), m.Virtuals()) }
+
 // stored returns column when m stores it.
 func (m *model) stored(column string) string {
 	if slices.ContainsFunc(m.Fields, func(f field) bool { return f.Column == column && !f.Virtual }) {

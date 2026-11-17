@@ -482,12 +482,12 @@ func checkSameTable(n Node, table string) error {
 // driver-value conversion SQL scanning uses.
 func hydrate[M any, K comparable](t *Table[M, K], doc map[string]any) (M, error) {
 	var m M
-	for _, c := range t.Columns {
+	for i, c := range t.Columns {
 		v, ok := doc[c]
 		if !ok {
 			continue
 		}
-		if err := (nullable{t.Ptr(&m, c)}).Scan(v); err != nil {
+		if err := (nullable{t.Field(&m, i)}).Scan(v); err != nil {
 			return m, fmt.Errorf("orm: hydrating %s.%s: %w", t.Name, c, err)
 		}
 	}

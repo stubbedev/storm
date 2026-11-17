@@ -40,16 +40,17 @@ func (q Query[M, K]) Get() ([]M, error) {
 
 func (q Query[M, K]) scan(rows *resultRows) ([]M, error) {
 	defer closeRows(rows)
-	dests := newModelDests(q.table, q.dests())
+	dests, err := newModelDests(q.table, q.dests())
+	if err != nil {
+		return nil, err
+	}
 	args := dests.args()
 	var models []M
 	var zero M
 	for rows.Next() {
 		models = append(models, zero)
 		m := &models[len(models)-1]
-		if err := dests.bind(m); err != nil {
-			return nil, err
-		}
+		dests.bind(m)
 		if err := rows.Scan(args...); err != nil {
 			return nil, err
 		}
@@ -629,14 +630,15 @@ func (q Query[M, K]) Cursor() iter.Seq2[M, error] {
 			return
 		}
 		defer closeRows(rows)
-		dests := newModelDests(q.table, q.dests())
+		dests, err := newModelDests(q.table, q.dests())
+		if err != nil {
+			yield(zero, err)
+			return
+		}
 		args := dests.args()
 		for rows.Next() {
 			var m M
-			if err := dests.bind(&m); err != nil {
-				yield(zero, err)
-				return
-			}
+			dests.bind(&m)
 			if err := rows.Scan(args...); err != nil {
 				yield(zero, err)
 				return

@@ -297,11 +297,11 @@ var stampTable = &orm.Table[Stamp, string]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyUUID,
 	Columns:    []string{"id", "at"},
-	Ptr: func(m *Stamp, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Stamp, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "at":
+		case 1:
 			return &m.At
 		}
 		return nil

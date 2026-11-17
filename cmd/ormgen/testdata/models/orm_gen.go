@@ -14,13 +14,13 @@ var aliasesTable = &orm.Table[Alias, int64]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
 	Columns:    []string{"id", "tags", "vec"},
-	Ptr: func(m *Alias, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Alias, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "tags":
+		case 1:
 			return &m.Tags
-		case "vec":
+		case 2:
 			return &m.Vec
 		}
 		return nil
@@ -57,9 +57,9 @@ var countersTable = &orm.Table[Counter, uint32]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
 	Columns:    []string{"id"},
-	Ptr: func(m *Counter, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Counter, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
 		}
 		return nil
@@ -90,11 +90,11 @@ var printsTable = &orm.Table[Fingerprinted, Fingerprint]{
 	PrimaryKey: "print",
 	KeyType:    orm.KeyManual,
 	Columns:    []string{"print", "created_at"},
-	Ptr: func(m *Fingerprinted, column string) any {
-		switch column {
-		case "print":
+	Field: func(m *Fingerprinted, i int) any {
+		switch i {
+		case 0:
 			return &m.Print
-		case "created_at":
+		case 1:
 			return &m.CreatedAt
 		}
 		return nil
@@ -126,9 +126,9 @@ type FingerprintedQuery = orm.Query[Fingerprinted, Fingerprint]
 var logsTable = &orm.Table[Log, orm.NoKey]{
 	Name:    "logs",
 	Columns: []string{"line"},
-	Ptr: func(m *Log, column string) any {
-		switch column {
-		case "line":
+	Field: func(m *Log, i int) any {
+		switch i {
+		case 0:
 			return &m.Line
 		}
 		return nil
@@ -159,9 +159,9 @@ var nullablesTable = &orm.Table[Nullable, sql.NullInt64]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyManual,
 	Columns:    []string{"id"},
-	Ptr: func(m *Nullable, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Nullable, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
 		}
 		return nil
@@ -192,11 +192,11 @@ var tokensTable = &orm.Table[Token, string]{
 	PrimaryKey: "token",
 	KeyType:    orm.KeyUUID,
 	Columns:    []string{"token", "value"},
-	Ptr: func(m *Token, column string) any {
-		switch column {
-		case "token":
+	Field: func(m *Token, i int) any {
+		switch i {
+		case 0:
 			return &m.Token
-		case "value":
+		case 1:
 			return &m.Value
 		}
 		return nil
@@ -226,35 +226,36 @@ var Tokens = TokensSchema{
 type TokenQuery = orm.Query[Token, string]
 
 var usersTable = &orm.Table[User, UserID]{
-	Name:          "users",
-	Connection:    "main",
-	PrimaryKey:    "id",
-	KeyType:       orm.KeyAutoIncrement,
-	CreatedAt:     "created_at",
-	UpdatedAt:     "updated_at",
-	DeletedAt:     "deleted_at",
-	MorphAlias:    "user",
-	TimePrecision: 3,
-	NullZero:      []string{"country_id"},
-	Columns:       []string{"created_at", "updated_at", "id", "country_id", "kind", "deleted_at", "meta"},
-	Ptr: func(m *User, column string) any {
-		switch column {
-		case "created_at":
+	Name:           "users",
+	Connection:     "main",
+	PrimaryKey:     "id",
+	KeyType:        orm.KeyAutoIncrement,
+	CreatedAt:      "created_at",
+	UpdatedAt:      "updated_at",
+	DeletedAt:      "deleted_at",
+	MorphAlias:     "user",
+	TimePrecision:  3,
+	NullZero:       []string{"country_id"},
+	Columns:        []string{"created_at", "updated_at", "id", "country_id", "kind", "deleted_at", "meta"},
+	VirtualColumns: []string{"posts_count"},
+	Field: func(m *User, i int) any {
+		switch i {
+		case 0:
 			return &m.Timestamps.CreatedAt
-		case "updated_at":
+		case 1:
 			return &m.Timestamps.UpdatedAt
-		case "id":
+		case 2:
 			return &m.ID
-		case "country_id":
+		case 3:
 			return &m.CountryID
-		case "kind":
+		case 4:
 			return &m.Kind
-		case "deleted_at":
+		case 5:
 			return &m.DeletedAt
-		case "posts_count":
-			return &m.Posts
-		case "meta":
+		case 6:
 			return &m.Meta
+		case 7:
+			return &m.Posts
 		}
 		return nil
 	},

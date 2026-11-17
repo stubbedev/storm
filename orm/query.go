@@ -466,6 +466,9 @@ func (q Query[M, K]) allColumns() []AnyColumn[M] {
 
 // dests are the column names scanned from each row, in select order.
 func (q Query[M, K]) dests() []string {
+	if q.selects == nil && len(q.extras) == 0 {
+		return q.table.Columns
+	}
 	var names []string
 	if q.selects == nil {
 		names = slices.Clone(q.table.Columns)
@@ -838,8 +841,8 @@ type tableColumn[M any, K comparable] struct {
 
 func (c tableColumn[M, K]) build(b *SQL)      { b.Col(c.t.Name, c.name) }
 func (c tableColumn[M, K]) Name() string      { return c.name }
-func (c tableColumn[M, K]) anyPtr(m *M) any   { return c.t.Ptr(m, c.name) }
+func (c tableColumn[M, K]) anyPtr(m *M) any   { return c.t.ptr(m, c.name) }
 func (c tableColumn[M, K]) anyValue(m *M) any { return c.t.value(m, c.name) }
 func (c tableColumn[M, K]) decode(raw json.RawMessage) (any, error) {
-	return decodeInto(raw, c.t.Ptr(new(M), c.name))
+	return decodeInto(raw, c.t.ptr(new(M), c.name))
 }

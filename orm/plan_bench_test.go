@@ -20,17 +20,17 @@ var benchDocTable = &Table[benchDoc, int64]{
 	PrimaryKey: "id",
 	KeyType:    KeyAutoIncrement,
 	Columns:    []string{"id", "title", "views", "posted", "vec"},
-	Ptr: func(m *benchDoc, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *benchDoc, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "title":
+		case 1:
 			return &m.Title
-		case "views":
+		case 2:
 			return &m.Views
-		case "posted":
+		case 3:
 			return &m.Posted
-		case "vec":
+		case 4:
 			return &m.Vec
 		}
 		return nil

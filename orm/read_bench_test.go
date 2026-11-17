@@ -24,19 +24,19 @@ var benchPostTable = &Table[benchPost, int64]{
 	PrimaryKey: "id",
 	KeyType:    KeyAutoIncrement,
 	Columns:    []string{"id", "title", "body", "views", "published", "created_at"},
-	Ptr: func(m *benchPost, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *benchPost, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "title":
+		case 1:
 			return &m.Title
-		case "body":
+		case 2:
 			return &m.Body
-		case "views":
+		case 3:
 			return &m.Views
-		case "published":
+		case 4:
 			return &m.Published
-		case "created_at":
+		case 5:
 			return &m.CreatedAt
 		}
 		return nil

@@ -13,11 +13,11 @@ var auditLogTable = &orm.Table[AuditEntry, string]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyUUID,
 	Columns:    []string{"id", "action"},
-	Ptr: func(m *AuditEntry, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *AuditEntry, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "action":
+		case 1:
 			return &m.Action
 		}
 		return nil
@@ -54,19 +54,19 @@ var commentsTable = &orm.Table[Comment, int64]{
 	UpdatedAt:     "updated_at",
 	TimePrecision: 6,
 	Columns:       []string{"id", "commentable_id", "commentable_type", "body", "created_at", "updated_at"},
-	Ptr: func(m *Comment, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Comment, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "commentable_id":
+		case 1:
 			return &m.CommentableID
-		case "commentable_type":
+		case 2:
 			return &m.CommentableType
-		case "body":
+		case 3:
 			return &m.Body
-		case "created_at":
+		case 4:
 			return &m.CreatedAt
-		case "updated_at":
+		case 5:
 			return &m.UpdatedAt
 		}
 		return nil
@@ -112,11 +112,11 @@ var countriesTable = &orm.Table[Country, int64]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
 	Columns:    []string{"id", "name"},
-	Ptr: func(m *Country, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Country, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "name":
+		case 1:
 			return &m.Name
 		}
 		return nil
@@ -150,15 +150,15 @@ var imagesTable = &orm.Table[Image, int64]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
 	Columns:    []string{"id", "imageable_id", "imageable_type", "url"},
-	Ptr: func(m *Image, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Image, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "imageable_id":
+		case 1:
 			return &m.ImageableID
-		case "imageable_type":
+		case 2:
 			return &m.ImageableType
-		case "url":
+		case 3:
 			return &m.URL
 		}
 		return nil
@@ -200,21 +200,21 @@ var postsTable = &orm.Table[Post, int64]{
 	CreatedAt:  "created_at",
 	UpdatedAt:  "updated_at",
 	Columns:    []string{"id", "user_id", "title", "published", "views", "created_at", "updated_at"},
-	Ptr: func(m *Post, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Post, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "user_id":
+		case 1:
 			return &m.UserID
-		case "title":
+		case 2:
 			return &m.Title
-		case "published":
+		case 3:
 			return &m.Published
-		case "views":
+		case 4:
 			return &m.Views
-		case "created_at":
+		case 5:
 			return &m.CreatedAt
-		case "updated_at":
+		case 6:
 			return &m.UpdatedAt
 		}
 		return nil
@@ -263,11 +263,11 @@ var rolesTable = &orm.Table[Role, int64]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
 	Columns:    []string{"id", "name"},
-	Ptr: func(m *Role, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Role, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "name":
+		case 1:
 			return &m.Name
 		}
 		return nil
@@ -301,17 +301,17 @@ var roleUsersTable = &orm.Table[RoleUser, orm.NoKey]{
 	CreatedAt: "created_at",
 	UpdatedAt: "updated_at",
 	Columns:   []string{"user_id", "role_id", "granted_by", "created_at", "updated_at"},
-	Ptr: func(m *RoleUser, column string) any {
-		switch column {
-		case "user_id":
+	Field: func(m *RoleUser, i int) any {
+		switch i {
+		case 0:
 			return &m.UserID
-		case "role_id":
+		case 1:
 			return &m.RoleID
-		case "granted_by":
+		case 2:
 			return &m.GrantedBy
-		case "created_at":
+		case 3:
 			return &m.CreatedAt
-		case "updated_at":
+		case 4:
 			return &m.UpdatedAt
 		}
 		return nil
@@ -354,11 +354,11 @@ var tagsTable = &orm.Table[Tag, int64]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
 	Columns:    []string{"id", "name"},
-	Ptr: func(m *Tag, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Tag, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "name":
+		case 1:
 			return &m.Name
 		}
 		return nil
@@ -390,13 +390,13 @@ type TagQuery = orm.Query[Tag, int64]
 var taggablesTable = &orm.Table[Taggable, orm.NoKey]{
 	Name:    "taggables",
 	Columns: []string{"tag_id", "taggable_id", "taggable_type"},
-	Ptr: func(m *Taggable, column string) any {
-		switch column {
-		case "tag_id":
+	Field: func(m *Taggable, i int) any {
+		switch i {
+		case 0:
 			return &m.TagID
-		case "taggable_id":
+		case 1:
 			return &m.TaggableID
-		case "taggable_type":
+		case 2:
 			return &m.TaggableType
 		}
 		return nil
@@ -429,45 +429,46 @@ var Taggables = TaggablesSchema{
 type TaggableQuery = orm.Query[Taggable, orm.NoKey]
 
 var usersTable = &orm.Table[User, int64]{
-	Name:       "users",
-	PrimaryKey: "id",
-	KeyType:    orm.KeyAutoIncrement,
-	CreatedAt:  "created_at",
-	UpdatedAt:  "updated_at",
-	DeletedAt:  "deleted_at",
-	NullZero:   []string{"country_id"},
-	Columns:    []string{"id", "country_id", "name", "email", "active", "karma", "settings", "created_at", "updated_at", "deleted_at"},
-	Ptr: func(m *User, column string) any {
-		switch column {
-		case "id":
+	Name:           "users",
+	PrimaryKey:     "id",
+	KeyType:        orm.KeyAutoIncrement,
+	CreatedAt:      "created_at",
+	UpdatedAt:      "updated_at",
+	DeletedAt:      "deleted_at",
+	NullZero:       []string{"country_id"},
+	Columns:        []string{"id", "country_id", "name", "email", "active", "karma", "settings", "created_at", "updated_at", "deleted_at"},
+	VirtualColumns: []string{"posts_count", "post_views", "has_avatar", "latest_post_title", "avg_post_views"},
+	Field: func(m *User, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "country_id":
+		case 1:
 			return &m.CountryID
-		case "name":
+		case 2:
 			return &m.Name
-		case "email":
+		case 3:
 			return &m.Email
-		case "active":
+		case 4:
 			return &m.Active
-		case "karma":
+		case 5:
 			return &m.Karma
-		case "settings":
+		case 6:
 			return &m.Settings
-		case "created_at":
+		case 7:
 			return &m.CreatedAt
-		case "updated_at":
+		case 8:
 			return &m.UpdatedAt
-		case "deleted_at":
+		case 9:
 			return &m.DeletedAt
-		case "posts_count":
+		case 10:
 			return &m.PostsCount
-		case "post_views":
+		case 11:
 			return &m.PostViews
-		case "has_avatar":
+		case 12:
 			return &m.HasAvatar
-		case "latest_post_title":
+		case 13:
 			return &m.LatestPostTitle
-		case "avg_post_views":
+		case 14:
 			return &m.AvgPostViews
 		}
 		return nil
@@ -540,11 +541,11 @@ var videosTable = &orm.Table[Video, int64]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyAutoIncrement,
 	Columns:    []string{"id", "title"},
-	Ptr: func(m *Video, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Video, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "title":
+		case 1:
 			return &m.Title
 		}
 		return nil

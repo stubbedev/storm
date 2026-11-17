@@ -700,7 +700,7 @@ func isolatedUsers() *orm.Table[User, int64] {
 	return &orm.Table[User, int64]{
 		Name: Users.Table.Name, PrimaryKey: Users.PrimaryKey, KeyType: Users.KeyType,
 		CreatedAt: Users.Table.CreatedAt, UpdatedAt: Users.Table.UpdatedAt, DeletedAt: Users.Table.DeletedAt,
-		Columns: Users.Columns, NullZero: Users.NullZero, Ptr: Users.Ptr, State: Users.State,
+		Columns: Users.Columns, VirtualColumns: Users.VirtualColumns, NullZero: Users.NullZero, Field: Users.Field, State: Users.State,
 	}
 }
 

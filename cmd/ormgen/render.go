@@ -114,12 +114,15 @@ var {{.Var}} = &{{$orm}}.Table[{{.Struct}}, {{.KeyType}}]{
 {{- if $nz}}
 	NullZero: []string{ {{- $f1 := true}}{{range .Fields}}{{if .NullZero}}{{if not $f1}}, {{end}}"{{.Column}}"{{$f1 = false}}{{end}}{{end -}} },
 {{- end}}
-	Columns: []string{ {{- $first := true}}{{range .Fields}}{{if not .Virtual}}{{if not $first}}, {{end}}"{{.Column}}"{{$first = false}}{{end}}{{end -}} },
-	Ptr: func(m *{{.Struct}}, column string) any {
-		switch column {
-{{- range .Fields}}
-		case "{{.Column}}":
-			return &m.{{.Path}}
+	Columns: []string{ {{- range $i, $f := .Persisted}}{{if $i}}, {{end}}"{{$f.Column}}"{{end -}} },
+{{- if .Virtuals}}
+	VirtualColumns: []string{ {{- range $i, $f := .Virtuals}}{{if $i}}, {{end}}"{{$f.Column}}"{{end -}} },
+{{- end}}
+	Field: func(m *{{.Struct}}, i int) any {
+		switch i {
+{{- range $i, $f := .Accessors}}
+		case {{$i}}:
+			return &m.{{$f.Path}}
 {{- end}}
 		}
 		return nil

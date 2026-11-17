@@ -43,19 +43,19 @@ var widgetTable = &orm.Table[Widget, int64]{
 	CreatedAt:  "created_at",
 	UpdatedAt:  "updated_at",
 	Columns:    []string{"id", "name", "kind", "karma", "created_at", "updated_at"},
-	Ptr: func(m *Widget, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Widget, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "name":
+		case 1:
 			return &m.Name
-		case "kind":
+		case 2:
 			return &m.Kind
-		case "karma":
+		case 3:
 			return &m.Karma
-		case "created_at":
+		case 4:
 			return &m.CreatedAt
-		case "updated_at":
+		case 5:
 			return &m.UpdatedAt
 		}
 		return nil
@@ -97,15 +97,15 @@ var docTable = &orm.Table[Doc, string]{
 	KeyType:    orm.KeyUUID,
 	UpdatedAt:  "",
 	Columns:    []string{"id", "title", "views", "vec"},
-	Ptr: func(m *Doc, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Doc, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "title":
+		case 1:
 			return &m.Title
-		case "views":
+		case 2:
 			return &m.Views
-		case "vec":
+		case 3:
 			return &m.Vec
 		}
 		return nil
@@ -147,17 +147,17 @@ var noteTable = &orm.Table[Note, string]{
 	KeyType:    orm.KeyUUID,
 	DeletedAt:  "deleted_at",
 	Columns:    []string{"id", "title", "views", "seen", "deleted_at"},
-	Ptr: func(m *Note, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Note, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "title":
+		case 1:
 			return &m.Title
-		case "views":
+		case 2:
 			return &m.Views
-		case "seen":
+		case 3:
 			return &m.Seen
-		case "deleted_at":
+		case 4:
 			return &m.DeletedAt
 		}
 		return nil

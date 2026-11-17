@@ -30,21 +30,21 @@ var eventTable = &orm.Table[Event, int64]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyManual,
 	Columns:    []string{"id", "body", "active", "tags", "meta", "at", "vec"},
-	Ptr: func(m *Event, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *Event, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "body":
+		case 1:
 			return &m.Body
-		case "active":
+		case 2:
 			return &m.Active
-		case "tags":
+		case 3:
 			return &m.Tags
-		case "meta":
+		case 4:
 			return &m.Meta
-		case "at":
+		case 5:
 			return &m.At
-		case "vec":
+		case 6:
 			return &m.Vec
 		}
 		return nil
@@ -118,13 +118,13 @@ var jdocTable = &orm.Table[JDoc, int64]{
 	PrimaryKey: "id",
 	KeyType:    orm.KeyManual,
 	Columns:    []string{"id", "doc", "tags"},
-	Ptr: func(m *JDoc, column string) any {
-		switch column {
-		case "id":
+	Field: func(m *JDoc, i int) any {
+		switch i {
+		case 0:
 			return &m.ID
-		case "doc":
+		case 1:
 			return &m.Doc
-		case "tags":
+		case 2:
 			return &m.Tags
 		}
 		return nil

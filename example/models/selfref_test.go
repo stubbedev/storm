@@ -32,19 +32,22 @@ type Badge struct {
 	Name       string `db:"name"`
 }
 
-func modelTable[M any](name string, cols []string, ptr func(*M, string) any, state func(*M) *orm.Model) *orm.Table[M, int64] {
-	return &orm.Table[M, int64]{Name: name, PrimaryKey: "id", KeyType: orm.KeyManual, Columns: cols, Ptr: ptr, State: state}
+func modelTable[M any](name string, cols []string, fields func(*M) []any, state func(*M) *orm.Model) *orm.Table[M, int64] {
+	return &orm.Table[M, int64]{
+		Name: name, PrimaryKey: "id", KeyType: orm.KeyManual, Columns: cols,
+		Field: func(m *M, i int) any { return fields(m)[i] }, State: state,
+	}
 }
 
 var (
-	employeeTable = modelTable("employees", []string{"id", "name", "department_id", "mentor_id"}, func(m *Employee, c string) any {
-		return map[string]any{"id": &m.ID, "name": &m.Name, "department_id": &m.DepartmentID, "mentor_id": &m.MentorID}[c]
+	employeeTable = modelTable("employees", []string{"id", "name", "department_id", "mentor_id"}, func(m *Employee) []any {
+		return []any{&m.ID, &m.Name, &m.DepartmentID, &m.MentorID}
 	}, func(m *Employee) *orm.Model { return &m.Model })
-	departmentTable = modelTable("departments", []string{"id", "manager_id"}, func(m *Department, c string) any {
-		return map[string]any{"id": &m.ID, "manager_id": &m.ManagerID}[c]
+	departmentTable = modelTable("departments", []string{"id", "manager_id"}, func(m *Department) []any {
+		return []any{&m.ID, &m.ManagerID}
 	}, func(m *Department) *orm.Model { return &m.Model })
-	badgeTable = modelTable("badges", []string{"id", "employee_id", "name"}, func(m *Badge, c string) any {
-		return map[string]any{"id": &m.ID, "employee_id": &m.EmployeeID, "name": &m.Name}[c]
+	badgeTable = modelTable("badges", []string{"id", "employee_id", "name"}, func(m *Badge) []any {
+		return []any{&m.ID, &m.EmployeeID, &m.Name}
 	}, func(m *Badge) *orm.Model { return &m.Model })
 
 	employeeID       = orm.NewColumn(employeeTable, "id", func(m *Employee) *int64 { return &m.ID })

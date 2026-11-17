@@ -124,7 +124,7 @@ func (q Query[M, K]) performInsert(ctx context.Context, m *M) error {
 		if err != nil {
 			return err
 		}
-		if err := scanReturnedKey(rows, t.Ptr(m, t.PrimaryKey)); err != nil {
+		if err := scanReturnedKey(rows, t.ptr(m, t.PrimaryKey)); err != nil {
 			return fmt.Errorf("orm: insert into %s: %w", t.Name, err)
 		}
 	default:
@@ -283,7 +283,7 @@ func (s Session[M, K]) Restore(m *M) error {
 	if err := t.fire(ctx, Restoring, m); err != nil {
 		return err
 	}
-	reflect.ValueOf(t.Ptr(m, t.DeletedAt)).Elem().SetZero()
+	t.field(m, t.DeletedAt).SetZero()
 	if err := t.Query().WithContext(ctx).Save(m); err != nil {
 		return err
 	}
@@ -310,8 +310,8 @@ func (s Session[M, K]) Refresh(m *M) error {
 	if err != nil {
 		return err
 	}
-	for _, c := range t.Columns {
-		reflect.ValueOf(t.Ptr(m, c)).Elem().Set(reflect.ValueOf(t.Ptr(&fresh, c)).Elem())
+	for i := range t.Columns {
+		t.fieldAt(m, i).Set(t.fieldAt(&fresh, i))
 	}
 	t.sync(m)
 	return nil
@@ -336,7 +336,7 @@ func (s Session[M, K]) Replicate(m *M, except ...AnyColumn[M]) (M, error) {
 	*t.state(&c) = Model{}
 	for _, name := range []string{t.PrimaryKey, t.CreatedAt, t.UpdatedAt, t.DeletedAt} {
 		if name != "" {
-			reflect.ValueOf(t.Ptr(&c, name)).Elem().SetZero()
+			t.field(&c, name).SetZero()
 		}
 	}
 	for _, col := range except {

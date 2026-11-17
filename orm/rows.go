@@ -61,13 +61,26 @@ func formatUUID(b []byte) string {
 }
 
 type modelDests[M any, K comparable] struct {
-	table *Table[M, K]
-	cols  []string
-	cells []nullable
+	table  *Table[M, K]
+	fields []int
+	cells  []nullable
 }
 
-func newModelDests[M any, K comparable](t *Table[M, K], cols []string) modelDests[M, K] {
-	return modelDests[M, K]{table: t, cols: cols, cells: make([]nullable, len(cols))}
+func newModelDests[M any, K comparable](t *Table[M, K], cols []string) (modelDests[M, K], error) {
+	l := t.plan()
+	if slices.Equal(cols, t.Columns) {
+		return modelDests[M, K]{table: t, fields: l.columns, cells: make([]nullable, len(cols))}, nil
+	}
+	index := l.index
+	fields := make([]int, len(cols))
+	for i, c := range cols {
+		f, ok := index[c]
+		if !ok {
+			return modelDests[M, K]{}, fmt.Errorf("orm: %s has no field for selected column %q", t.Name, c)
+		}
+		fields[i] = f
+	}
+	return modelDests[M, K]{table: t, fields: fields, cells: make([]nullable, len(cols))}, nil
 }
 
 func (d modelDests[M, K]) args() []any {
@@ -78,13 +91,8 @@ func (d modelDests[M, K]) args() []any {
 	return args
 }
 
-func (d modelDests[M, K]) bind(m *M) error {
-	for i, c := range d.cols {
-		p := d.table.Ptr(m, c)
-		if p == nil {
-			return fmt.Errorf("orm: %s has no field for selected column %q", d.table.Name, c)
-		}
-		d.cells[i].dst = p
+func (d modelDests[M, K]) bind(m *M) {
+	for i, f := range d.fields {
+		d.cells[i].dst = d.table.Field(m, f)
 	}
-	return nil
 }

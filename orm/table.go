@@ -44,14 +44,21 @@ type Table[M any, K comparable] struct {
 	// timestamps keep, 0 (default) to 9; match the columns' precision.
 	TimePrecision int
 	Columns       []string
+	// VirtualColumns are only ever selected, never persisted
+	// (db:"posts_count,virtual").
+	VirtualColumns []string
 	// NullZero lists columns whose zero value is written as NULL
 	// (db:"country_id,nullzero"), e.g. optional foreign keys.
 	NullZero []string
 
-	// Ptr returns a pointer to the field backing column (persisted or virtual).
-	Ptr func(m *M, column string) any
+	// Field returns a pointer to the field backing the i-th column, counting
+	// Columns first and VirtualColumns after them.
+	Field func(m *M, i int) any
 	// State returns the embedded orm.Model.
 	State func(m *M) *Model
+
+	layoutOnce sync.Once
+	layout     *tableLayout
 
 	mu        sync.RWMutex
 	scopes    []namedScope[M, K]
@@ -179,8 +186,8 @@ func (t *Table[M, K]) sync(m *M) {
 	st := t.state(m)
 	st.exists = true
 	orig := new(M)
-	for _, c := range t.Columns {
-		dst, src := t.field(orig, c), t.field(m, c)
+	for i := range t.Columns {
+		dst, src := t.fieldAt(orig, i), t.fieldAt(m, i)
 		if isScalar(src) {
 			dst.Set(src)
 		} else {
@@ -195,8 +202,20 @@ func (t *Table[M, K]) original(m *M) (*M, bool) {
 	return orig, ok
 }
 
+func (t *Table[M, K]) ptr(m *M, col string) any {
+	i, ok := t.plan().index[col]
+	if !ok {
+		panic(fmt.Sprintf("orm: %s has no column %q", t.Name, col))
+	}
+	return t.Field(m, i)
+}
+
 func (t *Table[M, K]) field(m *M, col string) reflect.Value {
-	return reflect.ValueOf(t.Ptr(m, col)).Elem()
+	return reflect.ValueOf(t.ptr(m, col)).Elem()
+}
+
+func (t *Table[M, K]) fieldAt(m *M, i int) reflect.Value {
+	return reflect.ValueOf(t.Field(m, i)).Elem()
 }
 
 func deepCopy(v reflect.Value) reflect.Value {
@@ -257,8 +276,8 @@ func (t *Table[M, K]) Dirty(m *M) []string {
 		return slices.Clone(t.Columns)
 	}
 	var dirty []string
-	for _, c := range t.Columns {
-		if !equalValues(t.field(orig, c), t.field(m, c)) {
+	for i, c := range t.Columns {
+		if !equalValues(t.fieldAt(orig, i), t.fieldAt(m, i)) {
 			dirty = append(dirty, c)
 		}
 	}
