@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -41,6 +42,9 @@ func assign(dst reflect.Value, src any) error {
 	}
 	sv := reflect.ValueOf(src)
 	if sv.Type().AssignableTo(dst.Type()) {
+		if b, ok := src.([]byte); ok {
+			sv = reflect.ValueOf(bytes.Clone(b))
+		}
 		dst.Set(sv)
 		return nil
 	}
