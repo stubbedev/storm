@@ -20,10 +20,216 @@ import (
 type nullable struct{ dst any }
 
 func (n nullable) Scan(src any) error {
+	switch d := n.dst.(type) {
+	case *int64:
+		if scanInt64(d, src) {
+			return nil
+		}
+	case *int:
+		if scanInt(d, src) {
+			return nil
+		}
+	case *string:
+		if scanString(d, src) {
+			return nil
+		}
+	case *bool:
+		if scanBool(d, src) {
+			return nil
+		}
+	case *float64:
+		if scanFloat64(d, src) {
+			return nil
+		}
+	case *time.Time:
+		if scanTime(d, src) {
+			return nil
+		}
+	case *[]byte:
+		if scanBytes(d, src) {
+			return nil
+		}
+	case **int64:
+		return scanPointer(d, src)
+	case **int:
+		return scanPointer(d, src)
+	case **string:
+		return scanPointer(d, src)
+	case **bool:
+		return scanPointer(d, src)
+	case **float64:
+		return scanPointer(d, src)
+	case **time.Time:
+		return scanPointer(d, src)
+	case **[]byte:
+		return scanPointer(d, src)
+	}
 	if s, ok := n.dst.(sql.Scanner); ok {
 		return s.Scan(src)
 	}
 	return assign(reflect.ValueOf(n.dst).Elem(), src)
+}
+
+func scanPointer[T any](d **T, src any) error {
+	if src == nil {
+		*d = nil
+		return nil
+	}
+	if *d == nil {
+		*d = new(T)
+	}
+	return nullable{*d}.Scan(src)
+}
+
+func scanInt64(d *int64, src any) bool {
+	switch v := src.(type) {
+	case nil:
+		*d = 0
+	case int64:
+		*d = v
+	case []byte:
+		return parseInt64(d, string(v))
+	case string:
+		return parseInt64(d, v)
+	default:
+		return false
+	}
+	return true
+}
+
+func parseInt64(d *int64, s string) bool {
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return false
+	}
+	*d = n
+	return true
+}
+
+func scanInt(d *int, src any) bool {
+	var n int64
+	if !scanInt64(&n, src) || int64(int(n)) != n {
+		return false
+	}
+	*d = int(n)
+	return true
+}
+
+func scanString(d *string, src any) bool {
+	switch v := src.(type) {
+	case nil:
+		*d = ""
+	case string:
+		*d = v
+	case []byte:
+		*d = string(v)
+	default:
+		return false
+	}
+	return true
+}
+
+func scanBool(d *bool, src any) bool {
+	switch v := src.(type) {
+	case nil:
+		*d = false
+	case bool:
+		*d = v
+	case int64:
+		*d = v != 0
+	case []byte:
+		return parseBool(d, string(v))
+	case string:
+		return parseBool(d, v)
+	default:
+		return false
+	}
+	return true
+}
+
+func parseBool(d *bool, s string) bool {
+	b, err := strconv.ParseBool(s)
+	if err != nil {
+		return false
+	}
+	*d = b
+	return true
+}
+
+func scanFloat64(d *float64, src any) bool {
+	switch v := src.(type) {
+	case nil:
+		*d = 0
+	case float64:
+		*d = v
+	case int64:
+		*d = float64(v)
+	case []byte:
+		return parseFloat64(d, string(v))
+	case string:
+		return parseFloat64(d, v)
+	default:
+		return false
+	}
+	return true
+}
+
+func parseFloat64(d *float64, s string) bool {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return false
+	}
+	*d = f
+	return true
+}
+
+func scanTime(d *time.Time, src any) bool {
+	switch v := src.(type) {
+	case nil:
+		*d = time.Time{}
+	case time.Time:
+		*d = v
+	case []byte:
+		return parseTime(d, string(v))
+	case string:
+		return parseTime(d, v)
+	default:
+		return false
+	}
+	return true
+}
+
+func parseTime(d *time.Time, s string) bool {
+	t, ok := timeText(s)
+	if ok {
+		*d = t
+	}
+	return ok
+}
+
+var timeTextLayouts = []string{"2006-01-02 15:04:05.999999999-07:00", "2006-01-02T15:04:05.999999999-07:00", "2006-01-02 15:04:05", "2006-01-02T15:04:05Z", "2006-01-02"}
+
+func timeText(s string) (time.Time, bool) {
+	for _, layout := range timeTextLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func scanBytes(d *[]byte, src any) bool {
+	switch v := src.(type) {
+	case nil:
+		*d = nil
+	case []byte:
+		*d = bytes.Clone(v)
+	case string:
+		*d = []byte(v)
+	default:
+		return false
+	}
+	return true
 }
 
 func assign(dst reflect.Value, src any) error {
@@ -110,11 +316,9 @@ func assign(dst reflect.Value, src any) error {
 	case reflect.Struct:
 		if dst.Type() == reflect.TypeFor[time.Time]() {
 			if s, ok := src.(string); ok {
-				for _, layout := range []string{"2006-01-02 15:04:05.999999999-07:00", "2006-01-02T15:04:05.999999999-07:00", "2006-01-02 15:04:05", "2006-01-02T15:04:05Z", "2006-01-02"} {
-					if t, err := time.Parse(layout, s); err == nil {
-						dst.Set(reflect.ValueOf(t))
-						return nil
-					}
+				if t, ok := timeText(s); ok {
+					dst.Set(reflect.ValueOf(t))
+					return nil
 				}
 			}
 		}
