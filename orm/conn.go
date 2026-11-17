@@ -33,6 +33,67 @@ type Conn struct {
 	// on them translate to the store instead of SQL.
 	Doc     DocStore
 	Dialect Dialect
+
+	stmts, readStmts *stmtCache
+}
+
+func newConn(db, read DB, d Dialect, cacheSize int) Conn {
+	c := Conn{DB: db, Read: read, Dialect: d, stmts: newStmtCache(db, d, cacheSize)}
+	if read != nil {
+		c.readStmts = newStmtCache(read, d, cacheSize)
+	}
+	return c
+}
+
+func (c Conn) writer() DB {
+	if c.stmts != nil {
+		return c.stmts
+	}
+	return c.DB
+}
+
+func (c Conn) reader() DB {
+	switch {
+	case c.Read == nil:
+		return c.writer()
+	case c.readStmts != nil:
+		return c.readStmts
+	}
+	return c.Read
+}
+
+func (c Conn) closeStatements() {
+	c.stmts.close()
+	c.readStmts.close()
+}
+
+func register(name string, c Conn) {
+	connMu.Lock()
+	old := conns[name]
+	conns[name] = c
+	connMu.Unlock()
+	old.closeStatements()
+}
+
+func SetStatementCacheSize(name string, size int) error {
+	if size < 0 {
+		return fmt.Errorf("orm: statement cache size for connection %q is %d, which is negative", name, size)
+	}
+	connMu.RLock()
+	c, ok := conns[name]
+	connMu.RUnlock()
+	if !ok {
+		return fmt.Errorf("orm: no connection %q registered to size the statement cache of", name)
+	}
+	if c.Doc != nil {
+		return fmt.Errorf("orm: connection %q is a document store, which has no SQL statements to cache", name)
+	}
+	next := newConn(c.DB, c.Read, c.Dialect, size)
+	if size > 0 && next.stmts == nil {
+		return fmt.Errorf("orm: connection %q (%s) does not cache prepared statements; only SQLite, MySQL and MariaDB pools do", name, c.Dialect.Name())
+	}
+	register(name, next)
+	return nil
 }
 
 // Reader returns the handle queries run on: Read when the connection has a
@@ -82,10 +143,10 @@ func stickyDB(ctx context.Context, conn string, c Conn) DB {
 		wrote := st.wrote[conn]
 		st.mu.Unlock()
 		if wrote {
-			return c.DB
+			return c.writer()
 		}
 	}
-	return c.Reader()
+	return c.reader()
 }
 
 var (
@@ -211,18 +272,14 @@ func OpenReadWrite(name, driver, readDSN, writeDSN string) (*sql.DB, error) {
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("orm: opening %s for writes: %w", name, err), read.Close())
 	}
-	connMu.Lock()
-	conns[name] = Conn{DB: write, Read: read, Dialect: d}
-	connMu.Unlock()
+	register(name, newConn(write, read, d, defaultStatementCacheSize))
 	return write, nil
 }
 
 // AddConnection registers a named connection, used by tables declared with
 // //orm:table <name> connection=<conn> and by Query.On(<conn>).
 func AddConnection(name string, db DB, d Dialect) {
-	connMu.Lock()
-	defer connMu.Unlock()
-	conns[name] = Conn{DB: db, Dialect: d}
+	register(name, newConn(db, nil, d, defaultStatementCacheSize))
 }
 
 // Transaction runs fn in a transaction on the default connection. Queries
@@ -646,7 +703,7 @@ func lookup(ctx context.Context, name string) (Conn, error) {
 		return Conn{}, fmt.Errorf("orm: no connection %q registered (call orm.Open, orm.SetDefault or orm.AddConnection)", name)
 	}
 	if held, ok := connScopedValue[*sql.Conn](ctx, heldKey{}, name); ok {
-		c.DB, c.Read = held, nil
+		c.DB, c.Read, c.stmts, c.readStmts = held, nil, nil, nil
 	}
 	return c, nil
 }

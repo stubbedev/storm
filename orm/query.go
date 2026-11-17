@@ -740,7 +740,7 @@ func writeRows(ctx context.Context, name string, f frag) (*resultRows, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := runRows(ctx, name, c.Dialect, c.DB, f)
+	rows, err := runRows(ctx, name, c.Dialect, c.writer(), f)
 	if err == nil {
 		markWritten(ctx, name)
 	}
@@ -775,7 +775,7 @@ func execOn(ctx context.Context, name string, f frag) (sql.Result, error) {
 		return nil, err
 	}
 	start := time.Now()
-	res, err := c.DB.ExecContext(ctx, stmt, args...)
+	res, err := c.writer().ExecContext(ctx, stmt, args...)
 	Emit(QueryEvent{Connection: name, SQL: stmt, Args: args, Duration: time.Since(start), Err: err})
 	if err != nil {
 		return nil, &QueryError{Err: err, SQL: stmt}

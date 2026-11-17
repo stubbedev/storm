@@ -628,6 +628,20 @@ ctx = orm.WithConn(ctx, orm.DefaultConnection, conn) // every query on ctx uses 
 `INSERT ... RETURNING`, vector functions). `AddConnection(..., orm.MariaDB)`
 or the driver name `mariadb` choose it explicitly.
 
+SQLite, MySQL and MariaDB pools keep the statements they run with
+arguments prepared, up to 128 per pool, in least-recently-used order, so
+the database parses (and on MySQL/MariaDB prepares) each statement once
+rather than on every call. Postgres (pgx) caches statements itself.
+Statements without arguments, such as multi-statement scripts, and
+statements inside a transaction or `orm.WithConn` run as plain SQL. MySQL
+caps prepared statements server-wide (`max_prepared_stmt_count`), and a
+cached statement can be prepared once per pooled connection, so size the
+cache to fit, or turn it off with 0:
+
+```go
+err := orm.SetStatementCacheSize(orm.DefaultConnection, 32)
+```
+
 ## Queries without a model
 
 `orm.From` is `DB::table`: the same builder idea over a bare table, with

@@ -95,9 +95,7 @@ type DocUpdate struct {
 // at it with connection= (or Query.On) run their typed queries against the
 // store instead of SQL.
 func AddDocStore(name string, ds DocStore) {
-	connMu.Lock()
-	conns[name] = Conn{Doc: ds}
-	connMu.Unlock()
+	register(name, Conn{Doc: ds})
 }
 
 func (q Query[M, K]) docstore(ctx context.Context) (DocStore, bool, error) {
